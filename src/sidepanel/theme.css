@@ -1,0 +1,339 @@
+@import "tailwindcss";
+
+/* Self-hosted Satoshi (variable) — avoids a remote @import that MV3 CSP
+   would block. */
+@font-face {
+  font-family: "Satoshi";
+  src: url("/fonts/Satoshi-Variable.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  --font-sans: "Satoshi", ui-sans-serif, system-ui, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* Design tokens for the wallet UI. */
+@layer base {
+  :root {
+    font-family: "Satoshi", sans-serif;
+    color-scheme: dark;
+
+    --page-bg: #05070d;
+    --page-fg: #e6efff;
+
+    --text-strong: #e6efff;
+    --text-primary: #dfe9fb;
+    --text-secondary: #8aa0c2;
+    --text-muted: #7f9bbd;
+    --text-subtle: #6f86a8;
+    --text-soft: #c7d6f3;
+    --text-overline: #9fb2cc;
+    --text-on-accent: #e6efff;
+
+    --brand-bg: #1f4b8f;
+    --brand-text: #e6efff;
+    --brand-glow: rgba(78, 161, 255, 0.35);
+
+    --manager-banner-core: #081739;
+    --manager-banner-mid: #0a2458;
+    --manager-banner-edge: #040910;
+
+    --surface-card: #0f1b2d;
+    --surface-soft: #0b1628;
+    --surface-elevated: #0b1628;
+    --surface-panel: #0f1b2d;
+    --surface-modal: #0f1b2d;
+
+    --border-default: #1d2b44;
+    --border-strong: #182642;
+    --border-soft: #1b2a44;
+    --border-hover: #2a4166;
+
+    --shadow-strong: rgba(5, 12, 24, 0.45);
+    --shadow-soft: rgba(8, 15, 30, 0.55);
+
+    --overlay: rgba(5, 7, 13, 0.8);
+
+    --accent: #4ea1ff;
+    --accent-strong: #7db3ff;
+    --accent-soft: #102542;
+    --accent-bright: #4ea1ff;
+    --accent-mint: #3ad6c6;
+    --accent-amber: #f6b45f;
+
+    --danger-bg: #2a1116;
+    --danger-border: #3b1a22;
+    --danger-text: #f29aa2;
+    --danger-strong: #f5a3aa;
+    --success-bg: #11261b;
+    --success-border: #1f3f2a;
+    --success-text: #7fe0a5;
+    --success-strong: #8fe8b0;
+    --warning-bg: #261e11;
+    --warning-border: #3f3520;
+    --warning-text: #f6b45f;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    color: var(--page-fg);
+    background-color: var(--page-bg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Celestial backdrop: night sky → stars → moon → horizon glow → ocean,
+     a static scene behind the wallet (the old blue header strip is gone). ── */
+  .apogee-scene {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .apogee-sky {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to bottom, #03070f 0%, #050b18 56%, #07101f 100%);
+  }
+  /* star canvas, faded out before the horizon */
+  .apogee-starfield {
+    position: absolute;
+    inset: 0;
+    -webkit-mask-image: linear-gradient(to bottom, #000 52%, transparent 84%);
+    mask-image: linear-gradient(to bottom, #000 52%, transparent 84%);
+  }
+  /* moonlit blue dome at the horizon (static) */
+  .apogee-glow {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 22%;
+    height: 46%;
+    opacity: 0.7;
+    background: radial-gradient(
+      130% 100% at 50% 100%,
+      rgba(116, 184, 254, 0.45) 0%,
+      rgba(62, 124, 206, 0.24) 26%,
+      rgba(30, 70, 132, 0.09) 50%,
+      transparent 72%
+    );
+  }
+  /* moonlit ocean pinned at the bottom (static). Show the open-water foreground
+     (crop the photo's own hazy horizon out the top) so the band's feathered top
+     edge reads as a clean, straight horizon blending into the sky. */
+  .apogee-ocean {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 28%;
+    /* light darkening only at the very bottom (keeps the water sharp, like the
+       www scene — which leaves the sea crisp and darkens only near the footer) */
+    background-image:
+      linear-gradient(
+        to bottom,
+        transparent 68%,
+        color-mix(in srgb, var(--page-bg) 65%, transparent) 100%
+      ),
+      url("/scene/ocean-waves-poster.jpg");
+    background-repeat: no-repeat, no-repeat;
+    background-size: cover, cover;
+    background-position: center, center;
+    /* crisp 5px waterline feather, matching the source scene */
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 5px);
+    mask-image: linear-gradient(to bottom, transparent 0, #000 5px);
+  }
+  /* high in the sky (apogee) — static for now */
+  .apogee-moon {
+    position: absolute;
+    left: 50%;
+    bottom: 88%;
+    transform: translateX(-50%);
+    width: 56px;
+  }
+  .apogee-moon-halo {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 340%;
+    height: 340%;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: radial-gradient(
+      circle,
+      rgba(214, 234, 255, 0.5) 0%,
+      rgba(140, 184, 246, 0.26) 26%,
+      rgba(78, 130, 210, 0.1) 44%,
+      transparent 64%
+    );
+  }
+  .apogee-moon-img {
+    position: relative;
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 50%;
+    filter: brightness(1.7) contrast(0.55) saturate(0.55);
+    -webkit-mask-image: radial-gradient(circle at 50% 49%, #000 43%, rgba(0, 0, 0, 0.5) 48%, transparent 52%);
+    mask-image: radial-gradient(circle at 50% 49%, #000 43%, rgba(0, 0, 0, 0.5) 48%, transparent 52%);
+  }
+  .apogee-moon-core {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: radial-gradient(
+      circle at 50% 47%,
+      rgba(255, 255, 255, 0.96) 0%,
+      rgba(245, 250, 255, 0.6) 30%,
+      rgba(222, 236, 255, 0.16) 45%,
+      transparent 52%
+    );
+  }
+
+  /* Frosted surfaces so the scene shows faintly through the content. */
+  .apogee-panel {
+    background-color: color-mix(in srgb, var(--surface-card) 82%, transparent);
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+  }
+  .apogee-soft {
+    background-color: color-mix(in srgb, var(--surface-soft) 66%, transparent);
+  }
+  /* compact (scrolled) balance backing: opaque at top, fading to transparent so
+     it blends into the scrolling list below instead of a hard-edged bar */
+  .apogee-balance-fade {
+    background: linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--page-bg) 94%, transparent) 0%,
+      color-mix(in srgb, var(--page-bg) 72%, transparent) 55%,
+      transparent 100%
+    );
+  }
+  /* feathered top edge for scrolling sections: as content scrolls up it dissolves
+     into the scene above instead of hitting a hard cut-off line. The 24px ramp is
+     sized to the scroll container's pt-6, so at rest only the (empty) top padding
+     is masked and the first content sits at full opacity. */
+  .apogee-feather-top {
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 24px);
+    mask-image: linear-gradient(to bottom, transparent 0, #000 24px);
+  }
+  /* thin, dark-themed scrollbar */
+  .apogee-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--text-subtle) 40%, transparent) transparent;
+  }
+  .apogee-scrollbar::-webkit-scrollbar {
+    width: 8px;
+  }
+  .apogee-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .apogee-scrollbar::-webkit-scrollbar-thumb {
+    background-color: color-mix(in srgb, var(--text-subtle) 38%, transparent);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  .apogee-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in srgb, var(--text-subtle) 60%, transparent);
+  }
+  /* celebratory pop-in (e.g. the send-success check) */
+  @keyframes apogee-pop {
+    0% {
+      transform: scale(0.5);
+      opacity: 0;
+    }
+    60% {
+      transform: scale(1.08);
+      opacity: 1;
+    }
+    100% {
+      transform: scale(1);
+    }
+  }
+  .apogee-pop {
+    animation: apogee-pop 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .apogee-pop {
+      animation: none;
+    }
+  }
+
+  /* slide + fade-in for transient toasts (received / sent funds) */
+  @keyframes apogee-toast-in {
+    from {
+      transform: translateY(8px);
+      opacity: 0;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+  .apogee-toast-in {
+    animation: apogee-toast-in 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .apogee-toast-in {
+      animation: none;
+    }
+  }
+
+  /* Ghost icon button (header lock/settings, in-panel controls): subtle until
+     hovered, then accent-tinted. */
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.5rem;
+    color: var(--text-secondary);
+    transition:
+      color 0.15s ease,
+      background-color 0.15s ease;
+  }
+  .icon-btn:hover {
+    color: var(--accent);
+    background-color: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+  .icon-btn:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  /* Expandable drawer (token rows, activity rows) built on native <details>. */
+  details.drawer > summary {
+    list-style: none;
+    cursor: pointer;
+  }
+  details.drawer > summary::-webkit-details-marker {
+    display: none;
+  }
+  .drawer-chevron {
+    transition: transform 0.15s ease;
+  }
+  details.drawer[open] > summary .drawer-chevron {
+    transform: rotate(180deg);
+  }
+
+  .highlight-glow {
+    background-color: color-mix(in srgb, var(--accent-bright) 18%, transparent);
+    border-color: color-mix(in srgb, var(--accent-bright) 55%, transparent);
+    color: var(--accent-bright);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, var(--accent-bright) 35%, transparent),
+      0 0 0 1px color-mix(in srgb, var(--accent-bright) 42%, transparent),
+      0 0 14px color-mix(in srgb, var(--accent-bright) 38%, transparent);
+  }
+}

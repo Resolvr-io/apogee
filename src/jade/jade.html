@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Connect Jade · Apogee</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        padding: 24px;
+        font-family: system-ui, -apple-system, sans-serif;
+        color: #e6efff;
+        /* Flat starfield with the vignette in code: a radial #03070f fade matching
+           the side panel's sky top, so there's no baked gradient and no banding. */
+        background:
+          radial-gradient(
+              ellipse at center,
+              rgba(3, 7, 15, 0.3) 0%,
+              rgba(3, 7, 15, 0.6) 55%,
+              rgba(3, 7, 15, 1) 100%
+            )
+            center / cover no-repeat fixed,
+          #03070f url("/scene/starfield_bg.jpg") center / cover no-repeat fixed;
+      }
+      .brand {
+        height: 28px;
+        width: auto;
+      }
+      .card {
+        width: 340px;
+        max-width: calc(100vw - 48px);
+        border-radius: 20px;
+        background: rgba(15, 27, 45, 0.72);
+        border: 1px solid rgba(125, 150, 190, 0.16);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+        padding: 24px 22px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+        text-align: center;
+      }
+      .steps {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 10.5px;
+        color: #6f86a8;
+      }
+      .steps .active {
+        color: #7db3ff;
+        font-weight: 600;
+      }
+      .steps .done {
+        color: #7fe0a5;
+      }
+      .steps .sep {
+        opacity: 0.4;
+      }
+      h1 {
+        font-size: 16px;
+        margin: 0;
+        font-weight: 600;
+        text-wrap: balance;
+      }
+      .sub {
+        font-size: 12.5px;
+        color: #8aa0c2;
+        margin: 0;
+        line-height: 1.5;
+        max-width: 30ch;
+        text-wrap: pretty;
+      }
+      .badge {
+        font-size: 10px;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: #261e11;
+        border: 1px solid #3f3520;
+        color: #f6b45f;
+      }
+      .btn {
+        width: 100%;
+        padding: 11px;
+        border-radius: 11px;
+        border: 1px solid #4ea1ff;
+        background: linear-gradient(180deg, #7db3ff 0%, #4ea1ff 100%);
+        color: #07111f;
+        font: inherit;
+        font-weight: 600;
+        font-size: 13.5px;
+        cursor: pointer;
+      }
+      .btn.secondary {
+        background: #0b1628;
+        color: #dfe9fb;
+        border-color: #1d2b44;
+      }
+      .btn:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .ghost {
+        font: inherit;
+        font-size: 11.5px;
+        color: #6f86a8;
+        text-decoration: none;
+        background: none;
+        border: none;
+        cursor: pointer;
+      }
+      .ghost:hover {
+        color: #8aa0c2;
+      }
+      .summary {
+        width: 100%;
+        border-radius: 12px;
+        background: #0b1628;
+        border: 1px solid #1d2b44;
+        padding: 10px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        text-align: left;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        font-size: 12.5px;
+      }
+      .row .k {
+        color: #6f86a8;
+      }
+      .row .v {
+        color: #dfe9fb;
+      }
+      .row .v.mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .row.total {
+        border-top: 1px solid #1d2b44;
+        padding-top: 7px;
+      }
+      .row.total .v {
+        color: #e6efff;
+        font-weight: 600;
+      }
+      .wait {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: #8aa0c2;
+      }
+      .spin {
+        width: 14px;
+        height: 14px;
+        flex-shrink: 0;
+        border-radius: 50%;
+        border: 2px solid rgba(125, 179, 255, 0.3);
+        border-top-color: #7db3ff;
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .spin {
+          animation: none;
+        }
+      }
+      .status-icon {
+        width: 46px;
+        height: 46px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 24px;
+      }
+      .status-icon.ok {
+        background: #11261b;
+        border: 1px solid #1f3f2a;
+        color: #7fe0a5;
+      }
+      .status-icon.err {
+        background: #261117;
+        border: 1px solid #3f1f29;
+        color: #ff9bb0;
+      }
+      .txrow {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        border: 1px solid #1b2a44;
+        background: #0b1628;
+        border-radius: 10px;
+        padding: 7px 12px;
+      }
+      .txrow .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        color: #8aa0c2;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .copybtn {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font: inherit;
+        font-size: 11.5px;
+        color: #c7d6f3;
+        background: transparent;
+        border: none;
+        cursor: pointer;
+      }
+      .explorer {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        font-size: 11.5px;
+        color: #4ea1ff;
+        text-decoration: none;
+      }
+      .explorer:hover {
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+  <body>
+    <img class="brand" src="/icons/apogee-logo.svg" alt="Apogee" />
+    <div id="card" class="card"></div>
+    <script type="module" src="./jade.ts"></script>
+  </body>
+</html>

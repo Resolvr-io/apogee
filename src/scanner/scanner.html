@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Scan QR · Apogee</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        padding: 16px;
+        background: #05070d;
+        color: #e6efff;
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      #status {
+        font-size: 13px;
+        color: #8aa0c2;
+        text-align: center;
+      }
+      video {
+        width: 100%;
+        max-width: 360px;
+        aspect-ratio: 1;
+        object-fit: cover;
+        border-radius: 16px;
+        border: 1px solid #1d2b44;
+        background: #000;
+      }
+      button {
+        font: inherit;
+        font-size: 14px;
+        padding: 10px 20px;
+        border-radius: 8px;
+        border: 1px solid #1d2b44;
+        background: #0b1628;
+        color: #dfe9fb;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: #2a4166;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status">Starting camera…</div>
+    <video id="video" playsinline muted></video>
+    <button id="cancel">Cancel</button>
+    <script type="module" src="./scanner.ts"></script>
+  </body>
+</html>

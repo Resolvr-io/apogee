@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Guide · Apogee</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        padding: 40px 24px;
+        font-family: system-ui, -apple-system, sans-serif;
+        color: #e6efff;
+        /* Same flat starfield + code vignette as the Jade connector page. */
+        background:
+          radial-gradient(
+              ellipse at center,
+              rgba(3, 7, 15, 0.3) 0%,
+              rgba(3, 7, 15, 0.6) 55%,
+              rgba(3, 7, 15, 1) 100%
+            )
+            center / cover no-repeat fixed,
+          #03070f url("/scene/starfield_bg.jpg") center / cover no-repeat fixed;
+      }
+      .brand {
+        height: 30px;
+        width: auto;
+      }
+      .card {
+        width: 560px;
+        max-width: calc(100vw - 48px);
+        border-radius: 20px;
+        background: rgba(15, 27, 45, 0.72);
+        border: 1px solid rgba(125, 150, 190, 0.16);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+        padding: 32px 30px;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0 0 8px;
+        font-weight: 600;
+        text-wrap: balance;
+      }
+      .lead {
+        font-size: 14px;
+        color: #8aa0c2;
+        margin: 0 0 24px;
+        line-height: 1.6;
+        text-wrap: pretty;
+      }
+      .lead strong {
+        color: #e6efff;
+        font-weight: 600;
+      }
+      ol.steps {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      .step {
+        display: flex;
+        gap: 14px;
+      }
+      .step-num {
+        flex-shrink: 0;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: 600;
+        color: #7db3ff;
+        background: #0b1628;
+        border: 1px solid #1d2b44;
+      }
+      .step-title {
+        font-size: 14px;
+        font-weight: 600;
+        margin: 2px 0 3px;
+        color: #e6efff;
+      }
+      .step-body {
+        font-size: 13px;
+        color: #8aa0c2;
+        margin: 0;
+        line-height: 1.55;
+        text-wrap: pretty;
+      }
+      .foot {
+        margin: 26px 0 0;
+        padding-top: 18px;
+        border-top: 1px solid #1d2b44;
+        font-size: 12.5px;
+        color: #6f86a8;
+      }
+      .foot a {
+        color: #4ea1ff;
+        text-decoration: none;
+      }
+      .foot a:hover {
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+  <body>
+    <img class="brand" src="/icons/apogee-logo.svg" alt="Apogee" />
+    <main class="card">
+      <h1>How Apogee works</h1>
+      <p class="lead">
+        Apogee is a self-custody wallet for the <strong>Liquid Network</strong> — a Bitcoin
+        sidechain with fast, confidential transactions. You hold your own keys; Resolvr never
+        sees them.
+      </p>
+      <ol class="steps">
+        <li class="step">
+          <span class="step-num">1</span>
+          <div>
+            <p class="step-title">Set up your wallet</p>
+            <p class="step-body">
+              Create a new wallet, restore from a recovery phrase, or pair a Blockstream Jade
+              hardware wallet.
+            </p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step-num">2</span>
+          <div>
+            <p class="step-title">Receive</p>
+            <p class="step-body">
+              Generate a fresh confidential Liquid address for each deposit — amounts and assets
+              stay private on-chain.
+            </p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step-num">3</span>
+          <div>
+            <p class="step-title">Send</p>
+            <p class="step-body">
+              Enter an address and amount, review the fee, and approve. Apogee builds, signs, and
+              broadcasts the transaction.
+            </p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step-num">4</span>
+          <div>
+            <p class="step-title">Connect to web apps</p>
+            <p class="step-body">
+              Compatible sites request a connection; you approve each connection and every send.
+              Review or revoke connected apps in Settings.
+            </p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step-num">5</span>
+          <div>
+            <p class="step-title">Stay in control</p>
+            <p class="step-body">
+              Your recovery phrase, keys, and password never leave this device. Lock Apogee
+              anytime, or let it auto-lock after inactivity.
+            </p>
+          </div>
+        </li>
+      </ol>
+      <p class="foot">
+        More at <a href="https://apogee.resolvr.io" target="_blank" rel="noreferrer">apogee.resolvr.io</a>.
+      </p>
+    </main>
+  </body>
+</html>
