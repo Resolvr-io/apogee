@@ -16,8 +16,11 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  QrCode,
   RefreshCw,
+  Unplug,
 } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import type { AssetInfo, SyncResult, WalletTxDTO } from "@/engine/protocol";
 import type { KeystoreState, LiquidNetwork, WalletInfo } from "@/keystore/keystore";
 import { explorerTxUrl } from "@/lib/explorer";
@@ -44,8 +47,11 @@ import {
   Input,
   LoadingPill,
   Spinner,
+  StatusDot,
+  Switch,
 } from "@/sidepanel/components/ui";
 import { errMessage, unlockErrMessage, wallet } from "@/sidepanel/wallet-client";
+import { useAnimations } from "@/sidepanel/use-animations";
 import { Send } from "@/sidepanel/screens/Send";
 import type { ToastNotice } from "@/sidepanel/components/Toast";
 
@@ -89,22 +95,28 @@ function useFiat(): [string, (code: string) => void] {
   return [fiat, update];
 }
 
-function useDenomination(): [Denom, () => void] {
-  const [denom, setDenom] = useState<Denom>("btc");
+function useDenomination(): [Denom, (d: Denom) => void, () => void] {
+  // Sats by default — the balance is tap-to-cycle, and Display settings can set
+  // it explicitly. Both write the same persisted key.
+  const [denom, setDenom] = useState<Denom>("sats");
   useEffect(() => {
     void chrome.storage.local.get(DENOM_KEY).then((o) => {
       const v = o[DENOM_KEY];
       if (v === "btc" || v === "sats" || v === "fiat") setDenom(v);
     });
   }, []);
+  const set = useCallback((d: Denom) => {
+    setDenom(d);
+    void chrome.storage.local.set({ [DENOM_KEY]: d });
+  }, []);
   const cycle = useCallback(() => {
-    setDenom((d) => {
-      const next = DENOM_ORDER[(DENOM_ORDER.indexOf(d) + 1) % DENOM_ORDER.length];
+    setDenom((cur) => {
+      const next = DENOM_ORDER[(DENOM_ORDER.indexOf(cur) + 1) % DENOM_ORDER.length];
       void chrome.storage.local.set({ [DENOM_KEY]: next });
       return next;
     });
   }, []);
-  return [denom, cycle];
+  return [denom, set, cycle];
 }
 
 export function Wallet({
@@ -122,7 +134,7 @@ export function Wallet({
 }) {
   const active = state.wallets.find((w) => w.id === state.activeWalletId) ?? state.wallets[0];
   const [hidden, toggleHidden] = useHideBalance();
-  const [denom, cycleDenom] = useDenomination();
+  const [denom, setDenom, cycleDenom] = useDenomination();
   const [fiat, setFiat] = useFiat();
   const [rate, setRate] = useState<number | null>(null);
   const [rateFailed, setRateFailed] = useState(false);
@@ -339,7 +351,14 @@ export function Wallet({
           />
         )}
         {view === "settings" && (
-          <SettingsBody wallet={active} fiat={fiat} onFiatChange={setFiat} onReset={onReset} />
+          <SettingsBody
+            wallet={active}
+            fiat={fiat}
+            onFiatChange={setFiat}
+            denom={denom}
+            onDenomChange={setDenom}
+            onReset={onReset}
+          />
         )}
       </SubView>
     );
@@ -438,6 +457,9 @@ export function Wallet({
                   network={active.network}
                   assets={assets}
                   policyAssetHex={sync?.policyAssetHex}
+                  denom={denom}
+                  rate={rate}
+                  fiat={fiat}
                 />
               ))}
             </div>
@@ -522,12 +544,18 @@ function TxRow({
   network,
   assets,
   policyAssetHex,
+  denom,
+  rate,
+  fiat,
 }: {
   tx: WalletTxDTO;
   hidden: boolean;
   network: LiquidNetwork;
   assets: Record<string, AssetInfo>;
   policyAssetHex?: string;
+  denom: Denom;
+  rate: number | null;
+  fiat: string;
 }) {
   // A token-only movement nets ~0 L-BTC, so the policy-asset delta reads as "+0".
   // Show the token delta instead (precision-scaled + ticker), mirroring the
@@ -539,6 +567,18 @@ function TxRow({
   const pending = tx.height === null;
   const explorer = explorerTxUrl(network, tx.txid);
 
+  // L-BTC amount in the chosen denomination (mirrors the balance). Every formatter
+  // preserves the sign, so the receive prefix carries over unchanged from sats.
+  const lbtcAmount = (satsValue: number): string =>
+    denom === "btc"
+      ? formatBtc(satsValue)
+      : denom === "fiat"
+        ? rate != null
+          ? formatFiat(satsToFiat(satsValue, rate), fiat)
+          : "—"
+        : formatSats(satsValue);
+  const unitLabel = denom === "btc" ? "L-BTC" : denom === "fiat" ? fiat : "sats";
+
   let amountText: string;
   if (token) {
     const [id, delta] = token;
@@ -546,7 +586,7 @@ function TxRow({
     const label = KNOWN_ASSETS[id] ?? info?.ticker ?? info?.name ?? shortenHex(id, 4, 4);
     amountText = `${delta > 0 ? "+" : ""}${formatAssetAmount(delta, info?.precision ?? null)} ${label}`;
   } else {
-    amountText = `${receive ? "+" : ""}${formatSats(tx.balanceChange)}`;
+    amountText = `${receive ? "+" : ""}${lbtcAmount(tx.balanceChange)}`;
   }
   return (
     <details className="drawer">
@@ -583,7 +623,10 @@ function TxRow({
         </div>
         <Row label="Time" value={formatTimestamp(tx.timestamp)} />
         <Row label="Status" value={pending ? "Unconfirmed" : `Block ${tx.height}`} />
-        <Row label="Fee" value={`${formatSats(tx.fee)} sats`} />
+        <Row
+          label="Fee"
+          value={denom === "fiat" ? lbtcAmount(tx.fee) : `${lbtcAmount(tx.fee)} ${unitLabel}`}
+        />
         <div className="mt-1 grid grid-cols-2 gap-2">
           <CopyButton value={tx.txid} label="Copy txid" className="w-full" />
           {explorer && (
@@ -683,20 +726,26 @@ function SettingsBody({
   wallet: info,
   fiat,
   onFiatChange,
+  denom,
+  onDenomChange,
   onReset,
 }: {
   wallet: WalletInfo;
   fiat: string;
   onFiatChange: (code: string) => void;
+  denom: Denom;
+  onDenomChange: (d: Denom) => void;
   onReset: () => void;
 }) {
   const [password, setPassword] = useState("");
   const [seed, setSeed] = useState("");
+  const [showQr, setShowQr] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [autoLock, setAutoLockState] = useState(15);
   const [resetConfirm, setResetConfirm] = useState("");
   const [resetting, setResetting] = useState(false);
+  const [animated, setAnimated] = useAnimations();
 
   // Wipe the keystore + all app data on this device, then drop back to
   // onboarding. Funds stay on-chain, recoverable from the recovery phrase.
@@ -777,9 +826,12 @@ function SettingsBody({
           <ul className="flex flex-col gap-2">
             {sites.map((origin) => (
               <li key={origin} className="flex items-center justify-between gap-2">
-                <span className="truncate text-xs text-[color:var(--text-primary)]">{origin}</span>
+                <span className="flex min-w-0 items-center gap-2">
+                  <StatusDot tone="connected" />
+                  <span className="truncate text-xs text-[color:var(--text-primary)]">{origin}</span>
+                </span>
                 <Button variant="secondary" size="sm" onClick={() => revokeSite(origin)}>
-                  Revoke
+                  <Unplug size={14} /> Revoke
                 </Button>
               </li>
             ))}
@@ -791,19 +843,43 @@ function SettingsBody({
         <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
           Display
         </h2>
-        <Field label="Currency">
-          <select
-            value={fiat}
-            onChange={(e) => onFiatChange(e.target.value)}
-            className="h-11 w-full rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-sm text-[color:var(--text-strong)] outline-none focus:border-[color:var(--accent)]"
-          >
-            {FIAT_OPTIONS.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-        </Field>
+        <div className="flex flex-col gap-3">
+          <Field label="Denomination">
+            <select
+              value={denom}
+              onChange={(e) => onDenomChange(e.target.value as Denom)}
+              className="h-11 w-full rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-sm text-[color:var(--text-strong)] outline-none focus:border-[color:var(--accent)]"
+            >
+              <option value="sats">Sats</option>
+              <option value="btc">L-BTC</option>
+              <option value="fiat">{fiat}</option>
+            </select>
+          </Field>
+          <Field label="Currency">
+            <select
+              value={fiat}
+              onChange={(e) => onFiatChange(e.target.value)}
+              className="h-11 w-full rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-sm text-[color:var(--text-strong)] outline-none focus:border-[color:var(--accent)]"
+            >
+              {FIAT_OPTIONS.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <div className="flex items-center justify-between gap-3">
+            <span className="flex flex-col">
+              <span className="text-xs font-medium text-[color:var(--text-secondary)]">
+                Background animation
+              </span>
+              <span className="text-[11px] text-[color:var(--text-subtle)]">
+                Lock and intro screens only
+              </span>
+            </span>
+            <Switch checked={animated} onChange={setAnimated} label="Background animation" />
+          </div>
+        </div>
       </Card>
 
       <Card>
@@ -837,6 +913,7 @@ function SettingsBody({
                 setSeed("");
                 setPassword("");
                 setError("");
+                setShowQr(false);
               }
             }}
           >
@@ -850,10 +927,19 @@ function SettingsBody({
             <div className="mt-3">
               {seed ? (
                 <div className="flex flex-col gap-2">
-                  <p className="break-words rounded-lg border border-[color:var(--warning-border)] bg-[color:var(--warning-bg)] p-3 font-mono text-xs text-[color:var(--text-strong)]">
-                    {seed}
-                  </p>
+                  {showQr ? (
+                    <div className="flex justify-center rounded-lg bg-white p-3">
+                      <QRCodeSVG value={seed} size={180} level="M" />
+                    </div>
+                  ) : (
+                    <p className="break-words rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 font-mono text-xs text-[color:var(--text-strong)]">
+                      {seed}
+                    </p>
+                  )}
                   <CopyButton value={seed} label="Copy seed phrase" className="w-full" />
+                  <Button variant="secondary" onClick={() => setShowQr((v) => !v)}>
+                    <QrCode size={14} /> {showQr ? "Hide QR code" : "Show as QR code"}
+                  </Button>
                 </div>
               ) : (
                 <form onSubmit={reveal} className="flex flex-col gap-2">

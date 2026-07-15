@@ -3,8 +3,11 @@ import { Compass, Lock, Settings } from "lucide-react";
 import type { KeystoreState } from "@/keystore/keystore";
 import { ErrorText, IconButton, LoadingPill } from "@/sidepanel/components/ui";
 import { ToastView, type ToastNotice } from "@/sidepanel/components/Toast";
+import { ConnectionBar } from "@/sidepanel/components/ConnectionBar";
 import { errMessage, wallet } from "@/sidepanel/wallet-client";
 import { Scene } from "@/sidepanel/components/Scene";
+import { useAnimations } from "@/sidepanel/use-animations";
+import { useIdleHeartbeat } from "@/sidepanel/use-idle-heartbeat";
 import { Onboarding } from "@/sidepanel/screens/Onboarding";
 import { Unlock } from "@/sidepanel/screens/Unlock";
 import { Wallet, type View } from "@/sidepanel/screens/Wallet";
@@ -19,6 +22,7 @@ export function App() {
   const [state, setState] = useState<KeystoreState | null>(null);
   const [error, setError] = useState("");
   const [view, setView] = useState<View>("home");
+  const [animationsPref] = useAnimations();
   // Forgot-password "Import wallet": show the restore form without wiping the
   // existing vault — the wipe happens only when a valid phrase is submitted.
   const [recovering, setRecovering] = useState(false);
@@ -60,6 +64,14 @@ export function App() {
       const m = msg as { type?: string; request?: ApprovalRequest; id?: string };
       if (m.type === "apogee/locked") {
         setApproval(null); // dismiss any stale approval overlay on lock
+        // apogee/locked is broadcast only by the idle auto-lock alarm (a manual
+        // lock via wallet/lock doesn't broadcast), so surface it to the user.
+        showToast({
+          id: Date.now(),
+          title: "Wallet auto-locked",
+          message: "Locked after a period of inactivity.",
+          kind: "info",
+        });
         void refresh();
       } else if (m.type === "apogee/approval-request" && m.request) {
         setApproval(m.request);
@@ -71,9 +83,13 @@ export function App() {
     };
     chrome.runtime.onMessage.addListener(onMsg);
     return () => chrome.runtime.onMessage.removeListener(onMsg);
-  }, [refresh]);
+  }, [refresh, showToast]);
 
   const unlocked = Boolean(state && state.initialized && !state.locked && state.wallets.length > 0);
+  // The animated ocean is a lock/intro backdrop only — never on the wallet itself.
+  const animated = !unlocked && animationsPref;
+  // Genuine side-panel input re-arms the idle auto-lock (background polling can't).
+  useIdleHeartbeat(unlocked);
   const activeWallet =
     state && !state.locked ? state.wallets.find((w) => w.id === state.activeWalletId) : undefined;
   const activeNetwork = activeWallet?.network;
@@ -86,7 +102,7 @@ export function App() {
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden">
-      <Scene />
+      <Scene animated={animated} />
       {/* Bottom darkening gradient over the moonlit-sea backdrop, on every view,
           so content (and the settings footer) stays legible. */}
       <div
@@ -147,6 +163,7 @@ export function App() {
           }}
         />
       </main>
+      {unlocked && <ConnectionBar onManage={() => setView("settings")} />}
       <ToastView toast={toast} />
       {approval && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-[color:var(--overlay)] p-4">

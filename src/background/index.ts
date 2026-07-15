@@ -59,15 +59,31 @@ async function autoLockMinutes(): Promise<number> {
   return typeof v === "number" ? v : DEFAULT_AUTOLOCK_MINUTES;
 }
 
-/** (Re)arm the idle auto-lock alarm. Cleared when locked or set to "never".
- *  Called only after a genuine user action (see AUTOLOCK_DEFERRING) so the side
- *  panel's periodic balance poll can't keep an unattended wallet unlocked. */
-async function rescheduleAutoLock(): Promise<void> {
+// Last time the idle window was reset (unlock / genuine user activity). The alarm
+// is coarse and can fire early, so on fire we re-check elapsed against this and
+// re-arm for the remainder instead of trusting the alarm's timing.
+let lastActivityAt = 0;
+
+/** Clear + (re)create the alarm for the given delay (minutes). No-op while the
+ *  wallet is locked or when the delay is non-positive ("never"). */
+async function armAutoLock(delayMinutes: number): Promise<void> {
   await chrome.alarms.clear(AUTOLOCK_ALARM);
-  const minutes = await autoLockMinutes();
-  if (minutes > 0 && !keystore.isLocked()) {
-    await chrome.alarms.create(AUTOLOCK_ALARM, { delayInMinutes: minutes });
+  if (delayMinutes > 0 && !keystore.isLocked()) {
+    await chrome.alarms.create(AUTOLOCK_ALARM, { delayInMinutes: delayMinutes });
   }
+}
+
+/** Reset the idle window to now and arm the alarm for the full timeout. Called
+ *  only after a genuine user action (see AUTOLOCK_DEFERRING + wallet/touch) so
+ *  the side panel's periodic balance poll can't keep an unattended wallet open. */
+async function rescheduleAutoLock(): Promise<void> {
+  const minutes = await autoLockMinutes();
+  if (minutes <= 0) {
+    await chrome.alarms.clear(AUTOLOCK_ALARM);
+    return;
+  }
+  lastActivityAt = Date.now();
+  await armAutoLock(minutes);
 }
 
 // wallet/* messages that count as genuine user activity and so defer the idle
@@ -88,10 +104,19 @@ const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
   "wallet/setAutoLock",
   "wallet/getAddress",
   "wallet/disconnectSite",
+  "wallet/touch",
 ]);
 
-chrome.alarms.onAlarm.addListener((alarm) => {
+chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== AUTOLOCK_ALARM) return;
+  const minutes = await autoLockMinutes();
+  // The alarm is coarse and may fire early — only lock once the idle window has
+  // truly elapsed since the last activity; otherwise re-arm for the remainder.
+  const remainingMs = minutes * 60_000 - (Date.now() - lastActivityAt);
+  if (remainingMs > 0) {
+    await armAutoLock(remainingMs / 60_000);
+    return;
+  }
   void keystore.lock().then(() => {
     // Drop the side panel to the lock screen (ignored if none is open).
     chrome.runtime.sendMessage({ type: "apogee/locked" }).catch(() => {});
@@ -327,6 +352,10 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       await chrome.storage.local.set({ [AUTOLOCK_KEY]: msg.minutes });
       return;
 
+    case "wallet/touch":
+      // No-op here; the AUTOLOCK_DEFERRING branch in the router re-arms the alarm.
+      return;
+
     case "wallet/getConnectedSites":
       return getConnectedSites();
 
@@ -357,6 +386,12 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
           fee: msg.review?.fee ?? 0,
           drain: msg.review?.drain ?? false,
         });
+      }
+      // A never-auto-locking wallet stays unlocked indefinitely, so step up auth.
+      if ((await autoLockMinutes()) === 0) {
+        if (!msg.password || !(await keystore.verifyPassword(msg.password))) {
+          throw new Error("Enter your password to send.");
+        }
       }
       // A local wallet signs in the offscreen engine with the unlocked mnemonic.
       const sent = await engine<SendResult>({
@@ -473,6 +508,7 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
         network: account.network,
         fingerprint: account.masterFingerprint,
         signerKind: account.signerKind,
+        locked: keystore.isLocked(),
       };
       return await new Promise<ProviderAccount>((resolve, reject) => {
         parkApproval(id, {
@@ -728,6 +764,7 @@ async function routeApproval(request: ApprovalRequest): Promise<void> {
 async function handleApprovalDecision(
   id: string,
   approved: boolean,
+  password?: string,
 ): Promise<SendResult | { ok: true } | { rejected: true }> {
   const pending = pendingApprovals.get(id);
   if (!pending) throw new Error("This approval expired. Try again from the app.");
@@ -801,6 +838,15 @@ async function handleApprovalDecision(
     const err = new Error("Unlock Apogee to approve this transaction.");
     pending.reject(err);
     throw err;
+  }
+  // A never-auto-locking wallet stays unlocked indefinitely, so step up auth on
+  // sends (Jade signs on-device, handled above).
+  if ((await autoLockMinutes()) === 0) {
+    if (!password || !(await keystore.verifyPassword(password))) {
+      const err = new Error("Enter your password to approve this send.");
+      pending.reject(err);
+      throw err;
+    }
   }
   try {
     const mnemonic = keystore.getMnemonic(pending.walletId);
@@ -937,7 +983,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
   if (msg.type === "apogee/approval-decision") {
-    handleApprovalDecision(msg.id, Boolean(msg.approved))
+    handleApprovalDecision(msg.id, Boolean(msg.approved), msg.password)
       .then((value) => sendResponse({ ok: true, value }))
       .catch((err: unknown) => sendResponse({ ok: false, error: errMsg(err) }));
     return true;

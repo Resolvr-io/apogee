@@ -1,11 +1,13 @@
-// Static celestial backdrop rendered once behind the whole side panel:
-// night-sky gradient → star canvas → moon (masked photo + halo + bright core)
-// → blue horizon glow → moonlit ocean pinned at the bottom. The moonlight
-// reflection in the ocean lines up under the centered moon. Purely decorative.
+// Celestial backdrop rendered once behind the whole side panel: night-sky
+// gradient → star canvas → moon (masked photo + halo + bright core) → blue
+// horizon glow → moonlit ocean pinned at the bottom. The ocean is the animated
+// mp4 (OceanVideo, with a loop-seam crossfade) by default, or the static poster
+// JPG when the "Background animation" setting is off. Purely decorative.
 
 import { Starfield } from "./Starfield";
+import { OceanVideo } from "./OceanVideo";
 
-export function Scene() {
+export function Scene({ animated = true }: { animated?: boolean }) {
   return (
     <div className="apogee-scene" aria-hidden="true">
       <div className="apogee-sky" />
@@ -16,7 +18,7 @@ export function Scene() {
         <img className="apogee-moon-img" src="/scene/moon-photo.jpg" alt="" />
         <div className="apogee-moon-core" />
       </div>
-      <div className="apogee-ocean" />
+      {animated ? <OceanVideo /> : <div className="apogee-ocean" />}
     </div>
   );
 }

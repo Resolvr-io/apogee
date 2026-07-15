@@ -154,6 +154,43 @@
     -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 5px);
     mask-image: linear-gradient(to bottom, transparent 0, #000 5px);
   }
+
+  /* Animated ocean (see OceanVideo.tsx): reuses .apogee-ocean's positioning +
+     waterline mask but drops the static JPG so only the video layers show. */
+  .apogee-ocean--video {
+    background: transparent;
+  }
+  /* opaque backing behind the two video layers — during the seam crossfade both
+     dip below full opacity, so without this the lit sky would bleed through. */
+  .apogee-sea-bg {
+    position: absolute;
+    inset: 0;
+    background: #04080f;
+  }
+  /* two stacked layers cross-dissolve at the loop seam (see OceanVideo.tsx) */
+  .apogee-ocean-layer {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center;
+    /* crossfade duration — must match FADE in OceanVideo.tsx */
+    transition: opacity 1.5s linear;
+  }
+  /* bottom darkening over the video, matching the static poster's footer fade */
+  .apogee-ocean-dim {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(
+      to bottom,
+      transparent 68%,
+      color-mix(in srgb, var(--page-bg) 65%, transparent) 100%
+    );
+  }
+
   /* high in the sky (apogee) — static for now */
   .apogee-moon {
     position: absolute;
@@ -287,6 +324,31 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .apogee-toast-in {
+      animation: none;
+    }
+  }
+
+  /* Gentle breathing glow on a primary call-to-action (e.g. the Approve & send
+     button) — a slow accent halo that draws the eye without being aggressive.
+     The base shadow is carried in every keyframe stop so it never flickers. */
+  @keyframes apogee-cta {
+    0%,
+    100% {
+      box-shadow:
+        0 8px 20px var(--shadow-soft),
+        0 0 0 0 color-mix(in srgb, var(--accent-bright) 0%, transparent);
+    }
+    50% {
+      box-shadow:
+        0 8px 20px var(--shadow-soft),
+        0 0 18px 1px color-mix(in srgb, var(--accent-bright) 40%, transparent);
+    }
+  }
+  .apogee-cta {
+    animation: apogee-cta 2.6s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .apogee-cta {
       animation: none;
     }
   }

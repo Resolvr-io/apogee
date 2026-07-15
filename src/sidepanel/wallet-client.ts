@@ -58,10 +58,11 @@ export const wallet = {
     call<AssetInfo>({ type: "wallet/getAsset", assetId, network }),
   getAutoLock: () => call<number>({ type: "wallet/getAutoLock" }),
   setAutoLock: (minutes: number) => call<void>({ type: "wallet/setAutoLock", minutes }),
+  touch: () => call<void>({ type: "wallet/touch" }),
   prepareSend: (address: string, sats: number, drain?: boolean) =>
     call<PrepareSendResult>({ type: "wallet/prepareSend", address, sats, drain }),
-  send: (pset: string, review?: SendReview) =>
-    call<SendResult>({ type: "wallet/send", pset, review }),
+  send: (pset: string, review?: SendReview, password?: string) =>
+    call<SendResult>({ type: "wallet/send", pset, review, password }),
   addHardwareWallet: (params: {
     password?: string;
     signer: WalletSigner;

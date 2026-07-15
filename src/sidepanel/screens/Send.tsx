@@ -61,6 +61,10 @@ export function Send({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [drain, setDrain] = useState(false); // "Max" — send all funds
+  const [autoLock, setAutoLock] = useState(15);
+  const [password, setPassword] = useState("");
+  // Auto-lock "never" steps up auth: a local send requires the password.
+  const needsPassword = !isJade && autoLock === 0;
 
   const isBtc = unit === "btc";
   const unitLabel = isBtc ? "L-BTC" : "sats";
@@ -105,6 +109,11 @@ export function Send({
     if (!drain) return;
     setAmount(isBtc ? (maxSats / 100_000_000).toFixed(8).replace(/\.?0+$/, "") : String(maxSats));
   }, [drain, maxSats, isBtc]);
+
+  // Auto-lock "never" means the wallet never idle-locks, so sends step up auth.
+  useEffect(() => {
+    void wallet.getAutoLock().then(setAutoLock).catch(() => {});
+  }, []);
 
   async function review() {
     setError("");
@@ -154,7 +163,7 @@ export function Send({
         fee: prepared.fee,
         drain,
       };
-      setTxid((await wallet.send(prepared.pset, review)).txid);
+      setTxid((await wallet.send(prepared.pset, review, needsPassword ? password : undefined)).txid);
       setStep("sent");
     } catch (e) {
       setError(errMessage(e));
@@ -222,8 +231,18 @@ export function Send({
               : "You'll sign on your Jade — a window opens when you confirm."}
           </p>
         )}
+        {needsPassword && (
+          <Field label="Password (auto-lock is off)">
+            <Input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoFocus
+            />
+          </Field>
+        )}
         <div className="mt-3 flex flex-col gap-2">
-          <Button onClick={confirm} disabled={busy}>
+          <Button onClick={confirm} disabled={busy || (needsPassword && !password)}>
             {busy ? <Spinner /> : "Confirm & send"}
           </Button>
           <Button variant="secondary" onClick={() => setStep("form")} disabled={busy}>
