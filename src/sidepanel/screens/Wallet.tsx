@@ -383,7 +383,7 @@ export function Wallet({
   const unitLabel = denom === "sats" ? "sats" : denom === "fiat" ? fiat : "L-BTC";
   let amountNode: React.ReactNode;
   if (showStars) {
-    amountNode = <HiddenValue count={5} size={16} gap={9} />;
+    amountNode = <HiddenValue count={5} size={16} gap={9} className="telemetry-stars" />;
   } else if (denom === "fiat") {
     amountNode =
       rate != null ? (

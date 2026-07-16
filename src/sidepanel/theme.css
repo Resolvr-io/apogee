@@ -430,6 +430,18 @@
       0 0 0.9em color-mix(in srgb, var(--telemetry-halo) 28%, transparent);
   }
 
+  /* Same phosphor treatment for the hidden-balance stars (HiddenValue in the
+     hero): the glyphs are SVG, so text-shadow can't bloom them — a matching
+     drop-shadow stack does, and the color tints the currentColor fills to the
+     telemetry ink. Only the hero's stars use this; list rows stay quiet. */
+  .telemetry-stars {
+    color: var(--telemetry-fg);
+    filter:
+      drop-shadow(0 0 2px color-mix(in srgb, currentColor 55%, transparent))
+      drop-shadow(0 0 5px color-mix(in srgb, var(--telemetry-halo) 50%, transparent))
+      drop-shadow(0 0 10px color-mix(in srgb, var(--telemetry-halo) 28%, transparent));
+  }
+
   /* Letter runs in TelemetryNumber — currency-prefix letters (the A in A$,
      CHF) and unit suffixes (asset tickers): sized and raised to match the S
      body of the telemetry face's $ so they read as one compound currency symbol.
