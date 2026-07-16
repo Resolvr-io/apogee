@@ -4,12 +4,44 @@
 // prompt popup when it isn't. Reject (or closing the popup) fails the request.
 
 import { useEffect, useState } from "react";
-import { Check, Plug } from "lucide-react";
+import { Check } from "lucide-react";
 import type { ApprovalRequest } from "@/engine/protocol";
 import { formatSats } from "@/lib/format";
 import { shortenHex } from "@/lib/utils";
 import { Button, Card, ErrorText, Field, Input, Spinner } from "@/sidepanel/components/ui";
 import { errMessage, unlockErrMessage, wallet } from "@/sidepanel/wallet-client";
+
+// Sputnik-style connection glyph for the connect success state: a satellite
+// emblem, thickened with a matching currentColor stroke and tilted so it reads
+// as "in orbit" — a nod to Apogee's celestial theme. The native glyph nearly
+// fills its 88.9 viewBox, so the box is padded to the glyph's max radius (else
+// tilting clips the antenna at the viewport edge) and the rendered size is
+// scaled up by the same factor so the visible ink still matches `size`. TILT
+// and THICKEN are the tuning knobs; both inherit the badge's accent color.
+const SPUTNIK_TILT = 30; // degrees clockwise, about the glyph's center
+const SPUTNIK_THICKEN = 4; // stroke width in viewBox units
+const SPUTNIK_PAD = 129 / 88.92; // padded viewBox (129) ÷ native (88.92)
+function Sputnik({ size = 30 }: { size?: number }) {
+  const box = size * SPUTNIK_PAD;
+  return (
+    <svg
+      width={box}
+      height={box}
+      viewBox="-20 -20 129 129"
+      fill="currentColor"
+      stroke="currentColor"
+      strokeWidth={SPUTNIK_THICKEN}
+      strokeLinejoin="round"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path
+        transform={`rotate(${SPUTNIK_TILT} 44.46 44.445)`}
+        d="M88.84,86.11l-13.22-57.25C74.26,12.78,60.98-.03,44.48,0,27.98,0,14.7,12.81,13.33,28.86L.06,86.11c-.28,1.22.47,2.42,1.7,2.72,1.2.28,2.45-.47,2.72-1.7l10.58-45.67c4.03,11.47,14.56,19.89,27.17,20.81v24.36c0,1.25,1,2.25,2.25,2.25s2.25-1,2.25-2.25v-24.36c12.61-.92,23.14-9.3,27.17-20.78l10.56,45.64c.28,1.22,1.53,1.97,2.72,1.7,1.22-.28,1.97-1.5,1.7-2.72h-.03ZM46.73,57.75v-17.44c0-1.25-1-2.25-2.25-2.25s-2.25,1-2.25,2.25v17.44c-13.64-1.17-24.42-12.61-24.42-26.56,0-14.69,11.97-26.67,26.67-26.67s26.67,11.97,26.67,26.67-10.75,25.42-24.42,26.56Z"
+      />
+    </svg>
+  );
+}
 
 function decide(
   id: string,
@@ -97,9 +129,9 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
   if (done) {
     const connected = done === "connected";
     const label = connected ? "Connected" : done === "sent" ? "Sent" : "Approved";
-    // Connect success uses a blue connection glyph (vs the green check for sends),
-    // so the two outcomes read differently at a glance.
-    const Icon = connected ? Plug : Check;
+    // Connect success uses a blue Sputnik glyph (vs the green check for sends),
+    // so the two outcomes read differently at a glance — and it nods to Apogee's
+    // orbital/telemetry theme.
     return (
       <Card>
         <div className="flex flex-col items-center gap-3 py-2 text-center">
@@ -110,7 +142,7 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
                 : "bg-[color:var(--success-bg)] text-[color:var(--success-text)]"
             }`}
           >
-            <Icon size={30} strokeWidth={2.5} />
+            {connected ? <Sputnik size={30} /> : <Check size={30} strokeWidth={2.5} />}
           </span>
           <h2 className="text-lg font-semibold text-[color:var(--text-strong)]">{label}</h2>
         </div>

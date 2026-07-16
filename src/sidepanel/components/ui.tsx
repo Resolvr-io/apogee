@@ -213,6 +213,54 @@ export function HiddenValue({
   );
 }
 
+/** Amount rendered in the telemetry face (see theme.css). `glow` adds the
+ *  phosphor ink + halo — reserved for the hero balance; list rows pass
+ *  glow={false} and inherit their context color. Digits 0 and 2–9 share one
+ *  advance width in Apogee Telemetry, so the typewriter grid of the source
+ *  lettering comes for free; only the "1" is narrow (0.52ch, both widths). It
+ *  gets a 0.7ch cell — enough padding to keep a hint of the grid without
+ *  reading as a gap next to the wide digits. */
+export function TelemetryNumber({
+  value,
+  wide = false,
+  glow = true,
+  className,
+}: {
+  value: string;
+  wide?: boolean;
+  glow?: boolean;
+  className?: string;
+}) {
+  // Letter runs — currency prefixes (the A in A$, CHF) and unit suffixes
+  // (asset tickers) — render smaller via .telemetry-unit so they read as
+  // symbols next to the digits; sign glyphs ($, £, ¥, €) keep full size (the
+  // face's ¥ and € come from our font patch, see tools/patch-telemetry-font.py).
+  const segments = value.split(/([A-Za-z]+)/);
+  return (
+    <span
+      className={cn(wide ? "font-telemetry-wide" : "font-telemetry", glow && "telemetry-glow", className)}
+    >
+      {segments.map((seg, si) =>
+        /^[A-Za-z]/.test(seg) ? (
+          <span key={si} className="telemetry-unit">
+            {seg}
+          </span>
+        ) : (
+          Array.from(seg).map((ch, i) =>
+            ch === "1" ? (
+              <span key={`${si}-${i}`} className="inline-block w-[0.7ch] text-center">
+                1
+              </span>
+            ) : (
+              ch
+            ),
+          )
+        ),
+      )}
+    </span>
+  );
+}
+
 // Centered entry-screen layout (onboarding choose + unlock): the large Apogee
 // lockup above a title/subtitle, with the screen's actions below.
 export function WelcomeShell({

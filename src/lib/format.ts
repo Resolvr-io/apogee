@@ -35,12 +35,12 @@ export function satsToFiat(sats: number, btcPrice: number): number {
   return (sats / SATS_PER_BTC) * btcPrice;
 }
 
-/** Render a fiat amount, e.g. 1234.5 → "$1,234.50" (USD). */
+/** Render a fiat amount in the currency's native minor units, e.g.
+ *  1234.5 → "$1,234.50" (USD) but "¥1,235" (JPY has no minor unit). */
 export function formatFiat(value: number, currency = "USD"): string {
   return value.toLocaleString("en-US", {
     style: "currency",
     currency,
-    maximumFractionDigits: 2,
   });
 }
 

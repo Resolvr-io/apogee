@@ -49,6 +49,7 @@ import {
   Spinner,
   StatusDot,
   Switch,
+  TelemetryNumber,
 } from "@/sidepanel/components/ui";
 import { errMessage, unlockErrMessage, wallet } from "@/sidepanel/wallet-client";
 import { useAnimations } from "@/sidepanel/use-animations";
@@ -76,7 +77,8 @@ function useHideBalance(): [boolean, () => void] {
 }
 
 type Denom = "btc" | "sats" | "fiat";
-const DENOM_ORDER: Denom[] = ["btc", "sats", "fiat"];
+// Tap-to-cycle order — matches the Display settings dropdown (Sats > L-BTC > Fiat).
+const DENOM_ORDER: Denom[] = ["sats", "btc", "fiat"];
 const DENOM_KEY = "apogee:denomination";
 const FIAT_KEY = "apogee:fiat";
 const FIAT_OPTIONS = ["USD", "EUR", "GBP", "CAD", "AUD", "CHF", "JPY"];
@@ -381,20 +383,20 @@ export function Wallet({
   const unitLabel = denom === "sats" ? "sats" : denom === "fiat" ? fiat : "L-BTC";
   let amountNode: React.ReactNode;
   if (showStars) {
-    amountNode = <HiddenValue count={5} size={16} gap={9} />;
+    amountNode = <HiddenValue count={5} size={16} gap={9} className="telemetry-stars" />;
   } else if (denom === "fiat") {
     amountNode =
       rate != null ? (
-        formatFiat(satsToFiat(sats, rate), fiat)
+        <TelemetryNumber value={formatFiat(satsToFiat(sats, rate), fiat)} wide />
       ) : rateFailed ? (
         "—"
       ) : (
         <Spinner className="size-6" />
       );
   } else if (denom === "sats") {
-    amountNode = formatSats(sats);
+    amountNode = <TelemetryNumber value={formatSats(sats)} wide />;
   } else {
-    amountNode = formatBtc(sats);
+    amountNode = <TelemetryNumber value={formatBtc(sats)} wide />;
   }
   let subtitle = unitLabel;
   if (!showStars && denom === "btc") {
@@ -405,8 +407,10 @@ export function Wallet({
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      {/* Balance frame — fixed above the scrollable activity list. */}
-      <div className="shrink-0 px-4 pb-5 pt-6">
+      {/* Balance frame — fixed above the scrollable activity list. No bottom
+          padding: the activity list's pt-6 (which sizes its feather ramp) already
+          supplies the gap below Send/Receive, so pb-5 here would double it. */}
+      <div className="shrink-0 px-4 pt-6">
         <div className="flex items-center justify-between">
           <IconButton label={hidden ? "Show balance" : "Hide balance"} onClick={toggleHidden}>
             {hidden ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -428,11 +432,12 @@ export function Wallet({
             pulse && "animate-pulse",
           )}
         >
-          <span className="flex h-9 items-center justify-center text-3xl font-semibold tracking-tight">
-            {amountNode}
-          </span>
-          <span className="text-xs uppercase tracking-wide text-[color:var(--text-subtle)]">
-            {subtitle}
+          <span className="flex h-9 items-center justify-center text-3xl">{amountNode}</span>
+          {/* No denomination label while hidden — the unit is irrelevant when the
+              amount is stars. A non-breaking space holds the line so toggling
+              hide doesn't shift the Send/Receive row. */}
+          <span className="font-telemetry text-xs uppercase tracking-wide text-[color:var(--text-subtle)]">
+            {showStars ? " " : subtitle}
           </span>
         </button>
 
@@ -446,8 +451,14 @@ export function Wallet({
         </div>
       </div>
 
-      {/* Scrollable activity list. */}
-      <div ref={scrollRef} className="apogee-scrollbar flex-1 overflow-y-auto px-4 pb-4 pt-1">
+      {/* Scrollable activity list. Feathered top edge (matching the settings
+          SubView) so rows dissolve as they scroll up instead of hard-cutting;
+          pt-6 sizes the content to the 24px mask ramp so headings sit at full
+          opacity at rest. */}
+      <div
+        ref={scrollRef}
+        className="apogee-scrollbar apogee-feather-top flex-1 overflow-y-auto px-4 pb-4 pt-6"
+      >
         <ErrorText>{error}</ErrorText>
         <Tokens sync={sync} hidden={hidden} assets={assets} />
         <h2 className="mb-2 mt-3 px-1 text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
@@ -525,7 +536,7 @@ function Tokens({
                     {hidden ? (
                       <HiddenValue count={3} size={8} className="text-[color:var(--text-subtle)]" />
                     ) : (
-                      amountLabel
+                      <TelemetryNumber value={amountLabel} glow={false} />
                     )}
                   </span>
                   <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
@@ -615,13 +626,11 @@ function TxRow({
         </span>
         <span className="text-sm text-[color:var(--text-primary)]">{formatRelative(tx.timestamp)}</span>
         <span className="ml-auto flex items-center gap-2">
-          <span
-            className={cn("text-sm font-medium text-[color:var(--text-strong)]", pending && "animate-pulse")}
-          >
+          <span className={cn("text-sm text-[color:var(--text-strong)]", pending && "animate-pulse")}>
             {hidden ? (
               <HiddenValue count={3} size={8} className="text-[color:var(--text-subtle)]" />
             ) : (
-              amountText
+              <TelemetryNumber value={amountText} glow={false} />
             )}
           </span>
           <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
@@ -863,7 +872,7 @@ function SettingsBody({
             >
               <option value="sats">Sats</option>
               <option value="btc">L-BTC</option>
-              <option value="fiat">{fiat}</option>
+              <option value="fiat">Fiat</option>
             </select>
           </Field>
           <Field label="Currency">
@@ -1017,7 +1026,7 @@ function SettingsBody({
       {/* Resolvr footer: masked monochrome wordmark stacked over the copyright.
           The bottom darkening gradient is global (App shell), so this stays
           legible over the moonlit-sea backdrop on every view. */}
-      <footer className="-mx-4 -mb-4 mt-auto flex flex-col gap-2 px-4 pt-10 pb-5 text-[color:var(--text-muted)]">
+      <footer className="-mx-4 -mb-4 mt-auto flex flex-col gap-2 px-4 pt-4 pb-5 text-[color:var(--text-muted)]">
         <div
           className="h-[28px] w-[92px] bg-current"
           style={{

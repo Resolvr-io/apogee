@@ -10,10 +10,33 @@
   font-display: swap;
 }
 
+/* Self-hosted Apogee Telemetry (SIL OFL, see /fonts/ApogeeTelemetry-LICENSE.md)
+   — our patched Routed Gothic, a digitization of mid-century Gorton-style
+   engraving lettering standing in for the never-digitized IBM Selectric
+   "Manifold 72" that lettered the telemetry readouts in 2001: A Space Odyssey.
+   The patch (tools/patch-telemetry-font.py) fixes the clipped ¥ and adds a €;
+   the OFL's reserved-name rule requires the rename. Used for numeric displays. */
+@font-face {
+  font-family: "Apogee Telemetry";
+  src: url("/fonts/ApogeeTelemetry.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Apogee Telemetry Wide";
+  src: url("/fonts/ApogeeTelemetryWide.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 @theme {
   --font-sans: "Satoshi", ui-sans-serif, system-ui, sans-serif;
   --font-mono:
     ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-telemetry: "Apogee Telemetry", ui-monospace, monospace;
+  --font-telemetry-wide: "Apogee Telemetry Wide", "Apogee Telemetry", ui-monospace, monospace;
 }
 
 /* Design tokens for the wallet UI. */
@@ -64,6 +87,10 @@
     --accent-bright: #4ea1ff;
     --accent-mint: #3ad6c6;
     --accent-amber: #f6b45f;
+
+    /* telemetry numerals (.telemetry-glow): pale phosphor-blue ink + halo */
+    --telemetry-fg: #b8dcff;
+    --telemetry-halo: #5bb7ff;
 
     --danger-bg: #2a1116;
     --danger-border: #3b1a22;
@@ -191,11 +218,14 @@
     );
   }
 
-  /* high in the sky (apogee) — static for now */
+  /* high in the sky (apogee) — pinned a fixed distance from the top so the
+     moon sits at the same height in every viewport (a % anchor made it ride
+     up on short panels and sink on tall ones). 40px keeps it just below the
+     header, matching the original look; 72px sat too low. Static for now. */
   .apogee-moon {
     position: absolute;
     left: 50%;
-    bottom: 88%;
+    top: 40px;
     transform: translateX(-50%);
     width: 56px;
   }
@@ -238,11 +268,13 @@
     );
   }
 
-  /* Frosted surfaces so the scene shows faintly through the content. */
+  /* Translucent surfaces so the celestial scene shows crisply through the
+     content. No backdrop blur: the activity list sits inside the feather mask,
+     which nullifies backdrop-filter, so it already reads crisp — dropping the
+     blur here matches that look on every other screen (settings, onboarding,
+     send) instead of frosting the scene only there. */
   .apogee-panel {
     background-color: color-mix(in srgb, var(--surface-card) 82%, transparent);
-    -webkit-backdrop-filter: blur(4px);
-    backdrop-filter: blur(4px);
   }
   .apogee-soft {
     background-color: color-mix(in srgb, var(--surface-soft) 66%, transparent);
@@ -387,6 +419,44 @@
   }
   details.drawer[open] > summary .drawer-chevron {
     transform: rotate(180deg);
+  }
+
+  /* Phosphor bloom for telemetry numerals (see TelemetryNumber in ui.tsx): a
+     tight core glow in the text color, then a mid and a wide halo in phosphor
+     blue, like the rear-projected CRT readouts the style is borrowed from.
+     em-based radii keep the bloom proportional at every text size. */
+  .telemetry-glow {
+    color: var(--telemetry-fg);
+    text-shadow:
+      0 0 0.14em color-mix(in srgb, currentColor 55%, transparent),
+      0 0 0.4em color-mix(in srgb, var(--telemetry-halo) 50%, transparent),
+      0 0 0.9em color-mix(in srgb, var(--telemetry-halo) 28%, transparent);
+  }
+
+  /* Same phosphor treatment for the hidden-balance stars (HiddenValue in the
+     hero): the glyphs are SVG, so text-shadow can't bloom them — a matching
+     drop-shadow stack does, and the color tints the currentColor fills to the
+     telemetry ink. Only the hero's stars use this; list rows stay quiet. */
+  .telemetry-stars {
+    color: var(--telemetry-fg);
+    filter:
+      drop-shadow(0 0 2px color-mix(in srgb, currentColor 55%, transparent))
+      drop-shadow(0 0 5px color-mix(in srgb, var(--telemetry-halo) 50%, transparent))
+      drop-shadow(0 0 10px color-mix(in srgb, var(--telemetry-halo) 28%, transparent));
+  }
+
+  /* Letter runs in TelemetryNumber — currency-prefix letters (the A in A$,
+     CHF) and unit suffixes (asset tickers): sized and raised to match the S
+     body of the telemetry face's $ so they read as one compound currency symbol.
+     Sign glyphs ($, £, ¥) stay full-size. Derived from the glyph geometry:
+     the $'s S spans y 48–688 of the 736-unit cap (bar tips poke past), so
+     letters get 640/736 ≈ 0.87em, raised 48/1024 parent-em ≈ 0.054 element-em
+     onto the S's baseline. */
+  .telemetry-unit {
+    font-size: 0.87em;
+    letter-spacing: 0.04em;
+    margin: 0 0.09em;
+    vertical-align: 0.054em;
   }
 
   .highlight-glow {
