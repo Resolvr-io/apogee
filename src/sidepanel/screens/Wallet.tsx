@@ -443,8 +443,14 @@ export function Wallet({
         </div>
       </div>
 
-      {/* Scrollable activity list. */}
-      <div ref={scrollRef} className="apogee-scrollbar flex-1 overflow-y-auto px-4 pb-4 pt-1">
+      {/* Scrollable activity list. Feathered top edge (matching the settings
+          SubView) so rows dissolve as they scroll up instead of hard-cutting;
+          pt-6 sizes the content to the 24px mask ramp so headings sit at full
+          opacity at rest. */}
+      <div
+        ref={scrollRef}
+        className="apogee-scrollbar apogee-feather-top flex-1 overflow-y-auto px-4 pb-4 pt-6"
+      >
         <ErrorText>{error}</ErrorText>
         <Tokens sync={sync} hidden={hidden} assets={assets} />
         <h2 className="mb-2 mt-3 px-1 text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
