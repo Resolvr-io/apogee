@@ -49,6 +49,7 @@ import {
   Spinner,
   StatusDot,
   Switch,
+  TelemetryNumber,
 } from "@/sidepanel/components/ui";
 import { errMessage, unlockErrMessage, wallet } from "@/sidepanel/wallet-client";
 import { useAnimations } from "@/sidepanel/use-animations";
@@ -385,16 +386,16 @@ export function Wallet({
   } else if (denom === "fiat") {
     amountNode =
       rate != null ? (
-        formatFiat(satsToFiat(sats, rate), fiat)
+        <TelemetryNumber value={formatFiat(satsToFiat(sats, rate), fiat)} wide />
       ) : rateFailed ? (
         "—"
       ) : (
         <Spinner className="size-6" />
       );
   } else if (denom === "sats") {
-    amountNode = formatSats(sats);
+    amountNode = <TelemetryNumber value={formatSats(sats)} wide />;
   } else {
-    amountNode = formatBtc(sats);
+    amountNode = <TelemetryNumber value={formatBtc(sats)} wide />;
   }
   let subtitle = unitLabel;
   if (!showStars && denom === "btc") {
@@ -425,10 +426,8 @@ export function Wallet({
             pulse && "animate-pulse",
           )}
         >
-          <span className="flex h-9 items-center justify-center text-3xl font-semibold tracking-tight">
-            {amountNode}
-          </span>
-          <span className="text-xs uppercase tracking-wide text-[color:var(--text-subtle)]">
+          <span className="flex h-9 items-center justify-center text-3xl">{amountNode}</span>
+          <span className="font-telemetry text-xs uppercase tracking-wide text-[color:var(--text-subtle)]">
             {subtitle}
           </span>
         </button>
@@ -522,7 +521,7 @@ function Tokens({
                     {hidden ? (
                       <HiddenValue count={3} size={8} className="text-[color:var(--text-subtle)]" />
                     ) : (
-                      amountLabel
+                      <TelemetryNumber value={amountLabel} glow={false} />
                     )}
                   </span>
                   <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
@@ -612,13 +611,11 @@ function TxRow({
         </span>
         <span className="text-sm text-[color:var(--text-primary)]">{formatRelative(tx.timestamp)}</span>
         <span className="ml-auto flex items-center gap-2">
-          <span
-            className={cn("text-sm font-medium text-[color:var(--text-strong)]", pending && "animate-pulse")}
-          >
+          <span className={cn("text-sm text-[color:var(--text-strong)]", pending && "animate-pulse")}>
             {hidden ? (
               <HiddenValue count={3} size={8} className="text-[color:var(--text-subtle)]" />
             ) : (
-              amountText
+              <TelemetryNumber value={amountText} glow={false} />
             )}
           </span>
           <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />

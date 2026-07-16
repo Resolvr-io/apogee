@@ -10,10 +10,31 @@
   font-display: swap;
 }
 
+/* Self-hosted Routed Gothic (SIL OFL, see /fonts/RoutedGothic-LICENSE.md) — a
+   digitization of mid-century Gorton-style engraving lettering, standing in for
+   the never-digitized IBM Selectric "Manifold 72" that lettered the telemetry
+   readouts in 2001: A Space Odyssey. Used for numeric displays. */
+@font-face {
+  font-family: "Routed Gothic";
+  src: url("/fonts/RoutedGothic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Routed Gothic Wide";
+  src: url("/fonts/RoutedGothicWide.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 @theme {
   --font-sans: "Satoshi", ui-sans-serif, system-ui, sans-serif;
   --font-mono:
     ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-telemetry: "Routed Gothic", ui-monospace, monospace;
+  --font-telemetry-wide: "Routed Gothic Wide", "Routed Gothic", ui-monospace, monospace;
 }
 
 /* Design tokens for the wallet UI. */
@@ -64,6 +85,10 @@
     --accent-bright: #4ea1ff;
     --accent-mint: #3ad6c6;
     --accent-amber: #f6b45f;
+
+    /* telemetry numerals (.telemetry-glow): pale phosphor-blue ink + halo */
+    --telemetry-fg: #b8dcff;
+    --telemetry-halo: #5bb7ff;
 
     --danger-bg: #2a1116;
     --danger-border: #3b1a22;
@@ -387,6 +412,37 @@
   }
   details.drawer[open] > summary .drawer-chevron {
     transform: rotate(180deg);
+  }
+
+  /* Phosphor bloom for telemetry numerals (see TelemetryNumber in ui.tsx): a
+     tight core glow in the text color, then a mid and a wide halo in phosphor
+     blue, like the rear-projected CRT readouts the style is borrowed from.
+     em-based radii keep the bloom proportional at every text size. */
+  .telemetry-glow {
+    color: var(--telemetry-fg);
+    text-shadow:
+      0 0 0.14em color-mix(in srgb, currentColor 55%, transparent),
+      0 0 0.4em color-mix(in srgb, var(--telemetry-halo) 50%, transparent),
+      0 0 0.9em color-mix(in srgb, var(--telemetry-halo) 28%, transparent);
+  }
+
+  /* Letter runs in TelemetryNumber — currency-prefix letters (the A in A$,
+     CHF) and unit suffixes (asset tickers): sized and raised to match the S
+     body of Routed Gothic's $ so they read as one compound currency symbol.
+     Sign glyphs ($, £, ¥) stay full-size. Derived from the glyph geometry:
+     the $'s S spans y 48–688 of the 736-unit cap (bar tips poke past), so
+     letters get 640/736 ≈ 0.87em, raised 48/1024 parent-em ≈ 0.054 element-em
+     onto the S's baseline. */
+  .telemetry-unit {
+    font-size: 0.87em;
+    letter-spacing: 0.04em;
+    margin: 0 0.09em;
+    vertical-align: 0.054em;
+  }
+  /* Currency signs Routed Gothic can't draw (¥ is a broken composite that
+     Chrome clips; € is absent) render from Satoshi at full size instead. */
+  .telemetry-sym {
+    font-family: var(--font-sans);
   }
 
   .highlight-glow {
