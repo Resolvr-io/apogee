@@ -95,17 +95,17 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
   }
 
   if (done) {
-    const isConnect = done === "connected";
-    const label = isConnect ? "Connected" : done === "sent" ? "Sent" : "Approved";
+    const connected = done === "connected";
+    const label = connected ? "Connected" : done === "sent" ? "Sent" : "Approved";
     // Connect success uses a blue connection glyph (vs the green check for sends),
     // so the two outcomes read differently at a glance.
-    const Icon = isConnect ? Plug : Check;
+    const Icon = connected ? Plug : Check;
     return (
       <Card>
         <div className="flex flex-col items-center gap-3 py-2 text-center">
           <span
             className={`apogee-pop flex size-14 items-center justify-center rounded-full ${
-              isConnect
+              connected
                 ? "bg-[color:var(--accent-soft)] text-[color:var(--accent-strong)]"
                 : "bg-[color:var(--success-bg)] text-[color:var(--success-text)]"
             }`}

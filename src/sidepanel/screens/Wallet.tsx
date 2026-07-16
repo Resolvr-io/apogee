@@ -301,13 +301,21 @@ export function Wallet({
     const tx = fresh[0]; // newest only, so a batch of history doesn't stack toasts
     if (tx.balanceChange === 0) return;
     const received = tx.balanceChange > 0;
+    const amt = Math.abs(tx.balanceChange);
+    // Mirror the chosen denomination so the toast matches the balance/activity.
+    const message =
+      denom === "btc"
+        ? `${formatBtc(amt)} L-BTC`
+        : denom === "fiat" && rate != null
+          ? formatFiat(satsToFiat(amt, rate), fiat)
+          : `${formatSats(amt)} sats`;
     onToast({
       id: Date.now(),
       title: received ? "Received" : "Sent",
-      message: `${formatSats(Math.abs(tx.balanceChange))} sats`,
+      message,
       kind: received ? "success" : "info",
     });
-  }, [sync, txs, onToast]);
+  }, [sync, txs, onToast, denom, rate, fiat]);
 
   // Render more transactions as the sentinel scrolls into view.
   useEffect(() => {

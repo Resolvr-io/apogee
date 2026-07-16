@@ -46,6 +46,7 @@ export function OceanVideo() {
     let active = a;
     let idle = b;
     let swapping = false;
+    let swapTimer: ReturnType<typeof window.setTimeout> | null = null;
     play(active);
     active.addEventListener("canplay", () => play(active), { once: true });
 
@@ -64,7 +65,7 @@ export function OceanVideo() {
       incoming.style.opacity = "1";
       active = incoming;
       idle = outgoing;
-      window.setTimeout(() => {
+      swapTimer = window.setTimeout(() => {
         // Incoming now fully covers the outgoing — hide + reset it for next time.
         outgoing.pause();
         outgoing.currentTime = 0;
@@ -77,6 +78,11 @@ export function OceanVideo() {
     return () => {
       a.removeEventListener("timeupdate", onTime);
       b.removeEventListener("timeupdate", onTime);
+      // A mid-crossfade unmount would otherwise leave the trailing swap timer to
+      // fire on detached nodes; cancel it and stop both videos.
+      if (swapTimer != null) window.clearTimeout(swapTimer);
+      a.pause();
+      b.pause();
     };
   }, []);
 
