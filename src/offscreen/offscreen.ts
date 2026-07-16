@@ -243,6 +243,44 @@ async function fullScanResilient(
   }
 }
 
+/**
+ * Fallback BTC price for currencies lwk's PricesFetcher refuses — its
+ * hardcoded supported list omits e.g. JPY, which every source below quotes.
+ * Same philosophy as lwk: hit several public tickers in parallel and take the
+ * median of whoever answers (≥2 required). The hosts are already in
+ * host_permissions — they're a subset of the sources lwk itself uses.
+ * (Coinbase is deliberately absent: it delisted JPY, and its BTC-JPY spot
+ * endpoint still answers — with a stale quote ~3.4× off consensus.)
+ */
+async function fallbackRate(currency: string): Promise<number> {
+  const c = currency.toUpperCase();
+  const sources: Array<() => Promise<number>> = [
+    async () => {
+      const r = await fetch(
+        `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=${c.toLowerCase()}`,
+      );
+      return Number(((await r.json()) as Record<string, Record<string, number>>).bitcoin[c.toLowerCase()]);
+    },
+    async () => {
+      const r = await fetch(`https://api.coinpaprika.com/v1/tickers/btc-bitcoin?quotes=${c}`);
+      return Number(((await r.json()) as { quotes: Record<string, { price: number }> }).quotes[c].price);
+    },
+    async () => {
+      const r = await fetch("https://blockchain.info/ticker");
+      return Number(((await r.json()) as Record<string, { last: number }>)[c].last);
+    },
+  ];
+  const settled = await Promise.allSettled(sources.map((s) => s()));
+  const rates = settled
+    .filter((s): s is PromiseFulfilledResult<number> => s.status === "fulfilled")
+    .map((s) => s.value)
+    .filter((v) => Number.isFinite(v) && v > 0)
+    .sort((a, b) => a - b);
+  if (rates.length < 2) throw new Error(`No price source available for ${c}`);
+  const mid = Math.floor(rates.length / 2);
+  return rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2;
+}
+
 async function handle(req: EngineRequest): Promise<unknown> {
   const lwk = await loadLwk();
   switch (req.kind) {
@@ -323,8 +361,15 @@ async function handle(req: EngineRequest): Promise<unknown> {
 
     case "getRate": {
       // Median BTC price in `currency` across several public price sources.
-      const rates = await new lwk.PricesFetcher().rates(new lwk.CurrencyCode(req.currency));
-      return rates.median();
+      try {
+        const rates = await new lwk.PricesFetcher().rates(new lwk.CurrencyCode(req.currency));
+        return rates.median();
+      } catch (e) {
+        // lwk hardcodes its supported fiats (JPY is missing, for one); quote
+        // the same public sources directly for anything it refuses.
+        console.warn(`[apogee] lwk rate fetch failed for ${req.currency}, using fallback`, e);
+        return fallbackRate(req.currency);
+      }
     }
 
     case "qr":
