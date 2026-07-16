@@ -21,20 +21,16 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         with:
           prompt: |
-            Review this pull request (#${{ github.event.pull_request.number }}) for Apogee,
-            a self-custodial Liquid (L-BTC) wallet browser extension. Look for correctness
-            bugs and — especially — security issues, given this is a wallet:
-              - private key / seed / wallet descriptor handling and any leakage of them
-              - the window.apogee / window.liquid provider trust boundary
-              - page <-> extension message passing (postMessage, content bridge)
-              - cryptographic correctness (signing, blinding, key derivation)
-              - DOM-based XSS (innerHTML / dangerouslySetInnerHTML)
+            Review the changes in this pull request (#${{ github.event.pull_request.number }}) —
+            focus on the diff; only open other files when needed to judge a change. This is
+            Apogee, a self-custodial Liquid (L-BTC) wallet browser extension, so prioritize
+            security: key / seed / wallet-descriptor leakage, the window.apogee / window.liquid
+            provider trust boundary, page <-> extension message passing, cryptographic
+            correctness, and DOM XSS. Also flag clear correctness bugs.
 
-            ALWAYS post exactly one PR comment summarizing the review, even when the PR is
-            clean. Format:
-              - First line — a verdict: "✅ No issues found" OR "⚠️ Issues found".
+            When done, post exactly ONE PR comment as your review:
+              - First line — a verdict: "✅ No issues found" or "⚠️ Issues found".
               - If issues: list each with severity (High / Medium / Low), file:line, and a
                 one-line suggested fix.
-              - Keep it concise. Do not open inline review comments; post a single summary
-                comment so the result is always visible.
-          claude_args: "--model claude-opus-4-8 --max-turns 12"
+            Post the comment whether or not you find issues. Be concise.
+          claude_args: "--model claude-opus-4-8 --max-turns 30"
