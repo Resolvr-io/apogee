@@ -77,7 +77,8 @@ function useHideBalance(): [boolean, () => void] {
 }
 
 type Denom = "btc" | "sats" | "fiat";
-const DENOM_ORDER: Denom[] = ["btc", "sats", "fiat"];
+// Tap-to-cycle order — matches the Display settings dropdown (Sats > L-BTC > Fiat).
+const DENOM_ORDER: Denom[] = ["sats", "btc", "fiat"];
 const DENOM_KEY = "apogee:denomination";
 const FIAT_KEY = "apogee:fiat";
 const FIAT_OPTIONS = ["USD", "EUR", "GBP", "CAD", "AUD", "CHF", "JPY"];
@@ -857,7 +858,7 @@ function SettingsBody({
             >
               <option value="sats">Sats</option>
               <option value="btc">L-BTC</option>
-              <option value="fiat">{fiat}</option>
+              <option value="fiat">Fiat</option>
             </select>
           </Field>
           <Field label="Currency">

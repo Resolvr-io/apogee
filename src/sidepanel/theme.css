@@ -218,11 +218,13 @@
     );
   }
 
-  /* high in the sky (apogee) — static for now */
+  /* high in the sky (apogee) — pinned a fixed distance from the top so the
+     moon sits at the same height in every viewport (a % anchor made it ride
+     up on short panels and sink on tall ones). Static for now. */
   .apogee-moon {
     position: absolute;
     left: 50%;
-    bottom: 88%;
+    top: 72px;
     transform: translateX(-50%);
     width: 56px;
   }
