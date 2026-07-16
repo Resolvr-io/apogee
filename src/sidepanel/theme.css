@@ -220,11 +220,12 @@
 
   /* high in the sky (apogee) — pinned a fixed distance from the top so the
      moon sits at the same height in every viewport (a % anchor made it ride
-     up on short panels and sink on tall ones). Static for now. */
+     up on short panels and sink on tall ones). 40px keeps it just below the
+     header, matching the original look; 72px sat too low. Static for now. */
   .apogee-moon {
     position: absolute;
     left: 50%;
-    top: 72px;
+    top: 40px;
     transform: translateX(-50%);
     width: 56px;
   }
