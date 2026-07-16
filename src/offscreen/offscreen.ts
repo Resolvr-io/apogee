@@ -17,6 +17,7 @@ import type {
   AddressDTO,
   AssetInfo,
   DerivedWallet,
+  DescriptorInfo,
   EngineRequest,
   PrepareSendResult,
   SendResult,
@@ -418,6 +419,26 @@ async function handle(req: EngineRequest): Promise<unknown> {
         const info: AssetInfo = { name: null, ticker: null, precision: null };
         return info;
       }
+    }
+
+    case "descriptorInfo": {
+      // Validate a pasted watch-only descriptor by constructing it (throws on a
+      // malformed descriptor) and read its network. The master fingerprint isn't
+      // exposed by WolletDescriptor, so pull it from the key-origin prefix
+      // ([abcd1234/84h/...]) that standard exported descriptors carry.
+      const descriptor = req.descriptor.trim();
+      let wd: Lwk.WolletDescriptor;
+      try {
+        wd = new lwk.WolletDescriptor(descriptor);
+      } catch {
+        throw new Error("That doesn't look like a valid Liquid descriptor.");
+      }
+      const originFp = descriptor.match(/\[([0-9a-fA-F]{8})[/\]]/);
+      if (!originFp) {
+        throw new Error("Descriptor is missing a key fingerprint, e.g. [a1b2c3d4/84h/...].");
+      }
+      const info: DescriptorInfo = { fingerprint: originFp[1].toLowerCase(), mainnet: wd.isMainnet() };
+      return info;
     }
 
     case "prepareSend": {

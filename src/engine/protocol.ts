@@ -23,6 +23,9 @@ export type EngineRequest =
   | { kind: "getRate"; currency: string } // BTC price in `currency` (median of sources)
   | { kind: "qr"; text: string } // monochrome QR bitmap as a data-URI
   | { kind: "getAsset"; assetId: string; network: LiquidNetwork } // registry metadata
+  // Validate a pasted watch-only descriptor and read its fingerprint + network
+  // (constructing the WolletDescriptor throws on a malformed descriptor).
+  | { kind: "descriptorInfo"; descriptor: string }
   // `drain` (send max): send all L-BTC to the address, fee deducted from amount.
   | {
       kind: "prepareSend";
@@ -36,6 +39,13 @@ export type EngineRequest =
   // Finalize an already-signed PSET (e.g. signed on a Jade) + broadcast it. No
   // seed — the watch-only Wollet finalizes and the Esplora client broadcasts.
   | { kind: "finalizeBroadcast"; descriptor: string; network: LiquidNetwork; pset: string };
+
+/** Result of `descriptorInfo`: the master fingerprint embedded in a watch-only
+ *  descriptor, and whether it targets mainnet (used to sanity-check the network). */
+export interface DescriptorInfo {
+  fingerprint: string;
+  mainnet: boolean;
+}
 
 /** Envelope the SW sends; the offscreen listener filters on `target`. */
 export interface EngineEnvelope {
@@ -128,6 +138,16 @@ export type WalletRequest =
       signer: WalletSigner;
       descriptor: string;
       fingerprint: string;
+      label: string;
+      network: LiquidNetwork;
+    }
+  // Import a watch-only wallet from a pasted descriptor: no seed, no signer.
+  // The SW validates the descriptor and derives the fingerprint (via
+  // descriptorInfo); `password` initializes the keystore on first run.
+  | {
+      type: "wallet/addWatchOnlyWallet";
+      password?: string;
+      descriptor: string;
       label: string;
       network: LiquidNetwork;
     };

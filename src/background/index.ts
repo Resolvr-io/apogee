@@ -16,6 +16,7 @@ import type {
   CreatedWallet,
   DappNetwork,
   DerivedWallet,
+  DescriptorInfo,
   EngineRequest,
   PrepareSendResult,
   ProviderAccount,
@@ -97,6 +98,7 @@ const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
   "wallet/create",
   "wallet/restore",
   "wallet/addHardwareWallet",
+  "wallet/addWatchOnlyWallet",
   "wallet/prepareSend",
   "wallet/send",
   "wallet/revealMnemonic",
@@ -377,6 +379,10 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
 
     case "wallet/send": {
       const info = await walletInfo(msg.walletId);
+      // Watch-only wallets hold no key and no signer — nothing can sign here.
+      if (info.signer === "watch") {
+        throw new Error("This is a watch-only wallet — it can't sign or send.");
+      }
       // A Jade signs on the device in a tab; the jade-signed handler finalizes,
       // broadcasts, and fires balance-changed once the signature returns.
       if (info.signer === "jade") {
@@ -415,6 +421,30 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
         signer: msg.signer,
         descriptor: msg.descriptor,
         fingerprint: msg.fingerprint,
+        label: msg.label,
+        network: msg.network,
+      });
+    }
+
+    case "wallet/addWatchOnlyWallet": {
+      if (msg.password && !(await keystore.isInitialized())) {
+        await keystore.initialize(msg.password);
+      }
+      const descriptor = msg.descriptor.trim();
+      // Validate the descriptor and derive its fingerprint in the engine.
+      const info = await engine<DescriptorInfo>({ kind: "descriptorInfo", descriptor });
+      // Guard against a network mismatch — a mainnet descriptor imported as
+      // testnet would silently watch the wrong chain.
+      if (info.mainnet !== (msg.network === "liquid")) {
+        throw new Error(
+          `This descriptor is for ${info.mainnet ? "mainnet (Liquid)" : "testnet/regtest"} — pick the matching network.`,
+        );
+      }
+      // Persisted like a hardware wallet: watch-only descriptor + signer, no seed.
+      return keystore.addHardwareWallet({
+        signer: "watch",
+        descriptor,
+        fingerprint: info.fingerprint,
         label: msg.label,
         network: msg.network,
       });
@@ -807,6 +837,12 @@ async function handleApprovalDecision(
   // (the device is the gate). Route the PSET to a Jade signing tab; the
   // jade-signed handler finalizes + broadcasts + fires balance-changed.
   const info = await walletInfo(pending.walletId);
+  // Watch-only wallets can't sign — refuse the spend outright.
+  if (info.signer === "watch") {
+    const err = new Error("This is a watch-only wallet — it can't sign or send.");
+    pending.reject(err);
+    throw err;
+  }
   if (info.signer === "jade") {
     // `pending` is always the send variant here, so request.kind is "send"; the
     // else is an unreachable fallback kept only to satisfy the broad request type.

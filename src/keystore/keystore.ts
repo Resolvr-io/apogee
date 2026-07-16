@@ -33,9 +33,11 @@ export type LiquidNetwork = "liquid" | "liquidtestnet" | "regtest";
  *  - "local": a BIP-39 seed stored encrypted in this keystore (software signer).
  *  - "jade": a Blockstream Jade hardware signer — watch-only descriptor here,
  *    signing delegated to the device. No seed is stored (no `enc`).
+ *  - "watch": a watch-only wallet imported from a descriptor — no seed and no
+ *    signer, so it can receive and track balance but can never sign or send.
  * Absent on legacy records → "local".
  */
-export type WalletSigner = "local" | "jade";
+export type WalletSigner = "local" | "jade" | "watch";
 
 const STORE_KEY = "apogee_keystore";
 const ACTIVE_KEY = "apogee_active_wallet";
