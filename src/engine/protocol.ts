@@ -167,10 +167,15 @@ export interface SendReview {
 /** Network names as seen by connected dapps (mapped from LiquidNetwork). */
 export type DappNetwork = "mainnet" | "testnet" | "regtest";
 
-/** What `connect()` returns to a dapp: a watch-only account, no secrets. */
+/**
+ * What `connect()` returns to a dapp. Page-safe: only the fields the page
+ * provider actually uses. The wallet descriptor is deliberately excluded — it
+ * embeds the SLIP-77 master blinding key + account xpub, and this object crosses
+ * the content bridge into the untrusted page (where any script can read it), so
+ * it must never carry wallet-wide secrets.
+ */
 export interface ProviderAccount {
   network: DappNetwork;
-  descriptor: string; // standard BIP84 watch-only descriptor
   masterFingerprint: string;
   signerKind: WalletSigner; // "local" | "jade" — UI hint only
 }
