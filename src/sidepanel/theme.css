@@ -268,11 +268,13 @@
     );
   }
 
-  /* Frosted surfaces so the scene shows faintly through the content. */
+  /* Translucent surfaces so the celestial scene shows crisply through the
+     content. No backdrop blur: the activity list sits inside the feather mask,
+     which nullifies backdrop-filter, so it already reads crisp — dropping the
+     blur here matches that look on every other screen (settings, onboarding,
+     send) instead of frosting the scene only there. */
   .apogee-panel {
     background-color: color-mix(in srgb, var(--surface-card) 82%, transparent);
-    -webkit-backdrop-filter: blur(4px);
-    backdrop-filter: blur(4px);
   }
   .apogee-soft {
     background-color: color-mix(in srgb, var(--surface-soft) 66%, transparent);
