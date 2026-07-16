@@ -10,7 +10,7 @@ import { errMessage, wallet } from "@/sidepanel/wallet-client";
 import { openJadeWindow } from "@/sidepanel/jade-window";
 import { cn } from "@/lib/utils";
 
-type Step = "choose" | "create" | "backup" | "restore" | "hardware-connect" | "hardware";
+type Step = "choose" | "create" | "backup" | "restore" | "hardware-connect" | "hardware" | "watch";
 
 // Watch-only material messaged back from the Jade window (apogee/jade-paired).
 interface PairedJade {
@@ -45,6 +45,7 @@ export function Onboarding({
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [phrase, setPhrase] = useState(""); // restore input
+  const [descriptor, setDescriptor] = useState(""); // watch-only descriptor import
   const [created, setCreated] = useState(""); // generated mnemonic to back up
   const [pairedJade, setPairedJade] = useState<PairedJade | null>(null);
   const [busy, setBusy] = useState(false);
@@ -142,6 +143,22 @@ export function Onboarding({
     }
   }
 
+  async function doAddWatchOnly() {
+    const bad = validatePassword();
+    if (bad) return setError(bad);
+    if (!descriptor.trim()) return setError("Paste a wallet descriptor to import.");
+    setBusy(true);
+    setError("");
+    try {
+      await wallet.addWatchOnlyWallet({ password, descriptor, label: "Watch-only wallet", network });
+      onDone();
+    } catch (e) {
+      setError(errMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const networkPicker = (
     <Field label="Network">
       <div className="flex gap-2">
@@ -174,6 +191,14 @@ export function Onboarding({
           <Button variant="secondary" onClick={() => setStep("hardware-connect")}>
             Connect hardware wallet
           </Button>
+          {/* De-emphasized: a plain muted text link, not a button. */}
+          <button
+            type="button"
+            onClick={() => setStep("watch")}
+            className="mt-1 self-center text-xs text-[color:var(--text-subtle)] hover:text-[color:var(--text-secondary)]"
+          >
+            Import watch-only wallet
+          </button>
         </div>
       </WelcomeShell>
     );
@@ -191,6 +216,45 @@ export function Onboarding({
           A Jade window opens to pair. Come back here when it's done. Mainnet needs a
           mainnet-ready Jade; testnet needs a testnet signer.
         </p>
+        <BackLink onClick={() => reset(setStep, setError)} />
+      </Screen>
+    );
+  }
+
+  if (step === "watch") {
+    return (
+      <Screen
+        title="Import a watch-only wallet"
+        subtitle="Paste a Liquid descriptor to track a wallet's balance and receive to it. It can't sign or send. This password unlocks Apogee on this device."
+      >
+        <form
+          className="contents"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void doAddWatchOnly();
+          }}
+        >
+          {networkPicker}
+          <Field label="Wallet descriptor">
+            <Textarea
+              value={descriptor}
+              onChange={(e) => setDescriptor(e.target.value)}
+              placeholder="ct(slip77(…),elwpkh([fingerprint/84h/…]xpub…/<0;1>/*))"
+              rows={4}
+              autoFocus
+            />
+          </Field>
+          <PasswordFields
+            password={password}
+            confirm={confirm}
+            onPassword={setPassword}
+            onConfirm={setConfirm}
+          />
+          <ErrorText>{error}</ErrorText>
+          <Button type="submit" disabled={busy || !passwordReady || !descriptor.trim()}>
+            {busy ? <Spinner /> : "Add watch-only wallet"}
+          </Button>
+        </form>
         <BackLink onClick={() => reset(setStep, setError)} />
       </Screen>
     );

@@ -135,6 +135,8 @@ export function Wallet({
   onReset: () => void;
 }) {
   const active = state.wallets.find((w) => w.id === state.activeWalletId) ?? state.wallets[0];
+  // Watch-only wallets have no key/signer: track balance + receive, but no Send.
+  const watchOnly = active.signer === "watch";
   const [hidden, toggleHidden] = useHideBalance();
   const [denom, setDenom, cycleDenom] = useDenomination();
   const [fiat, setFiat] = useFiat();
@@ -441,10 +443,21 @@ export function Wallet({
           </span>
         </button>
 
+        {watchOnly && (
+          <div className="mt-2 flex justify-center">
+            <span className="rounded-full border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-2.5 py-0.5 text-[11px] font-medium text-[color:var(--text-secondary)]">
+              Watch-only
+            </span>
+          </div>
+        )}
+
         <div className="mt-3 flex gap-2">
-          <Button className="flex-1" onClick={() => onView("send")}>
-            <ArrowUp size={16} /> Send
-          </Button>
+          {/* No Send for watch-only — it holds no key. */}
+          {!watchOnly && (
+            <Button className="flex-1" onClick={() => onView("send")}>
+              <ArrowUp size={16} /> Send
+            </Button>
+          )}
           <Button variant="secondary" className="flex-1" onClick={() => onView("receive")}>
             <ArrowDown size={16} /> Receive
           </Button>
@@ -832,7 +845,16 @@ function SettingsBody({
         <dl className="flex flex-col gap-1 text-xs">
           <Row label="Label" value={info.label} />
           <Row label="Network" value={info.network} />
-          <Row label="Signer" value={info.signer === "jade" ? "Blockstream Jade" : "Local seed"} />
+          <Row
+            label="Signer"
+            value={
+              info.signer === "jade"
+                ? "Blockstream Jade"
+                : info.signer === "watch"
+                  ? "Watch-only (no key)"
+                  : "Local seed"
+            }
+          />
           <Row label="Fingerprint" value={info.fingerprint} mono />
           <Row label="Version" value={`v${APP_VERSION_DISPLAY}`} />
         </dl>
@@ -921,7 +943,7 @@ function SettingsBody({
         </Field>
       </Card>
 
-      {info.signer !== "jade" && (
+      {info.signer === "local" && (
         <Card>
           {/* Collapsed by default to save space. Closing the drawer clears any
               revealed phrase and the password field, so re-revealing is a
