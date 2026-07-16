@@ -254,21 +254,37 @@ async function fullScanResilient(
  */
 async function fallbackRate(currency: string): Promise<number> {
   const c = currency.toUpperCase();
+  // Validate before building URLs. The value is trusted today (it comes from the
+  // fixed FIAT_OPTIONS list), but a strict 3-letter guard keeps the query-string
+  // interpolation safe if a caller ever passes something arbitrary.
+  if (!/^[A-Z]{3}$/.test(c)) throw new Error(`Unsupported currency: ${currency}`);
+  // Require a 2xx before parsing, so an HTTP 429/5xx or an HTML error page is
+  // treated as "source unavailable" (rejects, caught by allSettled below)
+  // rather than parsed as a rate.
+  const json = async (url: string): Promise<unknown> => {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`${r.status} from ${new URL(url).host}`);
+    return r.json();
+  };
   const sources: Array<() => Promise<number>> = [
-    async () => {
-      const r = await fetch(
-        `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=${c.toLowerCase()}`,
-      );
-      return Number(((await r.json()) as Record<string, Record<string, number>>).bitcoin[c.toLowerCase()]);
-    },
-    async () => {
-      const r = await fetch(`https://api.coinpaprika.com/v1/tickers/btc-bitcoin?quotes=${c}`);
-      return Number(((await r.json()) as { quotes: Record<string, { price: number }> }).quotes[c].price);
-    },
-    async () => {
-      const r = await fetch("https://blockchain.info/ticker");
-      return Number(((await r.json()) as Record<string, { last: number }>)[c].last);
-    },
+    async () =>
+      Number(
+        (
+          (await json(
+            `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=${c.toLowerCase()}`,
+          )) as Record<string, Record<string, number>>
+        ).bitcoin[c.toLowerCase()],
+      ),
+    async () =>
+      Number(
+        (
+          (await json(`https://api.coinpaprika.com/v1/tickers/btc-bitcoin?quotes=${c}`)) as {
+            quotes: Record<string, { price: number }>;
+          }
+        ).quotes[c].price,
+      ),
+    async () =>
+      Number(((await json("https://blockchain.info/ticker")) as Record<string, { last: number }>)[c].last),
   ];
   const settled = await Promise.allSettled(sources.map((s) => s()));
   const rates = settled
