@@ -20,17 +20,7 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         with:
-          prompt: |
-            Review the changes in this pull request (#${{ github.event.pull_request.number }}) —
-            focus on the diff; only open other files when needed to judge a change. This is
-            Apogee, a self-custodial Liquid (L-BTC) wallet browser extension, so prioritize
-            security: key / seed / wallet-descriptor leakage, the window.apogee / window.liquid
-            provider trust boundary, page <-> extension message passing, cryptographic
-            correctness, and DOM XSS. Also flag clear correctness bugs.
-
-            When done, post exactly ONE PR comment as your review:
-              - First line — a verdict: "✅ No issues found" or "⚠️ Issues found".
-              - If issues: list each with severity (High / Medium / Low), file:line, and a
-                one-line suggested fix.
-            Post the comment whether or not you find issues. Be concise.
-          claude_args: "--model claude-opus-4-8 --max-turns 30"
+          plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
+          plugins: "code-review@claude-code-plugins"
+          prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+          claude_args: "--model claude-opus-4-8 --max-turns 10"
