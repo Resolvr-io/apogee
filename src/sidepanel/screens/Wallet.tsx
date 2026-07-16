@@ -431,8 +431,11 @@ export function Wallet({
           )}
         >
           <span className="flex h-9 items-center justify-center text-3xl">{amountNode}</span>
+          {/* No denomination label while hidden — the unit is irrelevant when the
+              amount is stars. A non-breaking space holds the line so toggling
+              hide doesn't shift the Send/Receive row. */}
           <span className="font-telemetry text-xs uppercase tracking-wide text-[color:var(--text-subtle)]">
-            {subtitle}
+            {showStars ? " " : subtitle}
           </span>
         </button>
 
