@@ -11,6 +11,7 @@ import {
   ArrowDownLeft,
   ArrowUp,
   ArrowUpRight,
+  Binoculars,
   ChevronDown,
   ChevronLeft,
   ExternalLink,
@@ -137,6 +138,7 @@ export function Wallet({
   const active = state.wallets.find((w) => w.id === state.activeWalletId) ?? state.wallets[0];
   // Watch-only wallets have no key/signer: track balance + receive, but no Send.
   const watchOnly = active.signer === "watch";
+  const [watchInfo, setWatchInfo] = useState(false); // watch-only explainer modal
   const [hidden, toggleHidden] = useHideBalance();
   const [denom, setDenom, cycleDenom] = useDenomination();
   const [fiat, setFiat] = useFiat();
@@ -345,7 +347,15 @@ export function Wallet({
         onBack={() => onView("home")}
         center={view === "receive" || view === "send"}
       >
-        {view === "receive" && <Receive walletId={active.id} />}
+        {view === "receive" && (
+          <>
+            <Receive walletId={active.id} />
+            {/* Easy return without hunting for the small top-left back arrow. */}
+            <Button variant="secondary" className="mt-3 w-full" onClick={() => onView("home")}>
+              Done
+            </Button>
+          </>
+        )}
         {view === "send" && (
           <Send
             maxSats={sync ? sync.lbtcSats : 0}
@@ -443,17 +453,19 @@ export function Wallet({
           </span>
         </button>
 
-        {watchOnly && (
-          <div className="mt-2 flex justify-center">
-            <span className="rounded-full border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-2.5 py-0.5 text-[11px] font-medium text-[color:var(--text-secondary)]">
-              Watch-only
-            </span>
-          </div>
-        )}
-
         <div className="mt-3 flex gap-2">
-          {/* No Send for watch-only — it holds no key. */}
-          {!watchOnly && (
+          {watchOnly ? (
+            // Watch-only wallets hold no key: the Send slot becomes a dashed
+            // marker that opens an explainer on tap (matches the button width).
+            <button
+              type="button"
+              onClick={() => setWatchInfo(true)}
+              aria-label="Why is there no Send?"
+              className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-dashed border-[color:var(--border-hover)] px-4 text-sm font-medium text-[color:var(--text-subtle)] transition hover:border-[color:var(--accent-strong)] hover:text-[color:var(--text-secondary)]"
+            >
+              <Binoculars size={16} /> Watch-only
+            </button>
+          ) : (
             <Button className="flex-1" onClick={() => onView("send")}>
               <ArrowUp size={16} /> Send
             </Button>
@@ -506,6 +518,34 @@ export function Wallet({
           </>
         )}
       </div>
+
+      {watchInfo && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-[color:var(--overlay)] p-4"
+          onClick={() => setWatchInfo(false)}
+        >
+          <div className="w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <Card>
+              <div className="flex flex-col items-center gap-3 py-2 text-center">
+                <span className="flex size-12 items-center justify-center rounded-full bg-[color:var(--accent-soft)] text-[color:var(--accent-strong)]">
+                  <Binoculars size={24} />
+                </span>
+                <h2 className="text-lg font-semibold text-[color:var(--text-strong)]">
+                  Watch-only wallet
+                </h2>
+                <p className="text-sm text-[color:var(--text-secondary)]">
+                  Apogee holds no private keys for this wallet, so it can track and receive but not
+                  send. To spend, open it in the wallet that holds its keys, or import the private
+                  key into Apogee.
+                </p>
+                <Button variant="secondary" className="w-full" onClick={() => setWatchInfo(false)}>
+                  Got it
+                </Button>
+              </div>
+            </Card>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

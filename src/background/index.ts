@@ -381,7 +381,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       const info = await walletInfo(msg.walletId);
       // Watch-only wallets hold no key and no signer — nothing can sign here.
       if (info.signer === "watch") {
-        throw new Error("This is a watch-only wallet — it can't sign or send.");
+        throw new Error("Watch-only wallets can't sign or send.");
       }
       // A Jade signs on the device in a tab; the jade-signed handler finalizes,
       // broadcasts, and fires balance-changed once the signature returns.
@@ -437,7 +437,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       // testnet would silently watch the wrong chain.
       if (info.mainnet !== (msg.network === "liquid")) {
         throw new Error(
-          `This descriptor is for ${info.mainnet ? "mainnet (Liquid)" : "testnet/regtest"} — pick the matching network.`,
+          `This descriptor is for ${info.mainnet ? "mainnet (Liquid)" : "testnet/regtest"}. Pick the matching network.`,
         );
       }
       // Persisted like a hardware wallet: watch-only descriptor + signer, no seed.
@@ -839,7 +839,7 @@ async function handleApprovalDecision(
   const info = await walletInfo(pending.walletId);
   // Watch-only wallets can't sign — refuse the spend outright.
   if (info.signer === "watch") {
-    const err = new Error("This is a watch-only wallet — it can't sign or send.");
+    const err = new Error("Watch-only wallets can't sign or send.");
     pending.reject(err);
     throw err;
   }

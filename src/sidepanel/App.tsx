@@ -227,13 +227,23 @@ function Body({
         onCancel={onExitRecovery}
         onDone={() => {
           onExitRecovery();
+          onView("home");
           refresh();
         }}
       />
     );
   }
   if (!state.initialized || state.wallets.length === 0) {
-    return <Onboarding onDone={refresh} />;
+    // Land on the balance screen after setup (create/restore/hardware/watch-only),
+    // not a stale sub-view — e.g. if onboarding was reached by resetting from Settings.
+    return (
+      <Onboarding
+        onDone={() => {
+          onView("home");
+          refresh();
+        }}
+      />
+    );
   }
   if (state.locked) {
     return <Unlock onDone={refresh} onImport={onImport} onReset={onReset} />;
