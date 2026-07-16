@@ -421,7 +421,10 @@ export function Wallet({
         <button
           type="button"
           onClick={cycleDenom}
-          aria-label="Change denomination"
+          // No point cycling the denomination while the amount is hidden (or not
+          // yet synced) — the value is stars, so only the unit label would change.
+          disabled={showStars}
+          aria-label={showStars ? undefined : "Change denomination"}
           className={cn(
             "flex w-full flex-col items-center gap-0.5 py-4 text-[color:var(--text-strong)]",
             pulse && "animate-pulse",
