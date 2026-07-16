@@ -64,6 +64,11 @@ export function App() {
       const m = msg as { type?: string; request?: ApprovalRequest; id?: string };
       if (m.type === "apogee/locked") {
         setApproval(null); // dismiss any stale approval overlay on lock
+        // Reset to the balance view: auto-lock can fire while the user is on a
+        // sub-view (e.g. Settings), and without this they'd return there after
+        // unlocking (or recovering a seed) instead of the balance. Manual lock
+        // already resets in lock().
+        setView("home");
         // apogee/locked is broadcast only by the idle auto-lock alarm (a manual
         // lock via wallet/lock doesn't broadcast), so surface it to the user.
         showToast({
