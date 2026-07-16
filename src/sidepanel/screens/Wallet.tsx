@@ -407,8 +407,10 @@ export function Wallet({
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      {/* Balance frame — fixed above the scrollable activity list. */}
-      <div className="shrink-0 px-4 pb-5 pt-6">
+      {/* Balance frame — fixed above the scrollable activity list. No bottom
+          padding: the activity list's pt-6 (which sizes its feather ramp) already
+          supplies the gap below Send/Receive, so pb-5 here would double it. */}
+      <div className="shrink-0 px-4 pt-6">
         <div className="flex items-center justify-between">
           <IconButton label={hidden ? "Show balance" : "Hide balance"} onClick={toggleHidden}>
             {hidden ? <EyeOff size={16} /> : <Eye size={16} />}
