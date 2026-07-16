@@ -216,7 +216,7 @@ export function HiddenValue({
 /** Amount rendered in the telemetry face (see theme.css). `glow` adds the
  *  phosphor ink + halo — reserved for the hero balance; list rows pass
  *  glow={false} and inherit their context color. Digits 0 and 2–9 share one
- *  advance width in Routed Gothic, so the typewriter grid of the source
+ *  advance width in Apogee Telemetry, so the typewriter grid of the source
  *  lettering comes for free; only the "1" is narrow (0.52ch, both widths). It
  *  gets a 0.7ch cell — enough padding to keep a hint of the grid without
  *  reading as a gap next to the wide digits. */
@@ -233,10 +233,9 @@ export function TelemetryNumber({
 }) {
   // Letter runs — currency prefixes (the A in A$, CHF) and unit suffixes
   // (asset tickers) — render smaller via .telemetry-unit so they read as
-  // symbols next to the digits; sign glyphs ($, £) keep full size. ¥ and €
-  // render from Satoshi via .telemetry-sym — Routed Gothic's ¥ is a broken
-  // composite (clipped in Chrome) and its € is missing entirely.
-  const segments = value.split(/([A-Za-z]+|[¥€])/);
+  // symbols next to the digits; sign glyphs ($, £, ¥, €) keep full size (the
+  // face's ¥ and € come from our font patch, see tools/patch-telemetry-font.py).
+  const segments = value.split(/([A-Za-z]+)/);
   return (
     <span
       className={cn(wide ? "font-telemetry-wide" : "font-telemetry", glow && "telemetry-glow", className)}
@@ -244,10 +243,6 @@ export function TelemetryNumber({
       {segments.map((seg, si) =>
         /^[A-Za-z]/.test(seg) ? (
           <span key={si} className="telemetry-unit">
-            {seg}
-          </span>
-        ) : /^[¥€]/.test(seg) ? (
-          <span key={si} className="telemetry-sym">
             {seg}
           </span>
         ) : (

@@ -1,3 +1,21 @@
+# Apogee Telemetry
+
+Apogee Telemetry (regular and Wide) is a modified version of **Routed Gothic**
+by Darren Embry (<https://webonastick.com/fonts/routed-gothic/>), licensed
+under the SIL Open Font License 1.1 with Reserved Font Name "Routed Gothic" —
+hence the rename, as the OFL requires for modified versions.
+
+Modifications (see `tools/patch-telemetry-font.py`):
+- yen (U+00A5): decomposed the Y + equals composite, whose stale stored
+  bounding box caused macOS Chrome to clip the glyph.
+- euro (U+20AC): added, composed from the font's own C plus two round-capped
+  bars in the face's stroke.
+- name table: family renamed to "Apogee Telemetry" / "Apogee Telemetry Wide".
+
+The original license follows, unmodified.
+
+---
+
 Copyright (c) 2017, Darren Embry (<https://webonastick.com/>), with
 Reserved Font Name Routed Gothic.
 
