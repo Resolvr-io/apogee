@@ -54,9 +54,10 @@ ever receive watch-only data and signing requests.
 - Onboarding makes hardware-vs-local a **one-time choice at init**, and picks the
   network (**Mainnet** or **Testnet**) for create, restore, and Jade pairing alike:
   create or restore a seed, **or** connect a hardware wallet.
-- Unlock, balance (sats / BTC, fiat, hide-balance), receive (branded address + QR),
-  send (build → review → sign → broadcast), Received / Sent **toasts**, and settings
-  (network, currency, auto-lock, reveal seed, connected apps).
+- Unlock, balance (sats / L-BTC / fiat, hide-balance; defaults to sats), receive (branded address + QR),
+  send (build → review → sign → broadcast), Received / Sent **toasts**, a persistent
+  **connection-status bar**, and settings (network, currency, denomination, auto-lock,
+  background animation, reveal seed, connected apps).
 
 ### Jade hardware (E2 + E3)
 - **Seedless wallets** — a wallet is either a local seed or a Jade (watch-only
@@ -79,12 +80,14 @@ ever receive watch-only data and signing requests.
   `disconnect`, plus `on` / `off` events.
 - **Approvals** — connecting a new site and every send raise an approval (an
   overlay in the side panel when open, a popup window otherwise); nothing is
-  granted or signed without the user's confirmation. A Jade send then signs
-  on-device.
+  granted or signed without the user's confirmation. If the wallet is locked, the
+  approval offers an unlock step instead of forcing a reject, and a success state
+  confirms the outcome. A Jade send then signs on-device.
 - **Per-site sessions** — the SW tracks connected origins; every call except
   connect / disconnect requires an approved session, so revoking a site actually
   cuts it off.
-- **Connected-apps indicator** in Settings (origin + Revoke).
+- **Connection status** — a persistent bar with a green status light when a site
+  is connected, plus a connected-apps list in Settings (origin + disconnect).
 - **Lock-aware balance** — a locked wallet returns no balance (the dapp shows a
   locked state and recovers on unlock) instead of a misleading 0.
 - **Serialized engine calls** so the dapp and the side panel can't
@@ -94,6 +97,28 @@ Any web app can integrate this provider. The extension exposes the standard
 **`window.liquid`** provider interface (EIP-1193 `request` + EIP-6963
 discovery); the implementation is in
 [`src/provider/liquid-provider.ts`](src/provider/liquid-provider.ts).
+
+## 0.3.1
+
+- **Persistent connection status** — a slim bar at the bottom of the panel shows a
+  green status light when a dapp is connected (hidden otherwise); Settings marks
+  each connected app with a green dot and a disconnect action.
+- **Animated lock/intro backdrop** — the ocean plays as a looping MP4 with a seam
+  crossfade (ported from the www site), only on the lock and intro screens; toggle
+  in Display → Background animation (on by default).
+- **Approval overlay** — an Apogee icon badge, a gentle pulse on the primary
+  action, and a success state on approve (a blue connection glyph for connect vs
+  the green check for sends).
+- **Seed phrase** — neutral reveal surface plus a QR code view.
+- **Accurate auto-lock** — the idle timer resets on genuine side-panel input (not
+  the background poll) and verifies elapsed time on fire, so it lands on schedule
+  despite `chrome.alarms` jitter; an auto-lock toast surfaces it.
+- **Connect / send while locked** — approvals offer an unlock step instead of
+  forcing a reject.
+- **"Never" auto-lock + send safety** — "Never" stays an option, and when it's
+  set, local sends require a password (Jade is exempt — device auth).
+- **Sats by default** — the denomination defaults to sats and is honored across
+  the balance, activity list, and fee, with a selector in Display.
 
 ## 0.2.0
 

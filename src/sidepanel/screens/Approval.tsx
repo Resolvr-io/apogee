@@ -3,15 +3,20 @@
 // as an overlay inside the side panel when it's open, and by the standalone
 // prompt popup when it isn't. Reject (or closing the popup) fails the request.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { Check, Plug } from "lucide-react";
 import type { ApprovalRequest } from "@/engine/protocol";
 import { formatSats } from "@/lib/format";
 import { shortenHex } from "@/lib/utils";
 import { Button, Card, ErrorText, Field, Input, Spinner } from "@/sidepanel/components/ui";
 import { errMessage, unlockErrMessage, wallet } from "@/sidepanel/wallet-client";
 
-function decide(id: string, approved: boolean): Promise<{ ok: boolean; error?: string }> {
-  return chrome.runtime.sendMessage({ type: "apogee/approval-decision", id, approved });
+function decide(
+  id: string,
+  approved: boolean,
+  password?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return chrome.runtime.sendMessage({ type: "apogee/approval-decision", id, approved, password });
 }
 
 /** Human-friendly network label for the approval UI. */
@@ -23,11 +28,31 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
   const isConnect = request.kind === "connect";
   // A Jade send is signed on the device (in a tab) after approval, not here.
   const jade = request.kind === "send" && request.signerKind === "jade";
-  // Only a `send` can require an unlock; connect just authorizes the site.
-  const [locked, setLocked] = useState(request.kind === "send" ? request.locked : false);
+  // A locked wallet must be unlocked before connecting or sending — the SW
+  // rejects a connect/send decision while locked, so gate it behind this form.
+  const [locked, setLocked] = useState(Boolean(request.locked));
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Brief confirmation (checkmark) shown after a successful decision, before the
+  // overlay closes. Kind-aware: connect → Connected, local send → Sent, Jade →
+  // Approved (on-device signing continues after this step).
+  const [done, setDone] = useState<"" | "connected" | "sent" | "approved">("");
+  const [autoLock, setAutoLock] = useState(15);
+  const [sendPassword, setSendPassword] = useState("");
+  // Auto-lock "never" steps up auth: a local send requires the password.
+  const needsSendPassword = !isConnect && !jade && autoLock === 0;
+
+  // Hold the success checkmark for a beat, then dismiss the overlay.
+  useEffect(() => {
+    if (!done) return;
+    const t = window.setTimeout(onClose, 1200);
+    return () => window.clearTimeout(t);
+  }, [done, onClose]);
+
+  useEffect(() => {
+    void wallet.getAutoLock().then(setAutoLock).catch(() => {});
+  }, []);
 
   async function unlock(e: React.FormEvent) {
     e.preventDefault();
@@ -48,11 +73,11 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
     setBusy(true);
     setError("");
     try {
-      const res = await decide(request.id, true);
+      const res = await decide(request.id, true, needsSendPassword ? sendPassword : undefined);
       if (!res?.ok) {
         throw new Error(res?.error ?? (isConnect ? "Couldn't connect." : "The transaction failed."));
       }
-      onClose();
+      setDone(isConnect ? "connected" : jade ? "approved" : "sent");
     } catch (err) {
       setError(errMessage(err));
     } finally {
@@ -69,13 +94,49 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
     }
   }
 
+  if (done) {
+    const connected = done === "connected";
+    const label = connected ? "Connected" : done === "sent" ? "Sent" : "Approved";
+    // Connect success uses a blue connection glyph (vs the green check for sends),
+    // so the two outcomes read differently at a glance.
+    const Icon = connected ? Plug : Check;
+    return (
+      <Card>
+        <div className="flex flex-col items-center gap-3 py-2 text-center">
+          <span
+            className={`apogee-pop flex size-14 items-center justify-center rounded-full ${
+              connected
+                ? "bg-[color:var(--accent-soft)] text-[color:var(--accent-strong)]"
+                : "bg-[color:var(--success-bg)] text-[color:var(--success-text)]"
+            }`}
+          >
+            <Icon size={30} strokeWidth={2.5} />
+          </span>
+          <h2 className="text-lg font-semibold text-[color:var(--text-strong)]">{label}</h2>
+        </div>
+      </Card>
+    );
+  }
+
   return (
     <Card>
-      <div className="mb-3 text-center">
+      <div className="mb-4 flex flex-col items-center gap-2 text-center">
+        {/* Apogee mark with a soft accent halo, echoing the moonlit scene. */}
+        <span className="relative flex size-12 items-center justify-center">
+          <span
+            aria-hidden="true"
+            className="absolute inset-0 rounded-full"
+            style={{
+              background:
+                "radial-gradient(circle, color-mix(in srgb, var(--accent) 32%, transparent) 0%, transparent 70%)",
+            }}
+          />
+          <img src="/icons/apogee-icon.svg" alt="" className="relative h-10 w-auto" />
+        </span>
         <h2 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
           {isConnect ? "Connect" : "Approve transaction"}
         </h2>
-        <p className="mt-1 truncate text-xs text-[color:var(--text-subtle)]" title={request.origin}>
+        <p className="-mt-1 truncate text-xs text-[color:var(--text-subtle)]" title={request.origin}>
           {request.origin}
         </p>
       </div>
@@ -134,7 +195,21 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
                 : "You'll sign on your Jade — a window opens after you approve."}
             </p>
           )}
-          <Button onClick={approve} disabled={busy}>
+          {needsSendPassword && (
+            <Field label="Password (auto-lock is off)">
+              <Input
+                type="password"
+                value={sendPassword}
+                onChange={(e) => setSendPassword(e.target.value)}
+                autoFocus
+              />
+            </Field>
+          )}
+          <Button
+            onClick={approve}
+            disabled={busy || (needsSendPassword && !sendPassword)}
+            className={busy ? undefined : "apogee-cta"}
+          >
             {busy ? <Spinner /> : isConnect ? "Connect" : jade ? "Approve & sign on Jade" : "Approve & send"}
           </Button>
           <Button variant="secondary" onClick={reject} disabled={busy}>

@@ -110,13 +110,16 @@ export type WalletRequest =
   | { type: "wallet/getAsset"; assetId: string; network: LiquidNetwork }
   | { type: "wallet/getAutoLock" } // idle auto-lock timeout in minutes (0 = never)
   | { type: "wallet/setAutoLock"; minutes: number }
+  // Heartbeat from genuine side-panel activity (pointer/keyboard) that re-arms
+  // the idle lock — unlike the background sync poll, which must not keep it alive.
+  | { type: "wallet/touch" }
   // Dapp connections (window.apogee): list/revoke sites connected to the wallet.
   | { type: "wallet/getConnectedSites" }
   | { type: "wallet/disconnectSite"; origin: string }
   | { type: "wallet/prepareSend"; walletId?: string; address: string; sats: number; drain?: boolean }
   // `review` (optional) carries the human-readable spend details so a Jade send
   // can show a transaction summary in its signing tab; ignored for local signing.
-  | { type: "wallet/send"; walletId?: string; pset: string; review?: SendReview }
+  | { type: "wallet/send"; walletId?: string; pset: string; review?: SendReview; password?: string }
   // Pair a hardware (Jade) wallet: watch-only descriptor read from the device,
   // no seed. `password` initializes the keystore on first run, like create/restore.
   | {
@@ -227,6 +230,7 @@ export type ApprovalRequest =
       network: DappNetwork;
       fingerprint: string; // wallet fingerprint the site will see
       signerKind: WalletSigner; // "local" | "jade"
+      locked: boolean; // wallet locked at request time → the UI must unlock first
     }
   | {
       kind: "send";

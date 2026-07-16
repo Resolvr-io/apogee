@@ -93,6 +93,70 @@ export function Spinner({ className }: { className?: string }) {
   );
 }
 
+export type StatusTone = "connected" | "idle" | "pending" | "error";
+
+/** Small status light (connected/idle/pending/error) styled with the design
+ *  tokens — the green-dot idiom used across the Astrolabe apps. Token-driven, so
+ *  no color is hardcoded: tone maps to a CSS variable set in theme.css. */
+export function StatusDot({
+  tone,
+  pulse = false,
+  className,
+}: {
+  tone: StatusTone;
+  pulse?: boolean;
+  className?: string;
+}) {
+  const color: Record<StatusTone, string> = {
+    connected: "var(--success-text)",
+    idle: "var(--text-subtle)",
+    pending: "var(--warning-text)",
+    error: "var(--danger-text)",
+  };
+  return (
+    <span
+      className={cn("inline-block size-2 shrink-0 rounded-full", pulse && "animate-pulse", className)}
+      style={{ backgroundColor: color[tone] }}
+    />
+  );
+}
+
+/** Accessible on/off toggle (`role="switch"`), token-styled for the panel. */
+export function Switch({
+  checked,
+  onChange,
+  label,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (value: boolean) => void;
+  label: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={cn(
+        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50",
+        checked ? "bg-[color:var(--accent)]" : "bg-[color:var(--border-hover)]",
+      )}
+    >
+      <span
+        className={cn(
+          "inline-block size-4 transform rounded-full bg-[color:var(--text-on-accent)] shadow transition-transform",
+          checked ? "translate-x-[18px]" : "translate-x-0.5",
+        )}
+      />
+    </button>
+  );
+}
+
 /** A standalone loading indicator that stays legible over the dark scene: a
  *  contrasting capsule wrapping the spinner and an optional label. */
 export function LoadingPill({ label = "Loading…", className }: { label?: string; className?: string }) {
