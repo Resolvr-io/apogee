@@ -455,9 +455,10 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
         throw new Error("No wallet in Apogee yet. Open Apogee to create or restore one, then connect.");
       }
       const info = state.wallets.find((w) => w.id === state.activeWalletId) ?? state.wallets[0];
+      // Page-safe account only. The descriptor (SLIP-77 blinding key + xpub) must
+      // never cross the content bridge into the page — see ProviderAccount.
       const account: ProviderAccount = {
         network: toDappNetwork(info.network),
-        descriptor: info.descriptor,
         masterFingerprint: info.fingerprint,
         signerKind: info.signer,
       };
@@ -500,9 +501,9 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
       const state = await keystore.getState();
       if (!state.initialized || state.wallets.length === 0) return null;
       const info = state.wallets.find((w) => w.id === state.activeWalletId) ?? state.wallets[0];
+      // Page-safe account only — never include the descriptor (see ProviderAccount).
       const account: ProviderAccount = {
         network: toDappNetwork(info.network),
-        descriptor: info.descriptor,
         masterFingerprint: info.fingerprint,
         signerKind: info.signer,
       };

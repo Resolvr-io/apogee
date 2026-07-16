@@ -16,7 +16,6 @@ type LiquidNetwork = "liquid" | "liquid-testnet" | "liquid-regtest";
 
 interface InternalAccount {
   network: DappNetwork;
-  descriptor: string;
   masterFingerprint: string;
   signerKind: "local" | "jade";
 }
