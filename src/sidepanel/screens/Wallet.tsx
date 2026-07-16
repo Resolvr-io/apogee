@@ -1026,7 +1026,7 @@ function SettingsBody({
       {/* Resolvr footer: masked monochrome wordmark stacked over the copyright.
           The bottom darkening gradient is global (App shell), so this stays
           legible over the moonlit-sea backdrop on every view. */}
-      <footer className="-mx-4 -mb-4 mt-auto flex flex-col gap-2 px-4 pt-10 pb-5 text-[color:var(--text-muted)]">
+      <footer className="-mx-4 -mb-4 mt-auto flex flex-col gap-2 px-4 pt-4 pb-5 text-[color:var(--text-muted)]">
         <div
           className="h-[28px] w-[92px] bg-current"
           style={{
