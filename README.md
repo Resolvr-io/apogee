@@ -143,5 +143,14 @@ discovery); the implementation is in
 - [Blockstream Liquid Wallet Kit (`lwk_wasm` / LWK)](https://github.com/Blockstream/lwk),
   [Blockstream Jade](https://blockstream.com/jade/), the
   [Liquid Network](https://liquid.net/), and Blockstream's Esplora.
+- **Fonts** — [Satoshi](https://www.fontshare.com/fonts/satoshi) (Indian Type
+  Foundry, via Fontshare's free license) for the UI, and **Apogee Telemetry**
+  for numeric displays: our patched build of
+  [Routed Gothic](https://webonastick.com/fonts/routed-gothic/) by Darren Embry,
+  licensed under the [SIL Open Font License 1.1](public/fonts/ApogeeTelemetry-LICENSE.md)
+  and renamed per the OFL's reserved-name rule. Modifications are documented in
+  the license file and reproducible via
+  [`tools/patch-telemetry-font.py`](tools/patch-telemetry-font.py). The style
+  is a nod to the telemetry readouts of *2001: A Space Odyssey*.
 - Built by **Resolvr**.
 - Built with CRXJS, Vite, React, and Tailwind CSS.
