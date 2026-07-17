@@ -98,6 +98,12 @@ Any web app can integrate this provider. The extension exposes the standard
 discovery); the implementation is in
 [`src/provider/liquid-provider.ts`](src/provider/liquid-provider.ts).
 
+## 0.4.1
+
+- **Cleaner token amounts** — trailing zeros are trimmed past two decimals, so a
+  USDt balance reads 150.42 instead of 150.42000000; fully meaningful digits
+  (1.00660712) are untouched.
+
 ## 0.4.0
 
 - **Watch-only wallets** — import a Liquid descriptor to track a wallet's balance

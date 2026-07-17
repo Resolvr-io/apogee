@@ -24,8 +24,11 @@ export function formatBtc(sats: number): string {
 export function formatAssetAmount(amount: number, precision: number | null): string {
   const p = precision && precision > 0 ? precision : 0;
   const value = p > 0 ? amount / 10 ** p : amount;
+  // Trim trailing zeros past two decimals: a precision-8 stablecoin shows
+  // 150.42 (not 150.42000000) and 15.00 (currency-style), while meaningful
+  // digits keep full precision (1.00660712 stays complete).
   return value.toLocaleString("en-US", {
-    minimumFractionDigits: p,
+    minimumFractionDigits: Math.min(2, p),
     maximumFractionDigits: p,
   });
 }
