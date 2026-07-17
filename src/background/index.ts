@@ -217,6 +217,10 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       broadcastSitesChanged();
       // Fail any parked approvals too, so a reset doesn't leave one approvable.
       rejectPendingApprovals(undefined, "Apogee was reset.");
+      // Tear down the offscreen engine so its cached (per-descriptor) wollets
+      // don't survive the wipe into the next wallet created or restored — a stale
+      // cache would otherwise show a just-deleted wallet's balance/addresses.
+      await closeOffscreen();
       return keystore.reset();
     }
 
