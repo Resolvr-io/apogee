@@ -56,6 +56,10 @@ export const wallet = {
   qr: (text: string) => call<string>({ type: "wallet/qr", text }),
   getAsset: (assetId: string, network: LiquidNetwork) =>
     call<AssetInfo>({ type: "wallet/getAsset", assetId, network }),
+  getChainServer: (network: LiquidNetwork) =>
+    call<string>({ type: "wallet/getChainServer", network }),
+  setChainServer: (network: LiquidNetwork, url: string) =>
+    call<void>({ type: "wallet/setChainServer", network, url }),
   getAutoLock: () => call<number>({ type: "wallet/getAutoLock" }),
   setAutoLock: (minutes: number) => call<void>({ type: "wallet/setAutoLock", minutes }),
   touch: () => call<void>({ type: "wallet/touch" }),
