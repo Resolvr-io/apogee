@@ -12,16 +12,20 @@ Your keys, your coins. Apogee generates and stores your keys locally, encrypted 
 
 WHAT YOU CAN DO
 • Create a new wallet, or restore one from a standard BIP-39 recovery phrase.
-• Hold and receive L-BTC and other Liquid assets; send L-BTC.
+• Import a watch-only wallet from a Liquid descriptor: track balances and receive without keys on this device. Restore the matching seed later and it upgrades to a full wallet in place.
+• Hold and receive L-BTC and other Liquid assets; send L-BTC. Tokens show their registry names, icons, and correct decimal precision.
 • Keep amounts private with Liquid's confidential transactions.
 • Pair a Blockstream Jade hardware wallet and approve transactions on the device.
 • Connect to Liquid web apps and authorize their transactions — you review and sign every action.
 
 SELF-CUSTODY, DONE RIGHT
-Apogee uses standard BIP84 native SegWit derivation, so the same recovery phrase restores in Blockstream Green, Blockstream Jade, and other standard Liquid wallets — you are never locked in. Your seed is encrypted at rest, and the wallet auto-locks after inactivity.
+Apogee uses standard BIP84 native SegWit derivation, so the same recovery phrase restores in Blockstream Green, Blockstream Jade, and other standard Liquid wallets — you are never locked in. Your seed is encrypted at rest, the wallet auto-locks after inactivity, and a revealed recovery phrase hides itself again after 30 seconds.
 
 PRIVATE BY DESIGN
-To sync your balance, Apogee uses a Waterfalls scan server by default and encrypts your wallet descriptor to it first, so your individual addresses aren't handed to the server. It talks only to public Liquid infrastructure — Waterfalls (liquidwebwallet.org) and Blockstream's Esplora (blockstream.info), with other public Esplora endpoints as fallbacks — plus public price APIs to show a fiat value. No analytics, no cookies, no ads.
+To sync your balance, Apogee uses a Waterfalls scan server by default and encrypts your wallet descriptor to it first, so your individual addresses aren't handed to the server. It talks only to public Liquid infrastructure — Waterfalls (liquidwebwallet.org) and public Esplora servers (liquid.network, blockstream.info) — plus public price APIs to show a fiat value. No analytics, no cookies, no ads.
+
+BUILT TO STAY UP
+If a chain server is down or rate-limited, Apogee detects it in seconds and fails over to another provider, for syncing and for broadcasting alike. Wallet scan state is kept locally, so reopening the extension picks up where it left off instead of re-scanning from scratch. Prefer a specific provider? Pin it in Settings > Advanced; the choice is verified against the chain itself before it saves.
 
 CONNECT TO LIQUID APPS
 Apogee provides a wallet connection to web pages, so Liquid apps can request to connect and ask you to approve transactions. Every connection and every transaction requires your explicit approval in Apogee, and you can review or revoke connected sites at any time in Settings.
@@ -51,7 +55,7 @@ A self-custodial wallet for the Liquid Network: hold, receive, and send Liquid a
 - **host permissions** — Reads Liquid chain data and prices from public services:
   - `waterfalls.liquidwebwallet.org` — default wallet-sync scan server (one encrypted-descriptor request per sync).
   - `blockstream.info` / `*.blockstream.info` — Esplora REST for sync fallback, transaction broadcast, and the asset registry.
-  - `liquid.network` — alternative public Esplora endpoint (fallback).
+  - `liquid.network` — public Esplora endpoint: sync/broadcast fallback and token icons from the public Liquid asset registry.
   - `api.coinbase.com`, `api.kraken.com`, `api.coingecko.com`, `api.coinpaprika.com`, `blockchain.info` — public price sources; Apogee uses the median of those reachable to show a fiat value.
   - All are read-only chain/price requests; the only user-derived data sent is an encrypted wallet descriptor (sync) or a user-approved signed transaction (broadcast).
 - **content scripts on `<all_urls>`** — Injects a small `window.liquid` provider into pages so Liquid web apps can request a wallet connection (the same pattern as `window.ethereum`). It must be available on whatever site hosts a Liquid app. The provider only exposes a connect/request interface and does not read page content; every connection and transaction needs explicit in-wallet approval.
