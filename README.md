@@ -98,6 +98,37 @@ Any web app can integrate this provider. The extension exposes the standard
 discovery); the implementation is in
 [`src/provider/liquid-provider.ts`](src/provider/liquid-provider.ts).
 
+## 0.4.0
+
+- **Watch-only wallets** — import a Liquid descriptor to track a wallet's balance
+  and receive to it without ever entering a seed. It can't sign or send; restoring
+  the matching seed later upgrades it in place to a full wallet.
+- **Engine resilience** — the wallet rides through chain-server outages: fast
+  reachability probes with cooldowns, failover across two Esplora providers for
+  scans *and* broadcasts, and persistent scan state so reloads top up
+  incrementally instead of re-scanning from scratch (which is what trips public
+  rate limits). Fiat-rate fetches are timeboxed and can no longer stall syncs.
+- **Chain server setting** — Settings → Advanced picks Automatic (recommended)
+  or a specific provider; every choice is validated against the server's
+  genesis hash so a mainnet server can't be pinned to a testnet wallet.
+- **Console interface pass** — the 2001 instrument-panel voice extends through
+  the app: engineering labels and signage in the telemetry face with phosphor
+  hairlines, lamp-cell buttons, glowing switches and status lamps, phosphor
+  focus rings, and unselectable chrome (data stays copyable).
+- **Asset display** — issued assets show correct decimals (USDt reads 1.00660712,
+  not raw base units) and their registry icons; asset ids and txids fit one line
+  with full-value tooltips and inline copy/explorer controls.
+- **Seed-phrase auto-hide** — revealing your recovery phrase (or its QR) in Settings
+  starts a 30-second countdown, then hides it again so a secret isn't left on screen
+  if you step away.
+- **2001-style telemetry polish** — the How-Apogee-Works guide and the Jade connect
+  page adopt the wallet's telemetry face and phosphor glow, with a glowing wireframe
+  of the Jade device; occasional shooting stars drift across the animated lock-screen
+  sky (respecting reduced-motion).
+- **Reliability** — resetting the wallet now fully clears the offscreen engine and
+  its persisted scan state, so a wiped wallet's chain data can't linger into the
+  next one; onboarding clears typed fields when switching flows.
+
 ## 0.3.1
 
 - **Persistent connection status** — a slim bar at the bottom of the panel shows a
