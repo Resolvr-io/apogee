@@ -10,3 +10,6 @@ dist/
 .env*.local
 .env
 .env.production
+
+# local release artifacts (zips live on GitHub Releases)
+releases/
