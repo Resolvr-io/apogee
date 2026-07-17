@@ -10,6 +10,7 @@
 import type { LiquidNetwork } from "@/keystore/keystore";
 import * as keystore from "@/keystore/keystore";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "@/lib/debug";
+import { SCAN_STATE_DB } from "@/engine/protocol";
 import type {
   AddressDTO,
   ApprovalRequest,
@@ -257,8 +258,15 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       // Drop persisted scan state too — the IndexedDB the offscreen rehydrates
       // from (offscreen is already closed above, so the delete never blocks).
       await new Promise<void>((resolve) => {
-        const req = indexedDB.deleteDatabase("apogee-scan-state");
-        req.onsuccess = req.onerror = req.onblocked = () => resolve();
+        const req = indexedDB.deleteDatabase(SCAN_STATE_DB);
+        req.onsuccess = req.onerror = () => resolve();
+        req.onblocked = () => {
+          // Shouldn't happen (the offscreen is closed above and opens per-op),
+          // but a blocked delete would leave orphaned scan state behind — log
+          // it so a reset that didn't fully clear is visible.
+          console.warn("[apogee] scan-state delete blocked during reset");
+          resolve();
+        };
       });
       return keystore.reset();
     }

@@ -19,6 +19,7 @@ import {
   ENTERPRISE_CLIENT_SECRET,
   ENTERPRISE_TOKEN_URL,
 } from "@/lib/debug";
+import { SCAN_STATE_DB } from "@/engine/protocol";
 import type {
   AddressDTO,
   AssetInfo,
@@ -155,12 +156,11 @@ const wollets = new Map<string, CachedWollet>();
 // IndexedDB database to delete it on wallet/reset.
 const SCAN_STATE_PREFIX = "apogee:scanstate:";
 const SCAN_STATE_MAX_CHARS = 3_000_000; // ~3 MB of base64 per wallet
-const SCAN_DB = "apogee-scan-state";
 const SCAN_STORE = "updates";
 
 function openScanDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(SCAN_DB, 1);
+    const req = indexedDB.open(SCAN_STATE_DB, 1);
     req.onupgradeneeded = () => {
       if (!req.result.objectStoreNames.contains(SCAN_STORE)) {
         req.result.createObjectStore(SCAN_STORE);
@@ -220,7 +220,13 @@ async function scanStateKey(network: LiquidNetwork, descriptor: string): Promise
 
 /** Append (or tip-replace) one serialized update and persist the array. The
  *  serialization happens at the call site BEFORE applyUpdate, so we never
- *  touch the wasm Update object after handing it to the wollet. */
+ *  touch the wasm Update object after handing it to the wollet.
+ *
+ *  Coalescing assumption (pinned deliberately): consecutive tip-only updates
+ *  are each relative to the same applied base, so replacing the previous
+ *  tip-only entry is equivalent to keeping both. If lwk ever made Updates
+ *  strictly sequential deltas, replacement would corrupt replay — revisit if
+ *  lwk's Update semantics change. */
 async function persistScanUpdate(
   entry: CachedWollet,
   serialized: string,
@@ -539,14 +545,15 @@ async function fullScanResilient(
     waterfallsDownUntil = Date.now() + WATERFALLS_COOLDOWN_MS;
   }
 
-  // Waterfalls is out — scan via plain Esplora instead. Two providers, tried in
-  // turn: blockstream.info first, then liquid.network (blockstream 429s scan
-  // bursts, and a 429 fails fast into the next provider). Concurrency 4: a
-  // from-scratch scan is dozens of sequential round-trips at concurrency 1,
-  // which is what made the fallback crawl.
+  // Waterfalls is out — scan via plain Esplora instead (concurrency 4: a
+  // from-scratch scan is dozens of round-trips, which is what made the old
+  // concurrency-1 fallback crawl).
   console.warn("[apogee] waterfalls unavailable, falling back to Esplora", lastErr);
-  // Prefer whichever provider last completed a scan (sticky): while one is
-  // throttling this client, don't re-hit it on every sync.
+  // Providers in default order: liquid.network first (it tolerates the burst a
+  // scan produces), blockstream.info second (its limiter 429s bursts — but a
+  // throttled provider fails its probe in ~ms and we move on). Sticky: prefer
+  // whichever provider last completed a scan, so a throttled one isn't re-hit
+  // on every sync.
   const providers = [ESPLORA[network], ESPLORA_ALT[network]];
   if (lastGoodEsplora && providers.includes(lastGoodEsplora)) {
     providers.sort((a, b) => (a === lastGoodEsplora ? -1 : 0) - (b === lastGoodEsplora ? -1 : 0));

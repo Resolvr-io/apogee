@@ -11,6 +11,11 @@ import type { LiquidNetwork, WalletInfo, WalletSigner } from "@/keystore/keystor
 
 // ---- service worker → offscreen engine -------------------------------------
 
+/** IndexedDB database holding persisted scan state (see offscreen.ts). Shared
+ *  so the service worker's wallet/reset deletes the same database the
+ *  offscreen writes — a drifted string literal would silently stop clearing. */
+export const SCAN_STATE_DB = "apogee-scan-state";
+
 /** A request executed inside the offscreen document against lwk_wasm. */
 export type EngineRequest =
   | { kind: "generateMnemonic"; words?: 12 | 24 }
