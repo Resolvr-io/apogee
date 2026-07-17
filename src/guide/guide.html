@@ -8,6 +8,26 @@
       :root {
         color-scheme: dark;
       }
+      /* Apogee Telemetry (patched Routed Gothic) + the wide variant — the same
+         engineering face the wallet balance uses. Extends the 2001-style
+         telemetry look into the guide: console-lamp step numbers and wide,
+         letter-spaced signage. See src/sidepanel/theme.css / ui.tsx. */
+      @font-face {
+        font-family: "Satoshi";
+        src: url("/fonts/Satoshi-Variable.woff2") format("woff2");
+        font-weight: 300 900;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Apogee Telemetry";
+        src: url("/fonts/ApogeeTelemetry.ttf") format("truetype");
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Apogee Telemetry Wide";
+        src: url("/fonts/ApogeeTelemetryWide.ttf") format("truetype");
+        font-display: swap;
+      }
       * {
         box-sizing: border-box;
       }
@@ -20,7 +40,7 @@
         justify-content: center;
         gap: 20px;
         padding: 40px 24px;
-        font-family: system-ui, -apple-system, sans-serif;
+        font-family: "Satoshi", system-ui, -apple-system, sans-serif;
         color: #e6efff;
         /* Same flat starfield + code vignette as the Jade connector page. */
         background:
@@ -32,6 +52,20 @@
             )
             center / cover no-repeat fixed,
           #03070f url("/scene/starfield_bg.jpg") center / cover no-repeat fixed;
+      }
+      .tw {
+        font-family: "Apogee Telemetry Wide", "Apogee Telemetry", ui-monospace, monospace;
+      }
+      .tn {
+        font-family: "Apogee Telemetry", ui-monospace, monospace;
+      }
+      /* Phosphor bloom: a tight core in the element's own ink, then a mid + wide
+         halo in phosphor blue — the CRT-readout treatment from the wallet. */
+      .glow {
+        text-shadow:
+          0 0 0.14em color-mix(in srgb, currentColor 55%, transparent),
+          0 0 0.4em color-mix(in srgb, #5bb7ff 45%, transparent),
+          0 0 0.9em color-mix(in srgb, #5bb7ff 25%, transparent);
       }
       .brand {
         height: 30px;
@@ -46,18 +80,37 @@
         backdrop-filter: blur(14px);
         -webkit-backdrop-filter: blur(14px);
         box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
-        padding: 32px 30px;
+        padding: 34px 32px;
+      }
+      .overline {
+        font-size: 11px;
+        letter-spacing: 0.34em;
+        text-transform: uppercase;
+        color: #7db3ff;
+        margin: 0 0 12px;
       }
       h1 {
-        font-size: 22px;
-        margin: 0 0 8px;
-        font-weight: 600;
+        font-size: 25px;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+        font-weight: 400;
+        margin: 0;
+        color: #eaf2ff;
         text-wrap: balance;
+      }
+      .rule {
+        height: 1px;
+        background: linear-gradient(
+          90deg,
+          color-mix(in srgb, #5bb7ff 45%, transparent),
+          transparent
+        );
+        margin: 14px 0 20px;
       }
       .lead {
         font-size: 14px;
         color: #8aa0c2;
-        margin: 0 0 24px;
+        margin: 0 0 26px;
         line-height: 1.6;
         text-wrap: pretty;
       }
@@ -75,27 +128,34 @@
       }
       .step {
         display: flex;
-        gap: 14px;
+        gap: 16px;
+        align-items: flex-start;
       }
+      /* Backlit console lamp — the hibernation-panel button, in phosphor blue. */
       .step-num {
         flex-shrink: 0;
-        width: 26px;
-        height: 26px;
-        border-radius: 50%;
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
         display: flex;
         align-items: center;
         justify-content: center;
-        font-size: 12px;
-        font-weight: 600;
-        color: #7db3ff;
-        background: #0b1628;
-        border: 1px solid #1d2b44;
+        font-size: 18px;
+        line-height: 1;
+        color: #b8dcff;
+        background: color-mix(in srgb, #5bb7ff 9%, transparent);
+        border: 1px solid color-mix(in srgb, #5bb7ff 30%, transparent);
+        box-shadow:
+          inset 0 0 14px color-mix(in srgb, #5bb7ff 16%, transparent),
+          0 0 9px color-mix(in srgb, #5bb7ff 10%, transparent);
       }
       .step-title {
-        font-size: 14px;
+        font-size: 11.5px;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
         font-weight: 600;
-        margin: 2px 0 3px;
-        color: #e6efff;
+        margin: 5px 0 5px;
+        color: #dbe6fa;
       }
       .step-body {
         font-size: 13px;
@@ -105,7 +165,7 @@
         text-wrap: pretty;
       }
       .foot {
-        margin: 26px 0 0;
+        margin: 28px 0 0;
         padding-top: 18px;
         border-top: 1px solid #1d2b44;
         font-size: 12.5px;
@@ -123,7 +183,9 @@
   <body>
     <img class="brand" src="/icons/apogee-logo.svg" alt="Apogee" />
     <main class="card">
-      <h1>How Apogee works</h1>
+      <p class="overline tw glow">Operations Guide</p>
+      <h1 class="tw">How Apogee works</h1>
+      <div class="rule"></div>
       <p class="lead">
         Apogee is a self-custody wallet for the <strong>Liquid Network</strong> — a Bitcoin
         sidechain with fast, confidential transactions. You hold your own keys; Resolvr never
@@ -131,7 +193,7 @@
       </p>
       <ol class="steps">
         <li class="step">
-          <span class="step-num">1</span>
+          <span class="step-num tn glow">1</span>
           <div>
             <p class="step-title">Set up your wallet</p>
             <p class="step-body">
@@ -141,7 +203,7 @@
           </div>
         </li>
         <li class="step">
-          <span class="step-num">2</span>
+          <span class="step-num tn glow">2</span>
           <div>
             <p class="step-title">Receive</p>
             <p class="step-body">
@@ -151,7 +213,7 @@
           </div>
         </li>
         <li class="step">
-          <span class="step-num">3</span>
+          <span class="step-num tn glow">3</span>
           <div>
             <p class="step-title">Send</p>
             <p class="step-body">
@@ -161,7 +223,7 @@
           </div>
         </li>
         <li class="step">
-          <span class="step-num">4</span>
+          <span class="step-num tn glow">4</span>
           <div>
             <p class="step-title">Connect to web apps</p>
             <p class="step-body">
@@ -171,7 +233,7 @@
           </div>
         </li>
         <li class="step">
-          <span class="step-num">5</span>
+          <span class="step-num tn glow">5</span>
           <div>
             <p class="step-title">Stay in control</p>
             <p class="step-body">
