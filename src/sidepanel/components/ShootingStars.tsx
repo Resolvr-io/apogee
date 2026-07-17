@@ -109,12 +109,30 @@ export function ShootingStars() {
       raf = requestAnimationFrame(frame);
     };
 
+    // Respect the OS reduced-motion preference (as the scene's other motion does):
+    // no rAF loop while it's set, and stop/start if the setting flips at runtime.
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const start = () => {
+      if (!raf && !reduce.matches) raf = requestAnimationFrame(frame);
+    };
+    const stop = () => {
+      if (raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+      meteors = [];
+      if (w && h) ctx.clearRect(0, 0, w, h);
+    };
+    const onReduceChange = () => (reduce.matches ? stop() : start());
+
     build();
-    raf = requestAnimationFrame(frame);
+    start();
+    reduce.addEventListener("change", onReduceChange);
     const ro = new ResizeObserver(() => build());
     ro.observe(parent);
     return () => {
-      if (raf) cancelAnimationFrame(raf);
+      stop();
+      reduce.removeEventListener("change", onReduceChange);
       ro.disconnect();
     };
   }, []);
