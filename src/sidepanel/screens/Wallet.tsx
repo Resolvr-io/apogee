@@ -11,7 +11,6 @@ import {
   ArrowDownLeft,
   ArrowUp,
   ArrowUpRight,
-  Binoculars,
   ChevronDown,
   ChevronLeft,
   ExternalLink,
@@ -19,6 +18,7 @@ import {
   EyeOff,
   QrCode,
   RefreshCw,
+  Telescope,
   Unplug,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
@@ -463,7 +463,7 @@ export function Wallet({
               aria-label="Why is there no Send?"
               className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-dashed border-[color:var(--border-hover)] px-4 text-sm font-medium text-[color:var(--text-subtle)] transition hover:border-[color:var(--accent-strong)] hover:text-[color:var(--text-secondary)]"
             >
-              <Binoculars size={16} /> Watch-only
+              <Telescope size={16} /> Watch-only
             </button>
           ) : (
             <Button className="flex-1" onClick={() => onView("send")}>
@@ -528,7 +528,7 @@ export function Wallet({
             <Card>
               <div className="flex flex-col items-center gap-3 py-2 text-center">
                 <span className="flex size-12 items-center justify-center rounded-full bg-[color:var(--accent-soft)] text-[color:var(--accent-strong)]">
-                  <Binoculars size={24} />
+                  <Telescope size={24} />
                 </span>
                 <h2 className="text-lg font-semibold text-[color:var(--text-strong)]">
                   Watch-only wallet
