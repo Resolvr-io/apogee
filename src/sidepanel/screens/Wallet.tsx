@@ -60,6 +60,9 @@ export type View = "home" | "receive" | "send" | "settings";
 
 const HIDE_KEY = "apogee:hideBalance";
 const TX_PAGE = 25; // transactions rendered per lazy-load page
+// Auto-hide a revealed seed phrase (and its QR) after this window, so the secret
+// isn't left on screen if the user steps away.
+const SEED_REVEAL_TIMEOUT_S = 30;
 
 function useHideBalance(): [boolean, () => void] {
   const [hidden, setHidden] = useState(false);
@@ -760,6 +763,7 @@ function SettingsBody({
   const [password, setPassword] = useState("");
   const [seed, setSeed] = useState("");
   const [showQr, setShowQr] = useState(false);
+  const [revealSecs, setRevealSecs] = useState(SEED_REVEAL_TIMEOUT_S);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [autoLock, setAutoLockState] = useState(15);
@@ -783,6 +787,22 @@ function SettingsBody({
   useEffect(() => {
     void wallet.getAutoLock().then(setAutoLockState).catch(() => {});
   }, []);
+
+  // Once revealed, count down and auto-hide the seed (phrase + QR) so it isn't
+  // left exposed. Cleared on unmount and whenever `seed` is reset (drawer close).
+  useEffect(() => {
+    if (!seed) return;
+    setRevealSecs(SEED_REVEAL_TIMEOUT_S);
+    const tick = window.setInterval(() => setRevealSecs((s) => Math.max(0, s - 1)), 1000);
+    const hide = window.setTimeout(() => {
+      setSeed("");
+      setShowQr(false);
+    }, SEED_REVEAL_TIMEOUT_S * 1000);
+    return () => {
+      window.clearInterval(tick);
+      window.clearTimeout(hide);
+    };
+  }, [seed]);
 
   function changeAutoLock(minutes: number) {
     setAutoLockState(minutes);
@@ -956,6 +976,30 @@ function SettingsBody({
                       {seed}
                     </p>
                   )}
+                  <div className="mt-0.5 flex flex-col items-center gap-1.5">
+                    <div className="flex items-baseline justify-center gap-2">
+                      <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-[color:var(--text-secondary)]">
+                        Auto-hides in
+                      </span>
+                      <span className="font-telemetry telemetry-glow text-lg leading-none">{revealSecs}</span>
+                      <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-[color:var(--text-secondary)]">
+                        sec
+                      </span>
+                    </div>
+                    <div
+                      className="h-[3px] w-full overflow-hidden rounded-full"
+                      style={{ background: "color-mix(in srgb, var(--telemetry-halo) 14%, transparent)" }}
+                    >
+                      <div
+                        className="h-full rounded-full transition-[width] duration-1000 ease-linear"
+                        style={{
+                          width: `${(revealSecs / SEED_REVEAL_TIMEOUT_S) * 100}%`,
+                          background: "var(--telemetry-halo)",
+                          boxShadow: "0 0 6px color-mix(in srgb, var(--telemetry-halo) 65%, transparent)",
+                        }}
+                      />
+                    </div>
+                  </div>
                   <CopyButton value={seed} label="Copy seed phrase" className="w-full" />
                   <Button variant="secondary" onClick={() => setShowQr((v) => !v)}>
                     <QrCode size={14} /> {showQr ? "Hide QR code" : "Show as QR code"}
