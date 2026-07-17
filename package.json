@@ -1,14 +1,15 @@
 {
   "name": "apogee",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
+  "packageManager": "pnpm@10.33.0",
   "description": "Apogee — a Liquid Network wallet for your browser.",
   "type": "module",
   "scripts": {
     "dev": "vite build --mode development --watch",
     "build": "vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
-    "zip": "vite build && cd dist && zip -r ../apogee.zip ."
+    "zip": "if ls .env .env.local .env.production .env.production.local 2>/dev/null | grep -q .; then echo 'refusing to zip: a .env file is present (credentials could ship in the bundle) — remove it or use the CI release zip' >&2; exit 1; fi && vite build && cd dist && zip -rX ../apogee-$npm_package_version.zip ."
   },
   "dependencies": {
     "lucide-react": "^0.562.0",
