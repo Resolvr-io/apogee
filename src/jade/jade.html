@@ -8,6 +8,25 @@
       :root {
         color-scheme: dark;
       }
+      /* Apogee Telemetry (patched Routed Gothic) + wide variant + Satoshi — the
+         same faces as the wallet, so the Jade flow shares the 2001 telemetry
+         look: wide, letter-spaced signage headings and a console-style breadcrumb. */
+      @font-face {
+        font-family: "Satoshi";
+        src: url("/fonts/Satoshi-Variable.woff2") format("woff2");
+        font-weight: 300 900;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Apogee Telemetry";
+        src: url("/fonts/ApogeeTelemetry.ttf") format("truetype");
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Apogee Telemetry Wide";
+        src: url("/fonts/ApogeeTelemetryWide.ttf") format("truetype");
+        font-display: swap;
+      }
       * {
         box-sizing: border-box;
       }
@@ -20,7 +39,7 @@
         justify-content: center;
         gap: 18px;
         padding: 24px;
-        font-family: system-ui, -apple-system, sans-serif;
+        font-family: "Satoshi", system-ui, -apple-system, sans-serif;
         color: #e6efff;
         /* Flat starfield with the vignette in code: a radial #03070f fade matching
            the side panel's sky top, so there's no baked gradient and no banding. */
@@ -34,9 +53,61 @@
             center / cover no-repeat fixed,
           #03070f url("/scene/starfield_bg.jpg") center / cover no-repeat fixed;
       }
+      /* Apogee mark pinned top-center — the Jade device is the page's hero, but
+         the brand stays anchored at the top. */
       .brand {
-        height: 28px;
+        position: fixed;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        height: 22px;
         width: auto;
+        opacity: 0.9;
+        z-index: 2;
+      }
+      /* Glowing outline of the Jade device (from Blockstream's Jade art, recolored
+         to the telemetry ink), drifting like a schematic in space above the card. */
+      .hero-wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+      }
+      .hero {
+        width: 330px;
+        max-width: calc(100vw - 60px);
+        filter:
+          drop-shadow(0 0 3px color-mix(in srgb, #b8dcff 70%, transparent))
+          drop-shadow(0 0 11px color-mix(in srgb, #5bb7ff 55%, transparent))
+          drop-shadow(0 0 26px color-mix(in srgb, #5bb7ff 32%, transparent));
+        animation: drift 7s ease-in-out infinite;
+      }
+      .hero img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      .hero-cap {
+        margin: 0;
+        font-family: "Apogee Telemetry Wide", "Apogee Telemetry", ui-monospace, monospace;
+        font-size: 10px;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+        color: #7db3ff;
+      }
+      @keyframes drift {
+        0%,
+        100% {
+          transform: translateY(-4px);
+        }
+        50% {
+          transform: translateY(4px);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .hero {
+          animation: none;
+        }
       }
       .card {
         width: 340px;
@@ -57,13 +128,18 @@
       .steps {
         display: flex;
         align-items: center;
-        gap: 6px;
-        font-size: 10.5px;
+        gap: 7px;
+        font-family: "Apogee Telemetry Wide", "Apogee Telemetry", ui-monospace, monospace;
+        font-size: 10px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
         color: #6f86a8;
       }
       .steps .active {
         color: #7db3ff;
-        font-weight: 600;
+        text-shadow:
+          0 0 0.4em color-mix(in srgb, #5bb7ff 45%, transparent),
+          0 0 0.9em color-mix(in srgb, #5bb7ff 25%, transparent);
       }
       .steps .done {
         color: #7fe0a5;
@@ -72,9 +148,13 @@
         opacity: 0.4;
       }
       h1 {
-        font-size: 16px;
+        font-family: "Apogee Telemetry Wide", "Apogee Telemetry", ui-monospace, monospace;
+        font-size: 14px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
         margin: 0;
-        font-weight: 600;
+        font-weight: 400;
+        color: #eaf2ff;
         text-wrap: balance;
       }
       .sub {
@@ -253,6 +333,10 @@
   </head>
   <body>
     <img class="brand" src="/icons/apogee-logo.svg" alt="Apogee" />
+    <div class="hero-wrap">
+      <div class="hero"><img src="/scene/jade-device.svg" alt="" /></div>
+      <p class="hero-cap">Hardware Signer</p>
+    </div>
     <div id="card" class="card"></div>
     <script type="module" src="./jade.ts"></script>
   </body>
