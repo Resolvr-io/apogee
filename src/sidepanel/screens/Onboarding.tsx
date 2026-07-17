@@ -52,6 +52,18 @@ export function Onboarding({
   const [error, setError] = useState("");
   const [savedConfirmed, setSavedConfirmed] = useState(false); // seed backup gate
 
+  // Every step starts with clean form fields: a password typed in one flow must
+  // not silently carry into another (e.g. seed-restore -> back -> watch-only
+  // arrived with the password invisibly pre-filled), and a typed seed phrase or
+  // descriptor should not linger in state after leaving its flow.
+  useEffect(() => {
+    setPassword("");
+    setConfirm("");
+    setPhrase("");
+    setDescriptor("");
+    setError("");
+  }, [step]);
+
   // The Jade window pairs over Web Serial and messages the watch-only descriptor
   // back; advance to the password step to finish setup. The ack (sendResponse)
   // tells the Jade tab its pairing actually landed here — without it the tab
@@ -169,8 +181,8 @@ export function Onboarding({
             onClick={() => setNetwork(n.value)}
             className={
               network === n.value
-                ? "highlight-glow flex-1 rounded-lg px-3 py-2 text-xs font-semibold"
-                : "flex-1 rounded-lg border border-[color:var(--border-default)] px-3 py-2 text-xs font-medium text-[color:var(--text-secondary)]"
+                ? "highlight-glow flex-1 rounded-md px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.08em]"
+                : "flex-1 rounded-md border border-[color:var(--border-default)] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.08em] text-[color:var(--text-secondary)]"
             }
           >
             {n.label}
@@ -337,7 +349,7 @@ export function Onboarding({
         title="Back up your seed phrase"
         subtitle="Write these 12 words down in order. They are the only way to recover your wallet."
       >
-        <ol className="grid grid-cols-2 gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3">
+        <ol className="selectable grid grid-cols-2 gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3">
           {created.split(" ").map((word, i) => (
             <li key={i} className="flex gap-2 font-mono text-xs text-[color:var(--text-strong)]">
               <span className="w-4 text-right text-[color:var(--text-subtle)]">{i + 1}</span>
@@ -429,7 +441,7 @@ function Screen({
       <img src="/icons/apogee-logo.svg" alt="Apogee" className="h-6 w-auto" />
       <Card className="flex flex-col gap-4">
         <div className="flex flex-col gap-1">
-          <h1 className="text-lg font-semibold text-[color:var(--text-strong)]">{title}</h1>
+          <h1 className="console-title text-base">{title}</h1>
           <p className="text-sm text-[color:var(--text-secondary)]">{subtitle}</p>
         </div>
         <div className="flex flex-col gap-3">{children}</div>

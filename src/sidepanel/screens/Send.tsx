@@ -214,14 +214,14 @@ export function Send({
   if (step === "review" && prepared) {
     return (
       <Card>
-        <h2 className="mb-2 text-center text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
+        <h2 className="mb-2 text-center console-overline console-ruled--center">
           Review
         </h2>
         <dl className="flex flex-col gap-1.5 text-sm">
           <Row label="To" value={shortenHex(address.trim(), 10, 8)} mono />
-          <Row label={drain ? "Amount (max)" : "Amount"} value={`${formatSats(recipientSats)} sats`} />
-          <Row label="Network fee" value={`${formatSats(prepared.fee)} sats`} />
-          <Row label="Total" value={`${formatSats(recipientSats + prepared.fee)} sats`} strong />
+          <Row label={drain ? "Amount (max)" : "Amount"} value={`${formatSats(recipientSats)} sats`} console />
+          <Row label="Network fee" value={`${formatSats(prepared.fee)} sats`} console />
+          <Row label="Total" value={`${formatSats(recipientSats + prepared.fee)} sats`} strong console />
         </dl>
         <ErrorText>{error}</ErrorText>
         {isJade && (
@@ -255,12 +255,12 @@ export function Send({
 
   return (
     <Card>
-      <h2 className="mb-3 text-center text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
+      <h2 className="mb-3 text-center console-overline console-ruled--center">
         Send L-BTC
       </h2>
       <div className="mb-4 flex flex-col items-center gap-0.5">
         <span className="text-xs text-[color:var(--text-subtle)]">Available balance</span>
-        <span className="text-lg font-semibold text-[color:var(--text-strong)]">
+        <span className="console-value text-lg">
           {isBtc ? `${formatBtc(maxSats)} L-BTC` : `${formatSats(maxSats)} sats`}
         </span>
       </div>
@@ -297,6 +297,7 @@ export function Send({
             </button>
           </div>
           <Input
+            className="console-value text-[15px]"
             type="number"
             inputMode={isBtc ? "decimal" : "numeric"}
             min={isBtc ? 0 : 1}
@@ -326,11 +327,13 @@ function Row({
   value,
   mono,
   strong,
+  console: consoleValue,
 }: {
   label: string;
   value: string;
   mono?: boolean;
   strong?: boolean;
+  console?: boolean; // telemetry-face readout (sats amounts)
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
@@ -339,6 +342,7 @@ function Row({
         className={[
           "truncate",
           mono ? "font-mono" : "",
+          consoleValue ? "console-value" : "",
           strong ? "font-semibold text-[color:var(--text-strong)]" : "text-[color:var(--text-primary)]",
         ].join(" ")}
       >

@@ -34,7 +34,7 @@ export function ToastView({ toast }: { toast: ToastNotice | null }) {
     >
       <div
         key={toast.id}
-        className={`apogee-toast-in pointer-events-auto w-full max-w-[16rem] rounded-2xl border bg-[color:var(--surface-card)] px-4 py-3 shadow-[0_18px_40px_var(--shadow-strong)] ${border}`}
+        className={`apogee-toast-in pointer-events-auto w-full max-w-[16rem] rounded-xl border bg-[color:var(--surface-card)] px-4 py-3 shadow-[0_18px_40px_var(--shadow-strong)] ${border}`}
       >
         <p className={`text-sm font-semibold ${titleColor}`}>{toast.title}</p>
         <p className="mt-0.5 text-xs text-[color:var(--text-muted)]">{toast.message}</p>

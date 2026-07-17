@@ -165,7 +165,7 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
           />
           <img src="/icons/apogee-icon.svg" alt="" className="relative h-10 w-auto" />
         </span>
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
+        <h2 className="console-overline">
           {isConnect ? "Connect" : "Approve transaction"}
         </h2>
         <p className="-mt-1 truncate text-xs text-[color:var(--text-subtle)]" title={request.origin}>
@@ -180,7 +180,7 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
             can't move funds without your approval.
           </p>
           <dl className="mt-3 flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
-            <Row label="Wallet" value={request.fingerprint} mono />
+            <Row label="Wallet" value={request.fingerprint.toUpperCase()} console />
             <Row label="Network" value={networkLabel(request.network)} />
           </dl>
         </>
@@ -192,9 +192,10 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
             <Row
               label={request.drain ? "Amount (max)" : "Amount"}
               value={`${formatSats(request.recipientSats)} sats`}
+              console
             />
-            <Row label="Network fee" value={`${formatSats(request.fee)} sats`} />
-            <Row label="Total" value={`${formatSats(request.recipientSats + request.fee)} sats`} strong />
+            <Row label="Network fee" value={`${formatSats(request.fee)} sats`} console />
+            <Row label="Total" value={`${formatSats(request.recipientSats + request.fee)} sats`} strong console />
           </dl>
         </>
       )}
@@ -258,11 +259,13 @@ function Row({
   value,
   mono,
   strong,
+  console: consoleValue,
 }: {
   label: string;
   value: string;
   mono?: boolean;
   strong?: boolean;
+  console?: boolean; // telemetry-face readout (sats amounts)
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
@@ -271,6 +274,7 @@ function Row({
         className={[
           "truncate",
           mono ? "font-mono" : "",
+          consoleValue ? "console-value" : "",
           strong
             ? "font-semibold text-[color:var(--text-strong)]"
             : "text-[color:var(--text-primary)]",
