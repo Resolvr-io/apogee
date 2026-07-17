@@ -140,6 +140,14 @@
     -webkit-mask-image: linear-gradient(to bottom, #000 52%, transparent 84%);
     mask-image: linear-gradient(to bottom, #000 52%, transparent 84%);
   }
+  /* shooting-star layer (see ShootingStars.tsx): same positioning + horizon fade
+     as the star canvas, drawn above the stars but behind the moon and glow. */
+  .apogee-meteors {
+    position: absolute;
+    inset: 0;
+    -webkit-mask-image: linear-gradient(to bottom, #000 52%, transparent 84%);
+    mask-image: linear-gradient(to bottom, #000 52%, transparent 84%);
+  }
   /* moonlit blue dome at the horizon (static) */
   .apogee-glow {
     position: absolute;
