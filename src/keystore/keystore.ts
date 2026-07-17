@@ -387,6 +387,16 @@ export async function addWallet(w: NewWallet): Promise<WalletInfo> {
     .map((id) => store.wallets[id])
     .find((rec) => rec?.descriptor === w.descriptor);
   if (existing) {
+    // Restoring (or creating) the seed for a descriptor already imported as
+    // watch-only upgrades that record in place to a spendable local wallet:
+    // persist the encrypted seed and flip the signer, so the user isn't stuck
+    // with an unspendable wallet they hold the keys for. A full local wallet
+    // with the same descriptor is just a dedupe — return it unchanged.
+    if (existing.signer === "watch") {
+      existing.signer = "local";
+      existing.enc = await encryptString(derivedKey, w.mnemonic, mnemonicAad(existing.id));
+      await saveStore(store);
+    }
     unlockedMnemonics.set(existing.id, w.mnemonic);
     return toInfo(existing);
   }

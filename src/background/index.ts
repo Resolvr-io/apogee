@@ -437,8 +437,12 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       const descriptor = msg.descriptor.trim();
       // Validate the descriptor and derive its fingerprint in the engine.
       const info = await engine<DescriptorInfo>({ kind: "descriptorInfo", descriptor });
-      // Guard against a network mismatch — a mainnet descriptor imported as
-      // testnet would silently watch the wrong chain.
+      // Guard against a network mismatch — importing a mainnet descriptor as a
+      // testnet/regtest wallet (or vice versa) would silently watch the wrong
+      // chain. lwk's isMainnet() only separates mainnet from non-mainnet, so
+      // testnet and regtest are intentionally interchangeable here — the user
+      // picks which non-mainnet chain, and confusing the two only mis-targets a
+      // test server (never mainnet, where funds live).
       if (info.mainnet !== (msg.network === "liquid")) {
         throw new Error(
           `This descriptor is for ${info.mainnet ? "mainnet (Liquid)" : "testnet/regtest"}. Pick the matching network.`,
