@@ -8,8 +8,18 @@ export const LBTC_TESTNET_ASSET_ID =
 export const USDT_LIQUID_ASSET_ID =
   "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2";
 
-export const KNOWN_ASSETS: Record<string, string> = {
-  [LBTC_TESTNET_ASSET_ID]: "L-BTC (testnet)",
-  [LBTC_MAINNET_ASSET_ID]: "L-BTC",
-  [USDT_LIQUID_ASSET_ID]: "USDt",
+/** Locally-known asset metadata. `precision` is the issued asset's decimal
+ *  places (from its issuance contract) — kept here so known assets display
+ *  correctly without a registry round-trip: KNOWN_ASSETS entries are skipped
+ *  by the registry fetch, so a label-only entry would otherwise render raw
+ *  base units (USDt showed 100,660,712 instead of 1.00660712). */
+export interface KnownAsset {
+  label: string;
+  precision: number;
+}
+
+export const KNOWN_ASSETS: Record<string, KnownAsset> = {
+  [LBTC_TESTNET_ASSET_ID]: { label: "L-BTC (testnet)", precision: 8 },
+  [LBTC_MAINNET_ASSET_ID]: { label: "L-BTC", precision: 8 },
+  [USDT_LIQUID_ASSET_ID]: { label: "USDt", precision: 8 },
 };

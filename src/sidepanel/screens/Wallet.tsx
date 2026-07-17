@@ -27,6 +27,9 @@ import type { KeystoreState, LiquidNetwork, WalletInfo } from "@/keystore/keysto
 import { explorerTxUrl } from "@/lib/explorer";
 import { APP_VERSION_DISPLAY } from "@/version";
 import { KNOWN_ASSETS } from "@/lib/asset-registry";
+import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY } from "@/lib/debug";
+import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS } from "@/lib/demo-funds";
+import { BUNDLED_ASSET_ICONS, assetIconSrc } from "@/lib/asset-icons";
 import { cn, shortenHex } from "@/lib/utils";
 import {
   formatAssetAmount,
@@ -41,6 +44,7 @@ import {
   Button,
   Card,
   CopyButton,
+  CopyIconButton,
   ErrorText,
   Field,
   HiddenValue,
@@ -78,6 +82,28 @@ function useHideBalance(): [boolean, () => void] {
     });
   }, []);
   return [hidden, toggle];
+}
+
+/** Debug builds: the Settings > Debug "Demo funds" toggle. Live-updating so
+ *  flipping it applies without leaving the wallet screen. Always false outside
+ *  debug builds. */
+function useDemoFunds(): boolean {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    if (!DEBUG_ENTERPRISE_BUILD) return;
+    void chrome.storage.local.get(DEMO_FUNDS_KEY).then((o) => setOn(o[DEMO_FUNDS_KEY] === true));
+    const onChanged = (
+      changes: { [key: string]: chrome.storage.StorageChange },
+      area: string,
+    ) => {
+      if (area === "local" && DEMO_FUNDS_KEY in changes) {
+        setOn(changes[DEMO_FUNDS_KEY].newValue === true);
+      }
+    };
+    chrome.storage.onChanged.addListener(onChanged);
+    return () => chrome.storage.onChanged.removeListener(onChanged);
+  }, []);
+  return on;
 }
 
 type Denom = "btc" | "sats" | "fiat";
@@ -147,9 +173,16 @@ export function Wallet({
   const [fiat, setFiat] = useFiat();
   const [rate, setRate] = useState<number | null>(null);
   const [rateFailed, setRateFailed] = useState(false);
-  const [sync, setSync] = useState<SyncResult | null>(null);
-  const [txs, setTxs] = useState<WalletTxDTO[]>([]);
-  const [assets, setAssets] = useState<Record<string, AssetInfo>>({});
+  const [liveSync, setSync] = useState<SyncResult | null>(null);
+  const [liveTxs, setTxs] = useState<WalletTxDTO[]>([]);
+  const [liveAssets, setAssets] = useState<Record<string, AssetInfo>>({});
+  // Debug demo funds: present the canned dataset instead of live data
+  // (display-only; polling continues underneath and resumes on toggle-off).
+  // Demo tokens are KNOWN_ASSETS, so label/precision/icon need no fetches.
+  const demoFunds = useDemoFunds();
+  const sync = demoFunds ? DEMO_SYNC : liveSync;
+  const txs = demoFunds ? DEMO_TXS : liveTxs;
+  const assets = demoFunds ? {} : liveAssets;
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState("");
   const [visible, setVisible] = useState(TX_PAGE);
@@ -292,7 +325,7 @@ export function Wallet({
     setSync(null);
     setTxs([]);
     seenTxids.current = null;
-  }, [active?.id]);
+  }, [active?.id, demoFunds]);
 
   // Toast on transactions the user hasn't seen yet. The first synced load seeds
   // the "seen" set silently (so historical activity doesn't fire); every later
@@ -464,7 +497,7 @@ export function Wallet({
               type="button"
               onClick={() => setWatchInfo(true)}
               aria-label="Why is there no Send?"
-              className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-dashed border-[color:var(--border-hover)] px-4 text-sm font-medium text-[color:var(--text-subtle)] transition hover:border-[color:var(--accent-strong)] hover:text-[color:var(--text-secondary)]"
+              className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-md border border-dashed border-[color:var(--border-hover)] px-4 text-[12.5px] font-semibold uppercase tracking-[0.08em] text-[color:var(--text-subtle)] transition hover:border-[color:var(--accent-strong)] hover:text-[color:var(--text-secondary)]"
             >
               <Telescope size={16} /> Watch-only
             </button>
@@ -488,8 +521,8 @@ export function Wallet({
         className="apogee-scrollbar apogee-feather-top flex-1 overflow-y-auto px-4 pb-4 pt-6"
       >
         <ErrorText>{error}</ErrorText>
-        <Tokens sync={sync} hidden={hidden} assets={assets} />
-        <h2 className="mb-2 mt-3 px-1 text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
+        <Tokens sync={sync} hidden={hidden} assets={assets} network={active.network} />
+        <h2 className="mb-2 mt-3 px-1 console-overline console-ruled">
           Activity
         </h2>
         {txs.length === 0 ? (
@@ -498,7 +531,7 @@ export function Wallet({
           </p>
         ) : (
           <>
-            <div className="apogee-panel divide-y divide-[color:var(--border-soft)] overflow-hidden rounded-2xl border border-[color:var(--border-default)]">
+            <div className="apogee-panel divide-y divide-[color:var(--border-soft)] overflow-hidden rounded-xl border border-[color:var(--border-default)]">
               {txs.slice(0, visible).map((tx) => (
                 <TxRow
                   key={tx.txid}
@@ -553,14 +586,46 @@ export function Wallet({
   );
 }
 
+/** 20px asset icon: bundled/registry artwork, or a monogram disc fallback
+ *  (first letter of the label) when no icon exists. */
+function AssetIcon({
+  assetId,
+  label,
+  network,
+}: {
+  assetId: string;
+  label: string;
+  network: LiquidNetwork;
+}) {
+  const [src, setSrc] = useState<string | null>(() => BUNDLED_ASSET_ICONS[assetId] ?? null);
+  useEffect(() => {
+    let alive = true;
+    void assetIconSrc(assetId, network).then((s) => {
+      if (alive) setSrc(s);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [assetId, network]);
+  return src ? (
+    <img src={src} alt="" className="size-5 shrink-0 rounded-full" />
+  ) : (
+    <span className="flex size-5 shrink-0 items-center justify-center rounded-full border border-[color:var(--border-hover)] bg-[color:var(--accent-soft)] text-[10px] font-semibold text-[color:var(--accent-strong)]">
+      {label.slice(0, 1).toUpperCase()}
+    </span>
+  );
+}
+
 function Tokens({
   sync,
   hidden,
   assets,
+  network,
 }: {
   sync: SyncResult | null;
   hidden: boolean;
   assets: Record<string, AssetInfo>;
+  network: LiquidNetwork;
 }) {
   const tokens = sync
     ? Object.entries(sync.balance).filter(([a, amt]) => a !== sync.policyAssetHex && amt > 0)
@@ -568,25 +633,28 @@ function Tokens({
   if (tokens.length === 0) return null;
   return (
     <div className="mt-1">
-      <h2 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
+      <h2 className="mb-2 px-1 console-overline console-ruled">
         Tokens
       </h2>
       <div className="apogee-panel divide-y divide-[color:var(--border-soft)] overflow-hidden rounded-2xl border border-[color:var(--border-default)]">
         {tokens.map(([asset, amt]) => {
           const info = assets[asset];
           const label =
-            KNOWN_ASSETS[asset] ?? info?.ticker ?? info?.name ?? shortenHex(asset, 6, 6);
+            KNOWN_ASSETS[asset]?.label ?? info?.ticker ?? info?.name ?? shortenHex(asset, 6, 6);
           // Scale the raw base-unit balance by the asset's precision (e.g. a
           // precision-3 TEST balance of 1000 → "1.000"); unknown precision falls
           // back to the raw integer.
-          const amountLabel = formatAssetAmount(amt, info?.precision ?? null);
+          const amountLabel = formatAssetAmount(amt, KNOWN_ASSETS[asset]?.precision ?? info?.precision ?? null);
           return (
             <details
               key={asset}
               className="drawer"
             >
               <summary className="flex items-center justify-between px-3 py-2">
-                <span className="text-sm text-[color:var(--text-primary)]">{label}</span>
+                <span className="flex items-center gap-2">
+                  <AssetIcon assetId={asset} label={label} network={network} />
+                  <span className="text-sm text-[color:var(--text-primary)]">{label}</span>
+                </span>
                 <span className="flex items-center gap-2">
                   <span className="text-[color:var(--text-strong)]">
                     {hidden ? (
@@ -599,14 +667,20 @@ function Tokens({
                 </span>
               </summary>
               <div className="flex flex-col gap-2 border-t border-[color:var(--border-soft)] px-3 py-2 text-xs">
-                <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between gap-3">
                   <span className="text-[color:var(--text-subtle)]">Asset ID</span>
-                  <span className="break-all font-mono text-[color:var(--text-primary)]">{asset}</span>
+                  {/* Middle-truncated to one line; hover shows the full id and the
+                      copy button below carries the full value. */}
+                  <span className="flex items-center gap-0.5">
+                    <span title={asset} className="font-mono text-[color:var(--text-primary)]">
+                      {shortenHex(asset, 10, 10)}
+                    </span>
+                    <CopyIconButton value={asset} label="Copy asset ID" />
+                  </span>
                 </div>
                 {info?.name && <Row label="Name" value={info.name} />}
                 {info?.ticker && <Row label="Ticker" value={info.ticker} />}
                 {info?.precision != null && <Row label="Precision" value={String(info.precision)} />}
-                <CopyButton value={asset} label="Copy asset ID" />
               </div>
             </details>
           );
@@ -661,8 +735,8 @@ function TxRow({
   if (token) {
     const [id, delta] = token;
     const info = assets[id];
-    const label = KNOWN_ASSETS[id] ?? info?.ticker ?? info?.name ?? shortenHex(id, 4, 4);
-    amountText = `${delta > 0 ? "+" : ""}${formatAssetAmount(delta, info?.precision ?? null)} ${label}`;
+    const label = KNOWN_ASSETS[id]?.label ?? info?.ticker ?? info?.name ?? shortenHex(id, 4, 4);
+    amountText = `${delta > 0 ? "+" : ""}${formatAssetAmount(delta, KNOWN_ASSETS[id]?.precision ?? info?.precision ?? null)} ${label}`;
   } else {
     amountText = `${receive ? "+" : ""}${lbtcAmount(tx.balanceChange)}`;
   }
@@ -693,9 +767,28 @@ function TxRow({
         </span>
       </summary>
       <div className="flex flex-col gap-2 border-t border-[color:var(--border-soft)] px-3 py-2 text-xs">
-        <div className="flex flex-col gap-1">
-          <span className="text-[color:var(--text-subtle)]">Transaction</span>
-          <span className="break-all font-mono text-[color:var(--text-primary)]">{tx.txid}</span>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[color:var(--text-subtle)]">Txid</span>
+          {/* Middle-truncated to one line; hover shows the full txid and the
+              copy control carries the full value. */}
+          <span className="flex items-center gap-0.5">
+            <span title={tx.txid} className="font-mono text-[color:var(--text-primary)]">
+              {shortenHex(tx.txid, 10, 10)}
+            </span>
+            <CopyIconButton value={tx.txid} label="Copy txid" />
+            {explorer && (
+              <a
+                href={explorer}
+                target="_blank"
+                rel="noreferrer"
+                title="View in explorer"
+                aria-label="View in explorer"
+                className="icon-btn size-6 shrink-0"
+              >
+                <ExternalLink size={13} />
+              </a>
+            )}
+          </span>
         </div>
         <Row label="Time" value={formatTimestamp(tx.timestamp)} />
         <Row label="Status" value={pending ? "Unconfirmed" : `Block ${tx.height}`} />
@@ -703,19 +796,6 @@ function TxRow({
           label="Fee"
           value={denom === "fiat" ? lbtcAmount(tx.fee) : `${lbtcAmount(tx.fee)} ${unitLabel}`}
         />
-        <div className="mt-1 grid grid-cols-2 gap-2">
-          <CopyButton value={tx.txid} label="Copy txid" className="w-full" />
-          {explorer && (
-            <a
-              href={explorer}
-              target="_blank"
-              rel="noreferrer"
-              className="flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] text-xs font-semibold text-[color:var(--text-primary)] transition hover:border-[color:var(--border-hover)]"
-            >
-              <ExternalLink size={13} /> Explorer
-            </a>
-          )}
-        </div>
       </div>
     </details>
   );
@@ -748,7 +828,7 @@ function Receive({ walletId }: { walletId: string }) {
 
   return (
     <Card>
-      <h2 className="mb-3 text-center text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
+      <h2 className="mb-3 text-center console-overline console-ruled--center">
         Receive L-BTC & assets
       </h2>
       {error ? (
@@ -771,7 +851,7 @@ function Receive({ walletId }: { walletId: string }) {
               )}
             </div>
           </div>
-          <p className="w-full break-all rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 font-mono text-xs text-[color:var(--text-strong)]">
+          <p className="selectable w-full break-all rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 font-mono text-xs text-[color:var(--text-strong)]">
             {address}
           </p>
           <CopyButton value={address} label="Copy address" />
@@ -841,6 +921,90 @@ function SettingsBody({
     void wallet.getAutoLock().then(setAutoLockState).catch(() => {});
   }, []);
 
+  // Chain-server override (Advanced): "" (automatic) or a preset URL. The
+  // stored value is re-read on load and after a failed save so the select
+  // always reflects what is persisted. (Free-form custom URLs were removed —
+  // planned to return inside a future debug panel; the SW/engine plumbing
+  // still accepts any validated URL.)
+  const [serverMode, setServerMode] = useState<string>("");
+  const [serverBusy, setServerBusy] = useState(false);
+  // Debug builds: the enterprise toggle (see lib/debug.ts). Read/written straight
+  // to chrome.storage — the SW checks the same key on every scan/broadcast.
+  const [debugEnterprise, setDebugEnterprise] = useState(false);
+  useEffect(() => {
+    if (!DEBUG_ENTERPRISE_BUILD) return;
+    void chrome.storage.local
+      .get(DEBUG_ENTERPRISE_KEY)
+      .then((o) => setDebugEnterprise(o[DEBUG_ENTERPRISE_KEY] === true));
+  }, []);
+  function toggleDebugEnterprise(on: boolean) {
+    setDebugEnterprise(on);
+    void chrome.storage.local.set({ [DEBUG_ENTERPRISE_KEY]: on });
+  }
+  const [demoFundsOn, setDemoFundsOn] = useState(false);
+  useEffect(() => {
+    if (!DEBUG_ENTERPRISE_BUILD) return;
+    void chrome.storage.local
+      .get(DEMO_FUNDS_KEY)
+      .then((o) => setDemoFundsOn(o[DEMO_FUNDS_KEY] === true));
+  }, []);
+  function toggleDemoFunds(on: boolean) {
+    setDemoFundsOn(on);
+    void chrome.storage.local.set({ [DEMO_FUNDS_KEY]: on });
+  }
+  // Screenshot helper: hide the Debug card briefly. Plain component state, so
+  // leaving and reopening Settings also brings it back (SettingsBody remounts).
+  const [debugHidden, setDebugHidden] = useState(false);
+  const debugHideTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (debugHideTimer.current != null) window.clearTimeout(debugHideTimer.current);
+    },
+    [],
+  );
+  function hideDebugPanel() {
+    setDebugHidden(true);
+    if (debugHideTimer.current != null) window.clearTimeout(debugHideTimer.current);
+    debugHideTimer.current = window.setTimeout(() => setDebugHidden(false), 60_000);
+  }
+  const [serverMsg, setServerMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const chainPresets = chainPresetsFor(info.network);
+  const loadChainServer = useCallback(() => {
+    void wallet
+      .getChainServer(info.network)
+      .then((url) => {
+        if (!url) {
+          setServerMode("");
+        } else if (chainPresetsFor(info.network).some((p) => p.url === url)) {
+          setServerMode(url);
+        } else {
+          // A custom URL persisted by an older build: the picker is presets-only
+          // now (custom entry is planned for a future debug panel), so clear it
+          // rather than let an unrepresentable override keep steering scans.
+          setServerMode("");
+          void wallet.setChainServer(info.network, "").catch(() => {});
+        }
+      })
+      .catch(() => {});
+  }, [info.network]);
+  useEffect(() => {
+    loadChainServer();
+  }, [loadChainServer]);
+
+  async function saveChainServer(url: string) {
+    setServerBusy(true);
+    setServerMsg(null);
+    try {
+      await wallet.setChainServer(info.network, url);
+      setServerMsg({ ok: true, text: url ? "Server saved." : "Back to automatic." });
+    } catch (err) {
+      setServerMsg({ ok: false, text: errMessage(err) });
+      loadChainServer(); // snap the select back to what's actually persisted
+    } finally {
+      setServerBusy(false);
+    }
+  }
+
   // Once revealed, count down and auto-hide the seed (phrase + QR) so it isn't
   // left exposed. Cleared on unmount and whenever `seed` is reset (drawer close).
   useEffect(() => {
@@ -899,7 +1063,7 @@ function SettingsBody({
   return (
     <div className="flex min-h-full flex-col gap-3">
       <Card>
-        <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
+        <h2 className="mb-2 console-overline console-ruled">
           Wallet
         </h2>
         <dl className="flex flex-col gap-1 text-xs">
@@ -915,14 +1079,14 @@ function SettingsBody({
                   : "Local seed"
             }
           />
-          <Row label="Fingerprint" value={info.fingerprint} mono />
-          <Row label="Version" value={`v${APP_VERSION_DISPLAY}`} />
+          <Row label="Fingerprint" value={info.fingerprint.toUpperCase()} console />
+          <Row label="Version" value={`v${APP_VERSION_DISPLAY}`} console />
         </dl>
       </Card>
 
       {sites.length > 0 && (
         <Card>
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
+          <h2 className="mb-2 console-overline console-ruled">
             Connected apps
           </h2>
           <ul className="flex flex-col gap-2">
@@ -942,7 +1106,7 @@ function SettingsBody({
       )}
 
       <Card>
-        <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
+        <h2 className="mb-2 console-overline console-ruled">
           Display
         </h2>
         <div className="flex flex-col gap-3">
@@ -950,7 +1114,7 @@ function SettingsBody({
             <select
               value={denom}
               onChange={(e) => onDenomChange(e.target.value as Denom)}
-              className="h-11 w-full rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-sm text-[color:var(--text-strong)] outline-none focus:border-[color:var(--accent)]"
+              className="console-select h-11 w-full rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-sm text-[color:var(--text-strong)] outline-none focus:border-[color:var(--accent)]"
             >
               <option value="sats">Sats</option>
               <option value="btc">L-BTC</option>
@@ -961,7 +1125,7 @@ function SettingsBody({
             <select
               value={fiat}
               onChange={(e) => onFiatChange(e.target.value)}
-              className="h-11 w-full rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-sm text-[color:var(--text-strong)] outline-none focus:border-[color:var(--accent)]"
+              className="console-select h-11 w-full rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-sm text-[color:var(--text-strong)] outline-none focus:border-[color:var(--accent)]"
             >
               {FIAT_OPTIONS.map((c) => (
                 <option key={c} value={c}>
@@ -985,14 +1149,14 @@ function SettingsBody({
       </Card>
 
       <Card>
-        <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
+        <h2 className="mb-2 console-overline console-ruled">
           Security
         </h2>
         <Field label="Auto-lock after inactivity">
           <select
             value={autoLock}
             onChange={(e) => changeAutoLock(Number(e.target.value))}
-            className="h-11 w-full rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-sm text-[color:var(--text-strong)] outline-none focus:border-[color:var(--accent)]"
+            className="console-select h-11 w-full rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-sm text-[color:var(--text-strong)] outline-none focus:border-[color:var(--accent)]"
           >
             {AUTO_LOCK_OPTIONS.map((o) => (
               <option key={o.minutes} value={o.minutes}>
@@ -1020,7 +1184,7 @@ function SettingsBody({
             }}
           >
             <summary className="flex cursor-pointer items-center justify-between">
-              <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[color:var(--text-overline)]">
+              <span className="flex items-center gap-1.5 console-overline">
                 <Eye size={13} />
                 Reveal seed phrase
               </span>
@@ -1034,17 +1198,17 @@ function SettingsBody({
                       <QRCodeSVG value={seed} size={180} level="M" />
                     </div>
                   ) : (
-                    <p className="break-words rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 font-mono text-xs text-[color:var(--text-strong)]">
+                    <p className="selectable break-words rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 font-mono text-xs text-[color:var(--text-strong)]">
                       {seed}
                     </p>
                   )}
                   <div className="mt-0.5 flex flex-col items-center gap-1.5">
                     <div className="flex items-baseline justify-center gap-2">
-                      <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-[color:var(--text-secondary)]">
+                      <span className="console-overline text-[10px] text-[color:var(--text-secondary)]">
                         Auto-hides in
                       </span>
                       <span className="font-telemetry telemetry-glow text-lg leading-none">{revealSecs}</span>
-                      <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-[color:var(--text-secondary)]">
+                      <span className="console-overline text-[10px] text-[color:var(--text-secondary)]">
                         sec
                       </span>
                     </div>
@@ -1087,6 +1251,86 @@ function SettingsBody({
         </Card>
       )}
 
+      <Card>
+        <details className="drawer">
+          <summary className="flex cursor-pointer items-center justify-between">
+            <span className="console-overline">Advanced</span>
+            <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
+          </summary>
+          <div className="mt-3 flex flex-col gap-2">
+          <Field label="Chain server">
+            <select
+              value={serverMode}
+              disabled={serverBusy}
+              onChange={(e) => {
+                const v = e.target.value;
+                setServerMode(v);
+                setServerMsg(null);
+                void saveChainServer(v);
+              }}
+              className="console-select h-11 w-full rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-sm text-[color:var(--text-strong)] outline-none focus:border-[color:var(--accent)]"
+            >
+              <option value="">Automatic (recommended)</option>
+              {chainPresets.map((p) => (
+                <option key={p.url} value={p.url}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {serverBusy && (
+            <p className="text-xs text-[color:var(--text-subtle)]">Checking server…</p>
+          )}
+          {serverMsg &&
+            (serverMsg.ok ? (
+              <p className="text-xs text-[color:var(--success-text)]">{serverMsg.text}</p>
+            ) : (
+              <ErrorText>{serverMsg.text}</ErrorText>
+            ))}
+          <p className="text-xs leading-relaxed text-[color:var(--text-subtle)]">
+            Balances, history, and broadcasts use this server. Automatic picks the fastest
+            available and falls back during outages.
+          </p>
+          </div>
+        </details>
+      </Card>
+
+      {DEBUG_ENTERPRISE_BUILD && !debugHidden && (
+        <Card className="border-dashed border-[color:color-mix(in_srgb,var(--accent-amber)_50%,transparent)]">
+          <details className="drawer">
+            <summary className="flex cursor-pointer items-center justify-between">
+              <span className="console-overline text-[color:var(--warning-text)]">Debug</span>
+              <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
+            </summary>
+            <div className="mt-3 flex items-center justify-between gap-3">
+            <div className="flex min-w-0 flex-col">
+              <span className="text-sm text-[color:var(--text-primary)]">Enterprise chain server</span>
+              <span className="text-xs text-[color:var(--text-subtle)]">
+                Local build only. Overrides the chain server above.
+              </span>
+            </div>
+              <Switch
+                checked={debugEnterprise}
+                onChange={toggleDebugEnterprise}
+                label="Enterprise chain server"
+              />
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <div className="flex min-w-0 flex-col">
+                <span className="text-sm text-[color:var(--text-primary)]">Demo funds</span>
+                <span className="text-xs text-[color:var(--text-subtle)]">
+                  Show an artificial balance and activity for screenshots.
+                </span>
+              </div>
+              <Switch checked={demoFundsOn} onChange={toggleDemoFunds} label="Demo funds" />
+            </div>
+            <Button variant="secondary" size="sm" className="mt-3 w-full" onClick={hideDebugPanel}>
+              Hide panel for one minute
+            </Button>
+          </details>
+        </Card>
+      )}
+
       <Card className="border-[color:var(--danger-border)]">
         {/* Collapsed by default — the reset controls only appear once the user
             opens the drawer, so a wipe takes a deliberate open + type-to-confirm. */}
@@ -1097,7 +1341,7 @@ function SettingsBody({
           }}
         >
           <summary className="flex cursor-pointer items-center justify-between">
-            <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[color:var(--danger-text)]">
+            <span className="flex items-center gap-1.5 console-overline text-[color:var(--danger-text)]">
               <AlertTriangle size={13} />
               Danger zone
             </span>
@@ -1173,7 +1417,7 @@ function SubView({
         <IconButton label="Back" onClick={onBack}>
           <ChevronLeft size={18} />
         </IconButton>
-        <h1 className="text-sm font-semibold text-[color:var(--text-strong)]">{title}</h1>
+        <h1 className="console-title text-[13px]">{title}</h1>
       </div>
       <div
         className={cn(
@@ -1187,11 +1431,48 @@ function SubView({
   );
 }
 
-function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+/** Known-good Esplora presets for the Chain server setting, per network.
+ *  Regtest gets none (localhost setups are custom by nature). */
+function chainPresetsFor(network: LiquidNetwork): Array<{ label: string; url: string }> {
+  switch (network) {
+    case "liquid":
+      return [
+        { label: "Liquid.network", url: "https://liquid.network/api" },
+        { label: "Blockstream.info", url: "https://blockstream.info/liquid/api" },
+      ];
+    case "liquidtestnet":
+      return [
+        { label: "Liquid.network", url: "https://liquid.network/liquidtestnet/api" },
+        { label: "Blockstream.info", url: "https://blockstream.info/liquidtestnet/api" },
+      ];
+    case "regtest":
+      return [];
+  }
+}
+
+function Row({
+  label,
+  value,
+  mono,
+  console: consoleValue,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  console?: boolean; // telemetry-face readout (fingerprint, version)
+}) {
   return (
     <div className="flex items-center justify-between gap-3">
       <dt className="text-[color:var(--text-subtle)]">{label}</dt>
-      <dd className={cn("truncate text-[color:var(--text-primary)]", mono && "font-mono")}>{value}</dd>
+      <dd
+        className={cn(
+          "truncate text-[color:var(--text-primary)]",
+          mono && "font-mono",
+          consoleValue && "console-value text-[13px]",
+        )}
+      >
+        {value}
+      </dd>
     </div>
   );
 }

@@ -8,16 +8,20 @@ import type {
   ReactNode,
   TextareaHTMLAttributes,
 } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Check, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 
+// Console-panel buttons: uppercase, letterspaced labels (Satoshi — the
+// telemetry face is too thin for small bright fills). Primary reads as a lit
+// lamp cell (inset top bevel + a faint phosphor halo); secondary is a quiet
+// translucent console cell.
 const VARIANTS: Record<Variant, string> = {
   primary:
-    "border border-[color:var(--accent)] bg-[linear-gradient(180deg,var(--accent-strong)_0%,var(--accent)_100%)] text-[color:var(--text-on-accent)] shadow-[0_8px_20px_var(--shadow-soft)] hover:brightness-110",
+    "border border-[color:var(--accent)] bg-[linear-gradient(180deg,var(--accent-strong)_0%,var(--accent)_100%)] text-[color:var(--text-on-accent)] shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_8px_20px_var(--shadow-soft),0_0_14px_color-mix(in_srgb,var(--accent)_28%,transparent)] hover:brightness-110",
   secondary:
-    "border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] text-[color:var(--text-primary)] hover:border-[color:var(--border-hover)]",
+    "border border-[color:var(--border-default)] bg-[color:color-mix(in_srgb,var(--surface-soft)_66%,transparent)] text-[color:var(--text-soft)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--accent-strong)_10%,transparent)] hover:border-[color:var(--border-hover)] hover:text-[color:var(--text-strong)]",
   ghost: "text-[color:var(--text-secondary)] hover:text-[color:var(--text-strong)]",
   danger:
     "border border-[color:var(--danger-border)] bg-[color:var(--danger-bg)] text-[color:var(--danger-text)] hover:brightness-110",
@@ -26,8 +30,8 @@ const VARIANTS: Record<Variant, string> = {
 type Size = "md" | "sm";
 
 const SIZES: Record<Size, string> = {
-  md: "h-10 gap-2 px-4 text-sm",
-  sm: "h-8 gap-1.5 px-3 text-xs",
+  md: "h-10 gap-2 px-4 text-[12.5px]",
+  sm: "h-8 gap-1.5 px-3 text-[11px]",
 };
 
 export function Button({
@@ -39,7 +43,7 @@ export function Button({
   return (
     <button
       className={cn(
-        "inline-flex items-center justify-center rounded-lg font-semibold transition disabled:pointer-events-none disabled:opacity-50",
+        "inline-flex items-center justify-center rounded-md font-semibold uppercase tracking-[0.08em] transition disabled:pointer-events-none disabled:opacity-50",
         SIZES[size],
         VARIANTS[variant],
         className,
@@ -49,8 +53,9 @@ export function Button({
   );
 }
 
+// Focus lights a phosphor ring rather than only swapping the border color.
 const FIELD_BASE =
-  "w-full rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-sm text-[color:var(--text-strong)] outline-none placeholder:text-[color:var(--text-subtle)] focus:border-[color:var(--accent)]";
+  "w-full rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-sm text-[color:var(--text-strong)] outline-none placeholder:text-[color:var(--text-subtle)] focus:border-[color:var(--accent)] focus:shadow-[0_0_0_1px_color-mix(in_srgb,var(--accent)_30%,transparent),0_0_12px_color-mix(in_srgb,var(--accent)_18%,transparent)]";
 
 export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
   return <input className={cn("h-11", FIELD_BASE, className)} {...props} />;
@@ -73,7 +78,7 @@ export function Card({ className, children }: { className?: string; children: Re
   return (
     <div
       className={cn(
-        "apogee-panel rounded-2xl border border-[color:var(--border-default)] p-4 shadow-[0_16px_36px_var(--shadow-soft)]",
+        "apogee-panel rounded-xl border border-[color:var(--border-default)] p-4 shadow-[0_16px_36px_var(--shadow-soft)]",
         className,
       )}
     >
@@ -116,7 +121,11 @@ export function StatusDot({
   return (
     <span
       className={cn("inline-block size-2 shrink-0 rounded-full", pulse && "animate-pulse", className)}
-      style={{ backgroundColor: color[tone] }}
+      // Lit tones glow like a panel indicator lamp; idle stays a flat dot.
+      style={{
+        backgroundColor: color[tone],
+        boxShadow: tone === "idle" ? undefined : `0 0 7px ${color[tone]}`,
+      }}
     />
   );
 }
@@ -143,8 +152,11 @@ export function Switch({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
-        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50",
-        checked ? "bg-[color:var(--accent)]" : "bg-[color:var(--border-hover)]",
+        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-[background-color,box-shadow] disabled:opacity-50",
+        // On = a lit indicator: accent track with a soft phosphor halo.
+        checked
+          ? "bg-[color:var(--accent)] shadow-[0_0_10px_color-mix(in_srgb,var(--accent)_55%,transparent),inset_0_1px_0_rgba(255,255,255,0.3)]"
+          : "bg-[color:var(--border-hover)]",
       )}
     >
       <span
@@ -178,7 +190,7 @@ export function ErrorText({ children }: { children?: ReactNode }) {
   return (
     <div
       role="alert"
-      className="flex items-start gap-2 rounded-lg border border-[color:var(--danger-border)] bg-[color:var(--danger-bg)] px-3 py-2.5 text-left text-xs leading-relaxed text-[color:var(--danger-text)]"
+      className="selectable flex items-start gap-2 rounded-lg border border-[color:var(--danger-border)] bg-[color:var(--danger-bg)] px-3 py-2.5 text-left text-xs leading-relaxed text-[color:var(--danger-text)]"
     >
       <AlertTriangle className="mt-px size-4 shrink-0" />
       <span>{children}</span>
@@ -347,5 +359,43 @@ export function CopyButton({
     >
       {copied ? "Copied" : label}
     </Button>
+  );
+}
+
+/** Compact copy control for inline value rows (asset ids, txids): a ghost icon
+ *  that flips to a success check for a moment after copying. The big CopyButton
+ *  stays for deliberate primary actions (address, seed phrase). */
+export function CopyIconButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current != null) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+  return (
+    <button
+      type="button"
+      aria-label={copied ? "Copied" : label}
+      title={copied ? "Copied" : label}
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(value);
+        } catch {
+          return; // clipboard blocked/failed — don't show a misleading check
+        }
+        setCopied(true);
+        if (timer.current != null) window.clearTimeout(timer.current);
+        timer.current = window.setTimeout(() => setCopied(false), 1500);
+      }}
+      className="icon-btn size-6 shrink-0"
+    >
+      {copied ? (
+        <Check size={13} className="text-[color:var(--success-text)]" />
+      ) : (
+        <Copy size={13} />
+      )}
+    </button>
   );
 }
