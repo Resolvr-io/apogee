@@ -18,6 +18,7 @@ import {
   EyeOff,
   QrCode,
   RefreshCw,
+  Telescope,
   Unplug,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
@@ -135,6 +136,9 @@ export function Wallet({
   onReset: () => void;
 }) {
   const active = state.wallets.find((w) => w.id === state.activeWalletId) ?? state.wallets[0];
+  // Watch-only wallets have no key/signer: track balance + receive, but no Send.
+  const watchOnly = active.signer === "watch";
+  const [watchInfo, setWatchInfo] = useState(false); // watch-only explainer modal
   const [hidden, toggleHidden] = useHideBalance();
   const [denom, setDenom, cycleDenom] = useDenomination();
   const [fiat, setFiat] = useFiat();
@@ -343,7 +347,15 @@ export function Wallet({
         onBack={() => onView("home")}
         center={view === "receive" || view === "send"}
       >
-        {view === "receive" && <Receive walletId={active.id} />}
+        {view === "receive" && (
+          <>
+            <Receive walletId={active.id} />
+            {/* Easy return without hunting for the small top-left back arrow. */}
+            <Button variant="secondary" className="mt-3 w-full" onClick={() => onView("home")}>
+              Done
+            </Button>
+          </>
+        )}
         {view === "send" && (
           <Send
             maxSats={sync ? sync.lbtcSats : 0}
@@ -442,9 +454,22 @@ export function Wallet({
         </button>
 
         <div className="mt-3 flex gap-2">
-          <Button className="flex-1" onClick={() => onView("send")}>
-            <ArrowUp size={16} /> Send
-          </Button>
+          {watchOnly ? (
+            // Watch-only wallets hold no key: the Send slot becomes a dashed
+            // marker that opens an explainer on tap (matches the button width).
+            <button
+              type="button"
+              onClick={() => setWatchInfo(true)}
+              aria-label="Why is there no Send?"
+              className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-dashed border-[color:var(--border-hover)] px-4 text-sm font-medium text-[color:var(--text-subtle)] transition hover:border-[color:var(--accent-strong)] hover:text-[color:var(--text-secondary)]"
+            >
+              <Telescope size={16} /> Watch-only
+            </button>
+          ) : (
+            <Button className="flex-1" onClick={() => onView("send")}>
+              <ArrowUp size={16} /> Send
+            </Button>
+          )}
           <Button variant="secondary" className="flex-1" onClick={() => onView("receive")}>
             <ArrowDown size={16} /> Receive
           </Button>
@@ -493,6 +518,34 @@ export function Wallet({
           </>
         )}
       </div>
+
+      {watchInfo && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-[color:var(--overlay)] p-4"
+          onClick={() => setWatchInfo(false)}
+        >
+          <div className="w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <Card>
+              <div className="flex flex-col items-center gap-3 py-2 text-center">
+                <span className="flex size-12 items-center justify-center rounded-full bg-[color:var(--accent-soft)] text-[color:var(--accent-strong)]">
+                  <Telescope size={24} />
+                </span>
+                <h2 className="text-lg font-semibold text-[color:var(--text-strong)]">
+                  Watch-only wallet
+                </h2>
+                <p className="text-sm text-[color:var(--text-secondary)]">
+                  Apogee holds no private keys for this wallet, so it can track and receive but not
+                  send. To spend, open it in the wallet that holds its keys, or import the private
+                  key into Apogee.
+                </p>
+                <Button variant="secondary" className="w-full" onClick={() => setWatchInfo(false)}>
+                  Got it
+                </Button>
+              </div>
+            </Card>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -832,7 +885,16 @@ function SettingsBody({
         <dl className="flex flex-col gap-1 text-xs">
           <Row label="Label" value={info.label} />
           <Row label="Network" value={info.network} />
-          <Row label="Signer" value={info.signer === "jade" ? "Blockstream Jade" : "Local seed"} />
+          <Row
+            label="Signer"
+            value={
+              info.signer === "jade"
+                ? "Blockstream Jade"
+                : info.signer === "watch"
+                  ? "Watch-only (no key)"
+                  : "Local seed"
+            }
+          />
           <Row label="Fingerprint" value={info.fingerprint} mono />
           <Row label="Version" value={`v${APP_VERSION_DISPLAY}`} />
         </dl>
@@ -921,7 +983,7 @@ function SettingsBody({
         </Field>
       </Card>
 
-      {info.signer !== "jade" && (
+      {info.signer === "local" && (
         <Card>
           {/* Collapsed by default to save space. Closing the drawer clears any
               revealed phrase and the password field, so re-revealing is a

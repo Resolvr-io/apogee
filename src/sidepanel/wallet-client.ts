@@ -71,6 +71,12 @@ export const wallet = {
     label: string;
     network: LiquidNetwork;
   }) => call<WalletInfo>({ type: "wallet/addHardwareWallet", ...params }),
+  addWatchOnlyWallet: (params: {
+    password?: string;
+    descriptor: string;
+    label: string;
+    network: LiquidNetwork;
+  }) => call<WalletInfo>({ type: "wallet/addWatchOnlyWallet", ...params }),
   getConnectedSites: () => call<string[]>({ type: "wallet/getConnectedSites" }),
   disconnectSite: (origin: string) => call<void>({ type: "wallet/disconnectSite", origin }),
 };

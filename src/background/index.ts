@@ -16,6 +16,7 @@ import type {
   CreatedWallet,
   DappNetwork,
   DerivedWallet,
+  DescriptorInfo,
   EngineRequest,
   PrepareSendResult,
   ProviderAccount,
@@ -97,6 +98,7 @@ const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
   "wallet/create",
   "wallet/restore",
   "wallet/addHardwareWallet",
+  "wallet/addWatchOnlyWallet",
   "wallet/prepareSend",
   "wallet/send",
   "wallet/revealMnemonic",
@@ -215,6 +217,10 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       broadcastSitesChanged();
       // Fail any parked approvals too, so a reset doesn't leave one approvable.
       rejectPendingApprovals(undefined, "Apogee was reset.");
+      // Tear down the offscreen engine so its cached (per-descriptor) wollets
+      // don't survive the wipe into the next wallet created or restored — a stale
+      // cache would otherwise show a just-deleted wallet's balance/addresses.
+      await closeOffscreen();
       return keystore.reset();
     }
 
@@ -377,6 +383,10 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
 
     case "wallet/send": {
       const info = await walletInfo(msg.walletId);
+      // Watch-only wallets hold no key and no signer — nothing can sign here.
+      if (info.signer === "watch") {
+        throw new Error("Watch-only wallets can't sign or send.");
+      }
       // A Jade signs on the device in a tab; the jade-signed handler finalizes,
       // broadcasts, and fires balance-changed once the signature returns.
       if (info.signer === "jade") {
@@ -415,6 +425,34 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
         signer: msg.signer,
         descriptor: msg.descriptor,
         fingerprint: msg.fingerprint,
+        label: msg.label,
+        network: msg.network,
+      });
+    }
+
+    case "wallet/addWatchOnlyWallet": {
+      if (msg.password && !(await keystore.isInitialized())) {
+        await keystore.initialize(msg.password);
+      }
+      const descriptor = msg.descriptor.trim();
+      // Validate the descriptor and derive its fingerprint in the engine.
+      const info = await engine<DescriptorInfo>({ kind: "descriptorInfo", descriptor });
+      // Guard against a network mismatch — importing a mainnet descriptor as a
+      // testnet/regtest wallet (or vice versa) would silently watch the wrong
+      // chain. lwk's isMainnet() only separates mainnet from non-mainnet, so
+      // testnet and regtest are intentionally interchangeable here — the user
+      // picks which non-mainnet chain, and confusing the two only mis-targets a
+      // test server (never mainnet, where funds live).
+      if (info.mainnet !== (msg.network === "liquid")) {
+        throw new Error(
+          `This descriptor is for ${info.mainnet ? "mainnet (Liquid)" : "testnet/regtest"}. Pick the matching network.`,
+        );
+      }
+      // Persisted like a hardware wallet: watch-only descriptor + signer, no seed.
+      return keystore.addHardwareWallet({
+        signer: "watch",
+        descriptor,
+        fingerprint: info.fingerprint,
         label: msg.label,
         network: msg.network,
       });
@@ -606,6 +644,12 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
         throw new Error("Invalid send amount.");
       }
       const info = await walletInfo();
+      // Watch-only wallets can't sign — refuse before building a PSET or raising
+      // an approval, so the dapp gets an immediate error and the user never sees
+      // an approvable prompt for a wallet that can't spend.
+      if (info.signer === "watch") {
+        throw new Error("Watch-only wallets can't sign or send.");
+      }
       // Build the spend now (watch-only — works even while locked) so the approval
       // shows the real fee. Signing waits until the user approves: a local wallet
       // signs in the offscreen engine, a Jade signs on-device in a tab.
@@ -807,6 +851,12 @@ async function handleApprovalDecision(
   // (the device is the gate). Route the PSET to a Jade signing tab; the
   // jade-signed handler finalizes + broadcasts + fires balance-changed.
   const info = await walletInfo(pending.walletId);
+  // Watch-only wallets can't sign — refuse the spend outright.
+  if (info.signer === "watch") {
+    const err = new Error("Watch-only wallets can't sign or send.");
+    pending.reject(err);
+    throw err;
+  }
   if (info.signer === "jade") {
     // `pending` is always the send variant here, so request.kind is "send"; the
     // else is an unreachable fallback kept only to satisfy the broad request type.

@@ -33,9 +33,11 @@ export type LiquidNetwork = "liquid" | "liquidtestnet" | "regtest";
  *  - "local": a BIP-39 seed stored encrypted in this keystore (software signer).
  *  - "jade": a Blockstream Jade hardware signer — watch-only descriptor here,
  *    signing delegated to the device. No seed is stored (no `enc`).
+ *  - "watch": a watch-only wallet imported from a descriptor — no seed and no
+ *    signer, so it can receive and track balance but can never sign or send.
  * Absent on legacy records → "local".
  */
-export type WalletSigner = "local" | "jade";
+export type WalletSigner = "local" | "jade" | "watch";
 
 const STORE_KEY = "apogee_keystore";
 const ACTIVE_KEY = "apogee_active_wallet";
@@ -385,6 +387,19 @@ export async function addWallet(w: NewWallet): Promise<WalletInfo> {
     .map((id) => store.wallets[id])
     .find((rec) => rec?.descriptor === w.descriptor);
   if (existing) {
+    // Restoring (or creating) the seed for a descriptor already imported as
+    // watch-only upgrades that record in place to a spendable local wallet:
+    // persist the encrypted seed and flip the signer, so the user isn't stuck
+    // with an unspendable wallet they hold the keys for. A full local wallet
+    // with the same descriptor is just a dedupe — return it unchanged.
+    if (existing.signer === "watch") {
+      existing.signer = "local";
+      // Refresh to the seed-derived fingerprint; the watch-only import read it
+      // from the descriptor's key-origin text, which lwk doesn't verify.
+      existing.fingerprint = w.fingerprint;
+      existing.enc = await encryptString(derivedKey, w.mnemonic, mnemonicAad(existing.id));
+      await saveStore(store);
+    }
     unlockedMnemonics.set(existing.id, w.mnemonic);
     return toInfo(existing);
   }
