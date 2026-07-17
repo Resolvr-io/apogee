@@ -11,6 +11,11 @@ import type { LiquidNetwork, WalletInfo, WalletSigner } from "@/keystore/keystor
 
 // ---- service worker → offscreen engine -------------------------------------
 
+/** IndexedDB database holding persisted scan state (see offscreen.ts). Shared
+ *  so the service worker's wallet/reset deletes the same database the
+ *  offscreen writes — a drifted string literal would silently stop clearing. */
+export const SCAN_STATE_DB = "apogee-scan-state";
+
 /** A request executed inside the offscreen document against lwk_wasm. */
 export type EngineRequest =
   | { kind: "generateMnemonic"; words?: 12 | 24 }
@@ -35,10 +40,14 @@ export type EngineRequest =
       sats: number;
       drain?: boolean;
     }
-  | { kind: "signBroadcast"; mnemonic: string; descriptor: string; network: LiquidNetwork; pset: string }
+  | { kind: "signBroadcast"; mnemonic: string; descriptor: string; network: LiquidNetwork; pset: string; esploraUrl?: string }
   // Finalize an already-signed PSET (e.g. signed on a Jade) + broadcast it. No
   // seed — the watch-only Wollet finalizes and the Esplora client broadcasts.
-  | { kind: "finalizeBroadcast"; descriptor: string; network: LiquidNetwork; pset: string };
+  | { kind: "finalizeBroadcast"; descriptor: string; network: LiquidNetwork; pset: string; esploraUrl?: string }
+  // Probe a user-supplied Esplora server: reachable, and serving the expected
+  // network (checked against the chain genesis hash). Throws with a clean
+  // message on failure; returns true.
+  | { kind: "checkEsplora"; url: string; network: LiquidNetwork };
 
 /** Result of `descriptorInfo`: the master fingerprint embedded in a watch-only
  *  descriptor, and whether it targets mainnet (used to sanity-check the network). */
@@ -118,6 +127,8 @@ export type WalletRequest =
   | { type: "wallet/getRate"; currency: string }
   | { type: "wallet/qr"; text: string }
   | { type: "wallet/getAsset"; assetId: string; network: LiquidNetwork }
+  | { type: "wallet/getChainServer"; network: LiquidNetwork } // per-network Esplora override ("" = automatic)
+  | { type: "wallet/setChainServer"; network: LiquidNetwork; url: string } // "" clears back to automatic
   | { type: "wallet/getAutoLock" } // idle auto-lock timeout in minutes (0 = never)
   | { type: "wallet/setAutoLock"; minutes: number }
   // Heartbeat from genuine side-panel activity (pointer/keyboard) that re-arms

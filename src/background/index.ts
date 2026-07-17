@@ -9,6 +9,8 @@
 
 import type { LiquidNetwork } from "@/keystore/keystore";
 import * as keystore from "@/keystore/keystore";
+import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "@/lib/debug";
+import { SCAN_STATE_DB } from "@/engine/protocol";
 import type {
   AddressDTO,
   ApprovalRequest,
@@ -104,6 +106,7 @@ const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
   "wallet/revealMnemonic",
   "wallet/verifyPassword",
   "wallet/setAutoLock",
+  "wallet/setChainServer",
   "wallet/getAddress",
   "wallet/disconnectSite",
   "wallet/touch",
@@ -124,6 +127,26 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     chrome.runtime.sendMessage({ type: "apogee/locked" }).catch(() => {});
   });
 });
+
+// ---- chain-server override ---------------------------------------------------
+
+// Per-network Esplora override ("Chain server" in Settings > Advanced). Empty/
+// absent = automatic (waterfalls + fallbacks). Validated by the checkEsplora
+// engine op before persisting, threaded into every scan and broadcast.
+const CHAINSERVER_KEY = "apogee:chainserver";
+
+async function chainServer(network: LiquidNetwork): Promise<string | undefined> {
+  // Debug builds: the Settings > Debug toggle pins the authenticated enterprise
+  // endpoint through this same override channel (see lib/debug.ts). Checked
+  // first so it outranks the visible Chain server picker while enabled.
+  if (DEBUG_ENTERPRISE_BUILD) {
+    const dbg = (await chrome.storage.local.get(DEBUG_ENTERPRISE_KEY))[DEBUG_ENTERPRISE_KEY];
+    if (dbg === true) return ENTERPRISE_ROOTS[network] ?? undefined;
+  }
+  const v = (await chrome.storage.local.get(CHAINSERVER_KEY))[CHAINSERVER_KEY];
+  const url = v && typeof v === "object" ? (v as Record<string, unknown>)[network] : undefined;
+  return typeof url === "string" && url !== "" ? url : undefined;
+}
 
 // ---- offscreen engine lifecycle --------------------------------------------
 
@@ -167,6 +190,17 @@ async function closeOffscreen(): Promise<void> {
 // With a second caller now in play (the dapp provider alongside the side panel),
 // a chain ensures only one engine op runs at a time.
 let engineQueue: Promise<unknown> = Promise.resolve();
+
+/** One engine round-trip, outside the serial queue. Only for ops that touch no
+ *  Wollet (getRate, qr) — those can't hit the re-entrancy panic, and keeping
+ *  them out of the queue means a slow price source can't stall a sync (or
+ *  anything queued behind one). */
+async function engineDirect<T>(req: EngineRequest): Promise<T> {
+  await ensureOffscreen();
+  const reply = await chrome.runtime.sendMessage({ target: "offscreen", req });
+  if (!reply?.ok) throw new Error(reply?.error ?? "engine error");
+  return reply.value as T;
+}
 
 async function engine<T>(req: EngineRequest): Promise<T> {
   const run = engineQueue.then(async () => {
@@ -221,6 +255,19 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       // don't survive the wipe into the next wallet created or restored — a stale
       // cache would otherwise show a just-deleted wallet's balance/addresses.
       await closeOffscreen();
+      // Drop persisted scan state too — the IndexedDB the offscreen rehydrates
+      // from (offscreen is already closed above, so the delete never blocks).
+      await new Promise<void>((resolve) => {
+        const req = indexedDB.deleteDatabase(SCAN_STATE_DB);
+        req.onsuccess = req.onerror = () => resolve();
+        req.onblocked = () => {
+          // Shouldn't happen (the offscreen is closed above and opens per-op),
+          // but a blocked delete would leave orphaned scan state behind — log
+          // it so a reset that didn't fully clear is visible.
+          console.warn("[apogee] scan-state delete blocked during reset");
+          resolve();
+        };
+      });
       return keystore.reset();
     }
 
@@ -303,7 +350,12 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
 
     case "wallet/sync": {
       const info = await walletInfo(msg.walletId);
-      return engine<SyncResult>({ kind: "sync", descriptor: info.descriptor, network: info.network });
+      return engine<SyncResult>({
+        kind: "sync",
+        descriptor: info.descriptor,
+        network: info.network,
+        esploraUrl: await chainServer(info.network),
+      });
     }
 
     case "wallet/getAddress": {
@@ -343,13 +395,30 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
     }
 
     case "wallet/getRate":
-      return engine<number>({ kind: "getRate", currency: msg.currency });
+      return engineDirect<number>({ kind: "getRate", currency: msg.currency });
 
     case "wallet/qr":
       return engine<string>({ kind: "qr", text: msg.text });
 
     case "wallet/getAsset":
       return engine<AssetInfo>({ kind: "getAsset", assetId: msg.assetId, network: msg.network });
+
+    case "wallet/getChainServer": {
+      return (await chainServer(msg.network)) ?? "";
+    }
+
+    case "wallet/setChainServer": {
+      const url = msg.url.trim().replace(/\/+$/, "");
+      // Validate a non-empty URL in the engine (reachable + right network)
+      // before persisting; "" clears back to automatic.
+      if (url) await engineDirect<boolean>({ kind: "checkEsplora", url, network: msg.network });
+      const v = (await chrome.storage.local.get(CHAINSERVER_KEY))[CHAINSERVER_KEY];
+      const map = v && typeof v === "object" ? { ...(v as Record<string, string>) } : {};
+      if (url) map[msg.network] = url;
+      else delete map[msg.network];
+      await chrome.storage.local.set({ [CHAINSERVER_KEY]: map });
+      return;
+    }
 
     case "wallet/getAutoLock":
       return autoLockMinutes();
@@ -410,6 +479,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
         descriptor: info.descriptor,
         network: info.network,
         pset: msg.pset,
+        esploraUrl: await chainServer(info.network),
       });
       // Nudge the side panel to poll the balance to settlement instead of
       // waiting for the periodic auto-sync.
@@ -614,6 +684,7 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
         kind: "sync",
         descriptor: info.descriptor,
         network: info.network,
+        esploraUrl: await chainServer(info.network),
       });
       // Surface the full per-asset map too (L-BTC + tokens); the dapp filters
       // L-BTC out and resolves token metadata via provider/getAssetInfo.
@@ -907,6 +978,7 @@ async function handleApprovalDecision(
       descriptor: pending.descriptor,
       network: pending.network,
       pset: pending.pset,
+      esploraUrl: await chainServer(pending.network),
     });
     pending.resolve(result);
     // Tell open surfaces (the side panel) to re-sync now instead of waiting for
@@ -1057,12 +1129,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: false, error: "This signing request expired." });
       return false;
     }
-    engine<SendResult>({
-      kind: "finalizeBroadcast",
-      descriptor: p.descriptor,
-      network: p.network,
-      pset: String(msg.pset),
-    })
+    chainServer(p.network)
+      .then((esploraUrl) =>
+        engine<SendResult>({
+          kind: "finalizeBroadcast",
+          descriptor: p.descriptor,
+          network: p.network,
+          pset: String(msg.pset),
+          esploraUrl,
+        }),
+      )
       .then((res) => {
         p.resolve(res.txid);
         chrome.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});

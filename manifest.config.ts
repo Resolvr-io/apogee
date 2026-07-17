@@ -1,10 +1,19 @@
 import { defineManifest } from "@crxjs/vite-plugin";
+import { loadEnv } from "vite";
 import pkg from "./package.json";
 
 // MV3 manifest, authored in TS so paths point at source files; crxjs
 // rewrites them to the hashed build outputs. A service-worker backend, a
 // side panel, and a page provider front the Liquid wallet engine, which
 // runs lwk_wasm in an offscreen document.
+// Debug builds only: a gitignored .env.local baking enterprise credentials also
+// adds the two enterprise hosts (see src/lib/debug.ts). Store/CI builds have
+// neither.
+const hasEnterprise = (mode: string): boolean => {
+  const e = loadEnv(mode, process.cwd(), "VITE_");
+  return Boolean(e.VITE_BS_ENTERPRISE_CLIENT_ID && e.VITE_BS_ENTERPRISE_CLIENT_SECRET);
+};
+
 export default defineManifest((env) => ({
   manifest_version: 3,
   name: "Apogee",
@@ -28,6 +37,9 @@ export default defineManifest((env) => ({
   // Esplora endpoints (extension-origin fetch is CORS-exempt) + the
   // localhost gateway for contract reads during dev.
   host_permissions: [
+    ...(hasEnterprise(env.mode)
+      ? ["https://enterprise.blockstream.info/*", "https://login.blockstream.com/*"]
+      : []),
     "https://waterfalls.liquidwebwallet.org/*", // waterfalls scan server (default sync)
     "https://*.blockstream.info/*", // plain Esplora + asset registry (assets.blockstream.info)
     "https://blockstream.info/*", // plain Esplora (override)

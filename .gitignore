@@ -4,3 +4,7 @@ dist/
 .DS_Store
 *.log
 .vite/
+
+# local-only env (enterprise API credentials for dev/test) — never commit
+.env.local
+.env*.local
