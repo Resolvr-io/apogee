@@ -644,6 +644,12 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
         throw new Error("Invalid send amount.");
       }
       const info = await walletInfo();
+      // Watch-only wallets can't sign — refuse before building a PSET or raising
+      // an approval, so the dapp gets an immediate error and the user never sees
+      // an approvable prompt for a wallet that can't spend.
+      if (info.signer === "watch") {
+        throw new Error("Watch-only wallets can't sign or send.");
+      }
       // Build the spend now (watch-only — works even while locked) so the approval
       // shows the real fee. Signing waits until the user approves: a local wallet
       // signs in the offscreen engine, a Jade signs on-device in a tab.

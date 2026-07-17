@@ -394,6 +394,9 @@ export async function addWallet(w: NewWallet): Promise<WalletInfo> {
     // with the same descriptor is just a dedupe — return it unchanged.
     if (existing.signer === "watch") {
       existing.signer = "local";
+      // Refresh to the seed-derived fingerprint; the watch-only import read it
+      // from the descriptor's key-origin text, which lwk doesn't verify.
+      existing.fingerprint = w.fingerprint;
       existing.enc = await encryptString(derivedKey, w.mnemonic, mnemonicAad(existing.id));
       await saveStore(store);
     }
