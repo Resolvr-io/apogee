@@ -4,6 +4,7 @@ import type { KeystoreState } from "@/keystore/keystore";
 import { ErrorText, IconButton, LoadingPill } from "@/sidepanel/components/ui";
 import { ToastView, type ToastNotice } from "@/sidepanel/components/Toast";
 import { ConnectionBar } from "@/sidepanel/components/ConnectionBar";
+import { VersionBadge } from "@/sidepanel/components/VersionBadge";
 import { errMessage, wallet } from "@/sidepanel/wallet-client";
 import { Scene } from "@/sidepanel/components/Scene";
 import { useAnimations } from "@/sidepanel/use-animations";
@@ -169,6 +170,7 @@ export function App() {
         />
       </main>
       {unlocked && <ConnectionBar onManage={() => setView("settings")} />}
+      <VersionBadge />
       <ToastView toast={toast} />
       {approval && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-[color:var(--overlay)] p-4">
