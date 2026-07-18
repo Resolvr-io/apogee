@@ -175,6 +175,10 @@ export function Wallet({
   const [fiat, setFiat] = useFiat();
   const [rate, setRate] = useState<number | null>(null);
   const [rateFailed, setRateFailed] = useState(false);
+  // BTC→USD rate, fetched only when a USD-pegged token is held and the display
+  // currency isn't USD — it converts the peg into the chosen fiat
+  // (peggedFiat = units × rate/rateUsd). USD display needs no conversion.
+  const [rateUsd, setRateUsd] = useState<number | null>(null);
   const [liveSync, setSync] = useState<SyncResult | null>(null);
   const [liveTxs, setTxs] = useState<WalletTxDTO[]>([]);
   const [liveAssets, setAssets] = useState<Record<string, AssetInfo>>({});
@@ -203,6 +207,29 @@ export function Wallet({
       alive = false;
     };
   }, [fiat]);
+
+  const holdsPeggedToken = Boolean(
+    sync &&
+      Object.entries(sync.balance).some(
+        ([a, amt]) => a !== sync.policyAssetHex && amt > 0 && KNOWN_ASSETS[a]?.pegUsd,
+      ),
+  );
+  useEffect(() => {
+    if (fiat === "USD" || !holdsPeggedToken) {
+      setRateUsd(null);
+      return;
+    }
+    let alive = true;
+    wallet
+      .getRate("USD")
+      .then((r) => alive && setRateUsd(r))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [fiat, holdsPeggedToken]);
+  // 1 USD in the display currency, or null when unknown/not needed.
+  const usdToFiat = fiat === "USD" ? 1 : rate != null && rateUsd != null ? rate / rateUsd : null;
 
   // `silent` background refreshes (the auto-poll / tab-focus) update balance and
   // activity without flashing the sync spinner or surfacing transient errors.
@@ -538,6 +565,8 @@ export function Wallet({
           hidden={hidden}
           assets={assets}
           network={active.network}
+          fiat={fiat}
+          usdToFiat={usdToFiat}
           onSend={
             watchOnly
               ? null
@@ -646,12 +675,16 @@ function Tokens({
   hidden,
   assets,
   network,
+  fiat,
+  usdToFiat,
   onSend,
 }: {
   sync: SyncResult | null;
   hidden: boolean;
   assets: Record<string, AssetInfo>;
   network: LiquidNetwork;
+  fiat: string;
+  usdToFiat: number | null; // 1 USD in the display currency (null = unknown)
   onSend: ((assetId: string) => void) | null; // null → no send affordance (watch-only)
 }) {
   const tokens = sync
@@ -671,7 +704,15 @@ function Tokens({
           // Scale the raw base-unit balance by the asset's precision (e.g. a
           // precision-3 TEST balance of 1000 → "1.000"); unknown precision falls
           // back to the raw integer.
-          const amountLabel = formatAssetAmount(amt, KNOWN_ASSETS[asset]?.precision ?? info?.precision ?? null);
+          const precision = KNOWN_ASSETS[asset]?.precision ?? info?.precision ?? null;
+          const amountLabel = formatAssetAmount(amt, precision);
+          // USD-pegged stablecoins show an approximate fiat value (1 unit ≈ $1,
+          // converted into the display currency). Anything else has no price
+          // source, so no figure is shown — honest over guessed.
+          const fiatValue =
+            KNOWN_ASSETS[asset]?.pegUsd && usdToFiat != null && precision != null
+              ? (amt / 10 ** precision) * usdToFiat
+              : null;
           return (
             <details
               key={asset}
@@ -683,11 +724,18 @@ function Tokens({
                   <span className="text-sm text-[color:var(--text-primary)]">{label}</span>
                 </span>
                 <span className="flex items-center gap-2">
-                  <span className="text-[color:var(--text-strong)]">
-                    {hidden ? (
-                      <HiddenValue count={3} size={8} className="text-[color:var(--text-subtle)]" />
-                    ) : (
-                      <TelemetryNumber value={amountLabel} glow={false} />
+                  <span className="flex flex-col items-end">
+                    <span className="text-[color:var(--text-strong)]">
+                      {hidden ? (
+                        <HiddenValue count={3} size={8} className="text-[color:var(--text-subtle)]" />
+                      ) : (
+                        <TelemetryNumber value={amountLabel} glow={false} />
+                      )}
+                    </span>
+                    {!hidden && fiatValue != null && (
+                      <span className="text-[11px] text-[color:var(--text-subtle)]">
+                        ≈ {formatFiat(fiatValue, fiat)}
+                      </span>
                     )}
                   </span>
                   <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
