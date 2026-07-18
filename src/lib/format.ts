@@ -44,7 +44,7 @@ export function parseAssetAmount(text: string, precision: number): number | null
   const [whole, frac = ""] = t.split(".");
   const p = precision > 0 ? precision : 0;
   if (frac.length > p) return null;
-  const units = BigInt(whole) * BigInt(10 ** p) + BigInt(frac.padEnd(p, "0") || "0");
+  const units = BigInt(whole) * 10n ** BigInt(p) + BigInt(frac.padEnd(p, "0") || "0");
   if (units > BigInt(Number.MAX_SAFE_INTEGER)) return null;
   return Number(units);
 }

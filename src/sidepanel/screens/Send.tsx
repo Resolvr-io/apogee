@@ -113,7 +113,15 @@ export function Send({
   const isBtc = unit === "btc";
   // The L-BTC amount is entered in the active denomination; tokens always enter
   // in their own precision. The engine works in base units either way.
-  const unitLabel = isLbtc ? (isBtc ? "L-BTC" : "sats") : assetLabel;
+  // Unknown precision (unregistered token) degrades to raw base-unit entry —
+  // internally consistent, and the label says so.
+  const unitLabel = isLbtc
+    ? isBtc
+      ? "L-BTC"
+      : "sats"
+    : precision == null
+      ? `${assetLabel} base units`
+      : assetLabel;
   const enteredUnits = (() => {
     if (isLbtc) {
       const n = Number(amount);
