@@ -852,32 +852,85 @@ async function handle(req: EngineRequest): Promise<unknown> {
         throw e; // confidential but e.g. wrong network — surface lwk's error
       }
 
-      // Confidential recipient. Send max drains all L-BTC (fee taken from the
-      // amount); otherwise send exactly the requested sats. Guard the fixed-amount
-      // path so a non-integer/negative sats can't reach BigInt() and throw raw.
-      if (!req.drain && (!Number.isSafeInteger(req.sats) || req.sats <= 0)) {
+      // Which asset moves: absent (or the policy asset itself) → the L-BTC path,
+      // unchanged; anything else → a token send via addRecipient. The fee is
+      // ALWAYS paid in L-BTC, so token sends need L-BTC alongside the token.
+      const isToken = typeof req.asset === "string" && req.asset !== entry.policyAssetHex;
+      let assetId: Lwk.AssetId | null = null;
+      if (isToken) {
+        try {
+          assetId = lwk.AssetId.fromString(req.asset as string);
+        } catch {
+          throw new Error("Invalid asset id.");
+        }
+        // Fee-affordability preflight: a wallet flush with tokens but empty of
+        // L-BTC can't pay the network fee — say so instead of surfacing lwk's
+        // raw insufficient-funds error for an asset the user has plenty of.
+        const balances = balanceToRecord(entry.wollet.balance());
+        if ((balances[entry.policyAssetHex] ?? 0) <= 0) {
+          throw new Error("You need L-BTC to pay the network fee — this wallet has none.");
+        }
+      }
+
+      // Token "send max" = the full token balance as a fixed amount (there is no
+      // asset drain in lwk, and none is needed: the fee comes from L-BTC, so
+      // sending the entire token balance is an ordinary fixed send). Resolve the
+      // amount here from the live wallet balance rather than trusting the UI's
+      // possibly-stale figure.
+      let sats = req.sats;
+      if (isToken && req.drain) {
+        sats = balanceToRecord(entry.wollet.balance())[req.asset as string] ?? 0;
+      }
+
+      // Guard the fixed-amount path so a non-integer/negative amount can't reach
+      // BigInt() and throw raw. (L-BTC drain skips this — the builder sets the
+      // amount.)
+      if ((isToken || !req.drain) && (!Number.isSafeInteger(sats) || sats <= 0)) {
         throw new Error("Invalid send amount.");
       }
-      const pset: Lwk.Pset = req.drain
-        ? new lwk.TxBuilder(net).drainLbtcWallet().drainLbtcTo(addr).finish(entry.wollet)
-        : new lwk.TxBuilder(net).addLbtcRecipient(addr, BigInt(req.sats)).finish(entry.wollet);
+
+      let pset: Lwk.Pset;
+      try {
+        pset = isToken
+          ? new lwk.TxBuilder(net)
+              .addRecipient(addr, BigInt(sats), assetId as Lwk.AssetId)
+              .finish(entry.wollet)
+          : req.drain
+            ? new lwk.TxBuilder(net).drainLbtcWallet().drainLbtcTo(addr).finish(entry.wollet)
+            : new lwk.TxBuilder(net).addLbtcRecipient(addr, BigInt(sats)).finish(entry.wollet);
+      } catch (e) {
+        // A token send with ample token balance can still fail on the L-BTC fee;
+        // translate lwk's generic insufficient-funds into the actionable cause.
+        const m = e instanceof Error ? e.message.toLowerCase() : "";
+        if (isToken && m.includes("insufficient")) {
+          const balances = balanceToRecord(entry.wollet.balance());
+          if ((balances[req.asset as string] ?? 0) >= sats) {
+            throw new Error("Not enough L-BTC to pay the network fee.");
+          }
+        }
+        throw e;
+      }
 
       // Derive fee AND recipient amount from the PSET we actually built — never
-      // from caller-supplied `sats`. lwk reports the wallet's net policy-asset
-      // delta for this PSET (negative for a spend); its magnitude is
-      // recipient + fee, so the recipient receives (-netPolicy - fee). Correct for
-      // both drain (where the built PSET, not `sats`, sets the amount) and a fixed
-      // send, and computed from the wallet's own inputs/change so it holds even
-      // with confidential recipient outputs (unlike per-output reads).
+      // from caller-supplied `sats`. lwk reports the wallet's net per-asset
+      // deltas for this PSET (negative for a spend). For L-BTC the policy delta's
+      // magnitude is recipient + fee, so the recipient receives (-netPolicy - fee);
+      // for a token the fee lives entirely in the policy delta, so the recipient
+      // amount is simply the magnitude of the token delta — no fee term. Computed
+      // from the wallet's own inputs/change so it holds even with confidential
+      // recipient outputs (per-output reads are undefined when blinded).
       const psetBalance = entry.wollet.psetDetails(pset).balance();
       const fee = Number(psetBalance.feesIn(net.policyAsset()));
-      const netPolicy = balanceToRecord(psetBalance.balances())[entry.policyAssetHex] ?? 0;
-      const recipientSats = -netPolicy - fee;
+      const deltas = balanceToRecord(psetBalance.balances());
+      const recipientAmount = isToken
+        ? -(deltas[req.asset as string] ?? 0)
+        : -(deltas[entry.policyAssetHex] ?? 0) - fee;
 
       const result: PrepareSendResult = {
         pset: pset.toString(),
         fee,
-        recipientSats,
+        recipientSats: recipientAmount,
+        assetId: isToken ? (req.asset as string) : entry.policyAssetHex,
       };
       return result;
     }

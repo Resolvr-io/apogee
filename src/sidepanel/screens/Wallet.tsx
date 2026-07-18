@@ -168,6 +168,8 @@ export function Wallet({
   // Watch-only wallets have no key/signer: track balance + receive, but no Send.
   const watchOnly = active.signer === "watch";
   const [watchInfo, setWatchInfo] = useState(false); // watch-only explainer modal
+  // Asset preselected for the Send screen (set when launching from a token row).
+  const [sendAssetId, setSendAssetId] = useState<string | null>(null);
   const [hidden, toggleHidden] = useHideBalance();
   const [denom, setDenom, cycleDenom] = useDenomination();
   const [fiat, setFiat] = useFiat();
@@ -394,14 +396,18 @@ export function Wallet({
         )}
         {view === "send" && (
           <Send
-            maxSats={sync ? sync.lbtcSats : 0}
+            sync={sync}
+            assets={assets}
+            initialAssetId={sendAssetId ?? undefined}
             network={active.network}
             // Enter in BTC when that's the chosen denomination; sats otherwise
             // (incl. fiat — the hero shows sats alongside the fiat figure).
+            // Applies to L-BTC only — tokens enter in their own precision.
             unit={denom === "btc" ? "btc" : "sats"}
             // A Jade wallet signs on-device in a tab; the Send UI cues the user.
             isJade={active.signer === "jade"}
             onDone={() => {
+              setSendAssetId(null);
               // The send already broadcasts apogee/balance-changed, which drives the
               // settle poll; no extra refresh needed here.
               onView("home");
@@ -502,7 +508,13 @@ export function Wallet({
               <Telescope size={16} /> Watch-only
             </button>
           ) : (
-            <Button className="flex-1" onClick={() => onView("send")}>
+            <Button
+              className="flex-1"
+              onClick={() => {
+                setSendAssetId(null);
+                onView("send");
+              }}
+            >
               <ArrowUp size={16} /> Send
             </Button>
           )}
@@ -521,7 +533,20 @@ export function Wallet({
         className="apogee-scrollbar apogee-feather-top flex-1 overflow-y-auto px-4 pb-4 pt-6"
       >
         <ErrorText>{error}</ErrorText>
-        <Tokens sync={sync} hidden={hidden} assets={assets} network={active.network} />
+        <Tokens
+          sync={sync}
+          hidden={hidden}
+          assets={assets}
+          network={active.network}
+          onSend={
+            watchOnly
+              ? null
+              : (id) => {
+                  setSendAssetId(id);
+                  onView("send");
+                }
+          }
+        />
         <h2 className="mb-2 mt-3 px-1 console-overline console-ruled">
           Activity
         </h2>
@@ -621,11 +646,13 @@ function Tokens({
   hidden,
   assets,
   network,
+  onSend,
 }: {
   sync: SyncResult | null;
   hidden: boolean;
   assets: Record<string, AssetInfo>;
   network: LiquidNetwork;
+  onSend: ((assetId: string) => void) | null; // null → no send affordance (watch-only)
 }) {
   const tokens = sync
     ? Object.entries(sync.balance).filter(([a, amt]) => a !== sync.policyAssetHex && amt > 0)
@@ -681,6 +708,16 @@ function Tokens({
                 {info?.name && <Row label="Name" value={info.name} />}
                 {info?.ticker && <Row label="Ticker" value={info.ticker} />}
                 {info?.precision != null && <Row label="Precision" value={String(info.precision)} />}
+                {onSend && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="mt-1 w-full"
+                    onClick={() => onSend(asset)}
+                  >
+                    <ArrowUp size={14} /> Send {label}
+                  </Button>
+                )}
               </div>
             </details>
           );

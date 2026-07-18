@@ -31,7 +31,9 @@ export type EngineRequest =
   // Validate a pasted watch-only descriptor and read its fingerprint + network
   // (constructing the WolletDescriptor throws on a malformed descriptor).
   | { kind: "descriptorInfo"; descriptor: string }
-  // `drain` (send max): send all L-BTC to the address, fee deducted from amount.
+  // `drain` (send max): for L-BTC, drain the wallet (fee deducted from the
+  // amount); for a token (`asset` set), send the full token balance (the fee is
+  // paid in L-BTC, so no deduction). `sats` is in the asset's base units.
   | {
       kind: "prepareSend";
       descriptor: string;
@@ -39,6 +41,7 @@ export type EngineRequest =
       address: string;
       sats: number;
       drain?: boolean;
+      asset?: string; // asset id hex; absent → L-BTC (policy asset)
     }
   | { kind: "signBroadcast"; mnemonic: string; descriptor: string; network: LiquidNetwork; pset: string; esploraUrl?: string }
   // Finalize an already-signed PSET (e.g. signed on a Jade) + broadcast it. No
@@ -137,7 +140,7 @@ export type WalletRequest =
   // Dapp connections (window.apogee): list/revoke sites connected to the wallet.
   | { type: "wallet/getConnectedSites" }
   | { type: "wallet/disconnectSite"; origin: string }
-  | { type: "wallet/prepareSend"; walletId?: string; address: string; sats: number; drain?: boolean }
+  | { type: "wallet/prepareSend"; walletId?: string; address: string; sats: number; drain?: boolean; asset?: string }
   // `review` (optional) carries the human-readable spend details so a Jade send
   // can show a transaction summary in its signing tab; ignored for local signing.
   | { type: "wallet/send"; walletId?: string; pset: string; review?: SendReview; password?: string }
@@ -172,8 +175,9 @@ export interface CreatedWallet {
 /** A built, reviewable spend: the PSET to sign + the network fee in sats. */
 export interface PrepareSendResult {
   pset: string;
-  fee: number;
-  recipientSats: number; // what the recipient actually receives
+  fee: number; // network fee, always in L-BTC sats
+  recipientSats: number; // what the recipient actually receives, in BASE UNITS of `assetId`
+  assetId: string; // which asset moves — the policy asset hex for L-BTC sends
 }
 
 export interface SendResult {
@@ -183,9 +187,14 @@ export interface SendResult {
 /** Human-readable spend details for the Jade signing tab's review summary. */
 export interface SendReview {
   address: string;
-  recipientSats: number;
-  fee: number;
+  recipientSats: number; // base units of the sent asset (sats for L-BTC)
+  fee: number; // L-BTC sats
   drain: boolean;
+  // Present for token sends (display-only — the PSET is the signed truth, and
+  // the Jade device shows asset ids on-screen independently).
+  assetId?: string;
+  assetTicker?: string | null;
+  assetPrecision?: number | null;
 }
 
 // ---- page provider (dapp) → content bridge → service worker ----------------

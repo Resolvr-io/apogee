@@ -447,6 +447,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
         address: msg.address,
         sats: msg.sats,
         drain: msg.drain,
+        asset: msg.asset,
       });
     }
 
@@ -464,6 +465,11 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
           recipientSats: msg.review?.recipientSats ?? 0,
           fee: msg.review?.fee ?? 0,
           drain: msg.review?.drain ?? false,
+          // Token-send display fields (absent for L-BTC) — the Jade tab renders
+          // the asset amount and id; the device itself is the signed truth.
+          assetId: msg.review?.assetId,
+          assetTicker: msg.review?.assetTicker,
+          assetPrecision: msg.review?.assetPrecision,
         });
       }
       // A never-auto-locking wallet stays unlocked indefinitely, so step up auth.

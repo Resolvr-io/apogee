@@ -16,7 +16,7 @@ import type * as Lwk from "lwk_wasm";
 import type { LiquidNetwork } from "@/keystore/keystore";
 import type { SendReview } from "@/engine/protocol";
 import { explorerTxUrl } from "@/lib/explorer";
-import { formatSats } from "@/lib/format";
+import { formatAssetAmount, formatSats } from "@/lib/format";
 import { isValidFingerprint, shortenHex } from "@/lib/utils";
 
 const params = new URLSearchParams(location.search);
@@ -85,11 +85,20 @@ function badgeHtml(net: string): string {
 }
 
 function summaryHtml(s: SendReview): string {
+  // Token sends (assetId present) show the amount in the asset's units plus the
+  // shortened asset id so the user can cross-check against the Jade's own
+  // on-device display; the fee is always L-BTC, and a cross-asset Total is
+  // meaningless so the Total row is L-BTC-only.
+  const isToken = Boolean(s.assetId);
+  const amount = isToken
+    ? `${formatAssetAmount(s.recipientSats, s.assetPrecision ?? null)} ${esc(s.assetTicker ?? shortenHex(s.assetId ?? "", 6, 6))}`
+    : `${formatSats(s.recipientSats)} sats`;
   return `<div class="summary">
       <div class="row"><span class="k">To</span><span class="v mono">${esc(shortenHex(s.address, 10, 8))}</span></div>
-      <div class="row"><span class="k">${s.drain ? "Amount (max)" : "Amount"}</span><span class="v">${formatSats(s.recipientSats)} sats</span></div>
+      <div class="row"><span class="k">${s.drain ? "Amount (max)" : "Amount"}</span><span class="v">${amount}</span></div>
+      ${isToken ? `<div class="row"><span class="k">Asset</span><span class="v mono">${esc(shortenHex(s.assetId ?? "", 8, 8))}</span></div>` : ""}
       <div class="row"><span class="k">Network fee</span><span class="v">${formatSats(s.fee)} sats</span></div>
-      <div class="row total"><span class="k">Total</span><span class="v">${formatSats(s.recipientSats + s.fee)} sats</span></div>
+      ${isToken ? "" : `<div class="row total"><span class="k">Total</span><span class="v">${formatSats(s.recipientSats + s.fee)} sats</span></div>`}
     </div>`;
 }
 
