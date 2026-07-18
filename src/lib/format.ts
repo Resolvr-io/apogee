@@ -34,6 +34,21 @@ export function formatAssetAmount(amount: number, precision: number | null): str
   });
 }
 
+/** Parse a user-typed asset amount into integer base units at the given
+ *  precision, or null when invalid (empty, malformed, negative, more decimals
+ *  than the asset allows, or beyond safe-integer range). String math — float
+ *  multiplication corrupts values like 0.07 at precision 8. */
+export function parseAssetAmount(text: string, precision: number): number | null {
+  const t = text.trim();
+  if (!/^\d+(\.\d+)?$/.test(t)) return null;
+  const [whole, frac = ""] = t.split(".");
+  const p = precision > 0 ? precision : 0;
+  if (frac.length > p) return null;
+  const units = BigInt(whole) * BigInt(10 ** p) + BigInt(frac.padEnd(p, "0") || "0");
+  if (units > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(units);
+}
+
 /** Convert a sats amount to fiat given the BTC price in that fiat. */
 export function satsToFiat(sats: number, btcPrice: number): number {
   return (sats / SATS_PER_BTC) * btcPrice;
