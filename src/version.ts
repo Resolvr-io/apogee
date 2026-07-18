@@ -4,6 +4,6 @@
 export const APP_VERSION = __APP_VERSION__;
 export const GIT_COMMIT = __GIT_COMMIT__;
 
-/** e.g. "0.2.0+a1b2c3d", or plain "0.2.0" if the commit hash is unavailable. */
+/** e.g. "0.2.0 (a1b2c3d)", or plain "0.2.0" if the commit hash is unavailable. */
 export const APP_VERSION_DISPLAY =
-  GIT_COMMIT && GIT_COMMIT !== "unknown" ? `${APP_VERSION}+${GIT_COMMIT}` : APP_VERSION;
+  GIT_COMMIT && GIT_COMMIT !== "unknown" ? `${APP_VERSION} (${GIT_COMMIT})` : APP_VERSION;
