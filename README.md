@@ -98,6 +98,25 @@ Any web app can integrate this provider. The extension exposes the standard
 discovery); the implementation is in
 [`src/provider/liquid-provider.ts`](src/provider/liquid-provider.ts).
 
+## 0.5.0
+
+- **Send any held Liquid asset** — USDt and other issued assets are first-class
+  in Send: an asset picker appears when you hold more than one, amounts are
+  entered in the asset's own precision, and Max sends the full token balance.
+  The network fee is always paid in L-BTC (with an upfront check so a wallet
+  holding only tokens gets a clear error, not a failed build). Each token's
+  drawer gains a direct Send button, BIP21 payment links with an `assetid`
+  preselect the right asset, and a Jade send shows the asset amount and id
+  on-device for review.
+- **Fiat values for USD-pegged tokens** — a USDt balance shows an approximate
+  fiat value beneath it (converted into your display currency via a BTC→USD
+  cross-rate). Assets without a price source show no figure rather than a
+  guessed one.
+- **Version badge** — a small telemetry-face version readout appears at the
+  foot of the panel when it opens and fades out after 15 seconds, so you can
+  confirm at a glance which build you're running. Version strings now read
+  `0.5.0 (abc1234)` instead of `0.5.0+abc1234`.
+
 ## 0.4.1
 
 - **Cleaner token amounts** — trailing zeros are trimmed past two decimals, so a
