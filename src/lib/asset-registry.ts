@@ -16,10 +16,13 @@ export const USDT_LIQUID_ASSET_ID =
 export interface KnownAsset {
   label: string;
   precision: number;
+  /** True for USD-pegged stablecoins: the UI may show an approximate fiat
+   *  value (1 unit ≈ $1) converted into the chosen display currency. */
+  pegUsd?: boolean;
 }
 
 export const KNOWN_ASSETS: Record<string, KnownAsset> = {
   [LBTC_TESTNET_ASSET_ID]: { label: "L-BTC (testnet)", precision: 8 },
   [LBTC_MAINNET_ASSET_ID]: { label: "L-BTC", precision: 8 },
-  [USDT_LIQUID_ASSET_ID]: { label: "USDt", precision: 8 },
+  [USDT_LIQUID_ASSET_ID]: { label: "USDt", precision: 8, pegUsd: true },
 };
