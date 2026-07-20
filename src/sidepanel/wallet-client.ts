@@ -5,6 +5,7 @@
 import type {
   AddressDTO,
   AssetInfo,
+  ChainServerHealth,
   CreatedWallet,
   PrepareSendResult,
   Reply,
@@ -60,6 +61,8 @@ export const wallet = {
     call<string>({ type: "wallet/getChainServer", network }),
   setChainServer: (network: LiquidNetwork, url: string) =>
     call<void>({ type: "wallet/setChainServer", network, url }),
+  probeChainServer: (network: LiquidNetwork) =>
+    call<ChainServerHealth>({ type: "wallet/probeChainServer", network }),
   getAutoLock: () => call<number>({ type: "wallet/getAutoLock" }),
   setAutoLock: (minutes: number) => call<void>({ type: "wallet/setAutoLock", minutes }),
   touch: () => call<void>({ type: "wallet/touch" }),

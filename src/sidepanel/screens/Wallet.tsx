@@ -22,7 +22,7 @@ import {
   Unplug,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import type { AssetInfo, SyncResult, WalletTxDTO } from "@/engine/protocol";
+import type { AssetInfo, ChainServerHealth, SyncResult, WalletTxDTO } from "@/engine/protocol";
 import type { KeystoreState, LiquidNetwork, WalletInfo } from "@/keystore/keystore";
 import { explorerTxUrl } from "@/lib/explorer";
 import { APP_VERSION_DISPLAY } from "@/version";
@@ -53,6 +53,7 @@ import {
   LoadingPill,
   Spinner,
   StatusDot,
+  type StatusTone,
   Switch,
   TelemetryNumber,
 } from "@/sidepanel/components/ui";
@@ -1013,6 +1014,8 @@ function SettingsBody({
   // still accepts any validated URL.)
   const [serverMode, setServerMode] = useState<string>("");
   const [serverBusy, setServerBusy] = useState(false);
+  // Controlled so the health probe only runs while the drawer is open.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   // Debug builds: the enterprise toggle (see lib/debug.ts). Read/written straight
   // to chrome.storage — the SW checks the same key on every scan/broadcast.
   const [debugEnterprise, setDebugEnterprise] = useState(false);
@@ -1337,7 +1340,11 @@ function SettingsBody({
       )}
 
       <Card>
-        <details className="drawer">
+        <details
+          className="drawer"
+          open={advancedOpen}
+          onToggle={(e) => setAdvancedOpen((e.currentTarget as HTMLDetailsElement).open)}
+        >
           <summary className="flex cursor-pointer items-center justify-between">
             <span className="console-overline">Advanced</span>
             <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
@@ -1363,6 +1370,7 @@ function SettingsBody({
               ))}
             </select>
           </Field>
+          {advancedOpen && <ChainServerStatus network={info.network} />}
           {serverBusy && (
             <p className="text-xs text-[color:var(--text-subtle)]">Checking server…</p>
           )}
@@ -1512,6 +1520,99 @@ function SubView({
       >
         {children}
       </div>
+    </div>
+  );
+}
+
+/** Color-coded chain-server health badge for the Advanced drawer. Probes on
+ *  open and every 30s while open; a manual re-check button sits at the right.
+ *  In automatic mode a per-provider breakdown shows which fallback is carrying
+ *  the load when the primary is down. */
+function ChainServerStatus({ network }: { network: LiquidNetwork }) {
+  const [health, setHealth] = useState<ChainServerHealth | null>(null);
+  const [probing, setProbing] = useState(false);
+
+  const probe = useCallback(async () => {
+    setProbing(true);
+    try {
+      setHealth(await wallet.probeChainServer(network));
+    } catch {
+      setHealth(null);
+    } finally {
+      setProbing(false);
+    }
+  }, [network]);
+
+  useEffect(() => {
+    void probe();
+    const id = window.setInterval(probe, 30_000);
+    return () => window.clearInterval(id);
+  }, [probe]);
+
+  const tone: StatusTone =
+    health == null
+      ? "idle"
+      : health.status === "up"
+        ? "connected"
+        : health.status === "slow"
+          ? "pending"
+          : "error";
+  const headline =
+    health == null
+      ? probing
+        ? "Checking chain server…"
+        : "Status unknown"
+      : health.status === "up"
+        ? "Chain server connected"
+        : health.status === "slow"
+          ? "Slow or degraded"
+          : "Unreachable";
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 py-2">
+      <div className="flex items-center gap-2">
+        <StatusDot tone={tone} pulse={probing} />
+        <span className="text-xs text-[color:var(--text-secondary)]">{headline}</span>
+        {health?.latencyMs != null && (
+          <span className="text-[11px] text-[color:var(--text-subtle)]">{health.latencyMs} ms</span>
+        )}
+        <button
+          type="button"
+          onClick={probe}
+          disabled={probing}
+          aria-label="Re-check chain server"
+          className="ml-auto text-[color:var(--text-subtle)] transition-colors hover:text-[color:var(--text-primary)] disabled:opacity-50"
+        >
+          <RefreshCw size={13} className={probing ? "animate-spin" : undefined} />
+        </button>
+      </div>
+      {health?.providers && health.providers.length > 0 && (
+        <div className="flex flex-col gap-1">
+          {health.providers.map((p) => {
+            const ptone: StatusTone =
+              p.status === "up" ? "connected" : p.status === "slow" ? "pending" : "error";
+            return (
+              <div key={p.label} className="flex items-center gap-2">
+                <StatusDot tone={ptone} />
+                <span className="text-[11px] text-[color:var(--text-secondary)]">{p.label}</span>
+                {p.latencyMs != null ? (
+                  <span className="ml-auto text-[11px] text-[color:var(--text-subtle)]">
+                    {p.status === "slow" ? "slow · " : ""}
+                    {p.latencyMs} ms
+                  </span>
+                ) : (
+                  <span className="ml-auto text-[11px] text-[color:var(--danger-text)]">down</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {health?.mode === "pinned" && health.status === "down" && (
+        <p className="text-[11px] leading-relaxed text-[color:var(--text-subtle)]">
+          That server isn't responding. Switch to Automatic to use the fallbacks.
+        </p>
+      )}
     </div>
   );
 }
