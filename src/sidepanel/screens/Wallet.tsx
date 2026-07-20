@@ -641,10 +641,6 @@ export function Wallet({
   );
 }
 
-/** 20px asset icon: bundled/registry artwork, or a monogram disc fallback
- *  (first letter of the label) when no icon exists. Extracted to the shared
- *  AssetIcon component (also used by the Send asset picker). */
-
 function Tokens({
   sync,
   hidden,

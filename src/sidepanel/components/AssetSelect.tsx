@@ -4,7 +4,7 @@
 // console-select look (h-11, same border/bg, phosphor focus ring, chevron) and
 // supports keyboard nav (arrows/enter/esc) and click-outside-to-close.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import type { LiquidNetwork } from "@/keystore/keystore";
 import { AssetIcon } from "@/sidepanel/components/AssetIcon";
@@ -30,8 +30,13 @@ export function AssetSelect({
   const [active, setActive] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const activeRef = useRef<HTMLButtonElement>(null);
+  const reactId = useId();
+  const listId = `${reactId}-list`;
+  const optionId = (i: number) => `${reactId}-opt-${i}`;
 
-  // Close on outside click.
+  // Close on outside click. Deliberately does NOT re-focus the trigger: after
+  // clicking elsewhere, focus should follow the click target, not be yanked back.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
@@ -41,12 +46,20 @@ export function AssetSelect({
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  // Seed the highlight on the selected option when opening.
+  // Keep the highlighted row scrolled into view during keyboard nav.
   useEffect(() => {
-    if (!open) return;
+    if (open) activeRef.current?.scrollIntoView({ block: "nearest" });
+  }, [active, open]);
+
+  // Seed the highlight on the selected option exactly when the menu opens —
+  // not on every parent re-render (options is a fresh array each render in the
+  // caller, so an effect keyed on it would reset the highlight mid-navigation
+  // whenever a sync/balance update re-renders Send).
+  function openMenu() {
     const i = options.findIndex((o) => o.id === value);
     setActive(i >= 0 ? i : 0);
-  }, [open, options, value]);
+    setOpen(true);
+  }
 
   function choose(id: string) {
     onChange(id);
@@ -54,11 +67,11 @@ export function AssetSelect({
     triggerRef.current?.focus();
   }
 
-  function onKeyDown(e: React.KeyboardEvent) {
+  function onKeyDown(e: KeyboardEvent) {
     if (!open) {
       if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") {
         e.preventDefault();
-        setOpen(true);
+        openMenu();
       }
       return;
     }
@@ -85,9 +98,11 @@ export function AssetSelect({
       <button
         ref={triggerRef}
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => (open ? setOpen(false) : openMenu())}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        aria-activedescendant={open ? optionId(active) : undefined}
         className="console-select flex h-11 w-full items-center gap-2 rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-left text-sm text-[color:var(--text-strong)] outline-none focus:border-[color:var(--accent)]"
       >
         {selected && <AssetIcon assetId={selected.id} label={selected.label} network={network} />}
@@ -102,12 +117,14 @@ export function AssetSelect({
       </button>
       {open && (
         <ul
+          id={listId}
           role="listbox"
           className="absolute z-30 mt-1 max-h-64 w-full overflow-auto rounded-md border border-[color:var(--border-strong)] bg-[color:var(--surface-elevated)] py-1 shadow-lg shadow-black/40"
         >
           {options.map((o, i) => (
-            <li key={o.id} role="option" aria-selected={o.id === value}>
+            <li key={o.id} id={optionId(i)} role="option" aria-selected={o.id === value}>
               <button
+                ref={i === active ? activeRef : undefined}
                 type="button"
                 onClick={() => choose(o.id)}
                 onMouseEnter={() => setActive(i)}
