@@ -6,9 +6,11 @@
 // after a panel restart.
 
 import type { LiquidNetwork } from "@/keystore/keystore";
-import { USDT_LIQUID_ASSET_ID } from "@/lib/asset-registry";
+import { LBTC_MAINNET_ASSET_ID, LBTC_TESTNET_ASSET_ID, USDT_LIQUID_ASSET_ID } from "@/lib/asset-registry";
 
 export const BUNDLED_ASSET_ICONS: Record<string, string> = {
+  [LBTC_MAINNET_ASSET_ID]: "/icons/assets/lbtc.svg",
+  [LBTC_TESTNET_ASSET_ID]: "/icons/assets/lbtc.svg",
   [USDT_LIQUID_ASSET_ID]: "/icons/assets/usdt.png",
 };
 

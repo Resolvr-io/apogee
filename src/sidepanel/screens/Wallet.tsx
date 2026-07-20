@@ -29,7 +29,6 @@ import { APP_VERSION_DISPLAY } from "@/version";
 import { KNOWN_ASSETS } from "@/lib/asset-registry";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY } from "@/lib/debug";
 import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS } from "@/lib/demo-funds";
-import { BUNDLED_ASSET_ICONS, assetIconSrc } from "@/lib/asset-icons";
 import { cn, shortenHex } from "@/lib/utils";
 import {
   formatAssetAmount,
@@ -58,6 +57,7 @@ import {
   TelemetryNumber,
 } from "@/sidepanel/components/ui";
 import { errMessage, unlockErrMessage, wallet } from "@/sidepanel/wallet-client";
+import { AssetIcon } from "@/sidepanel/components/AssetIcon";
 import { useAnimations } from "@/sidepanel/use-animations";
 import { Send } from "@/sidepanel/screens/Send";
 import type { ToastNotice } from "@/sidepanel/components/Toast";
@@ -642,34 +642,8 @@ export function Wallet({
 }
 
 /** 20px asset icon: bundled/registry artwork, or a monogram disc fallback
- *  (first letter of the label) when no icon exists. */
-function AssetIcon({
-  assetId,
-  label,
-  network,
-}: {
-  assetId: string;
-  label: string;
-  network: LiquidNetwork;
-}) {
-  const [src, setSrc] = useState<string | null>(() => BUNDLED_ASSET_ICONS[assetId] ?? null);
-  useEffect(() => {
-    let alive = true;
-    void assetIconSrc(assetId, network).then((s) => {
-      if (alive) setSrc(s);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [assetId, network]);
-  return src ? (
-    <img src={src} alt="" className="size-5 shrink-0 rounded-full" />
-  ) : (
-    <span className="flex size-5 shrink-0 items-center justify-center rounded-full border border-[color:var(--border-hover)] bg-[color:var(--accent-soft)] text-[10px] font-semibold text-[color:var(--accent-strong)]">
-      {label.slice(0, 1).toUpperCase()}
-    </span>
-  );
-}
+ *  (first letter of the label) when no icon exists. Extracted to the shared
+ *  AssetIcon component (also used by the Send asset picker). */
 
 function Tokens({
   sync,

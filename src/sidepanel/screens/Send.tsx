@@ -14,6 +14,7 @@ import { formatAssetAmount, formatBtc, formatSats, parseAssetAmount } from "@/li
 import { KNOWN_ASSETS } from "@/lib/asset-registry";
 import { explorerTxUrl } from "@/lib/explorer";
 import { Button, Card, CopyButton, ErrorText, Field, Input, Spinner } from "@/sidepanel/components/ui";
+import { AssetSelect } from "@/sidepanel/components/AssetSelect";
 import { errMessage, wallet } from "@/sidepanel/wallet-client";
 
 type Step = "form" | "review" | "sent";
@@ -399,21 +400,22 @@ export function Send({
       <div className="flex flex-col gap-3">
         {tokenIds.length > 0 && (
           <Field label="Asset">
-            <select
+            <AssetSelect
+              network={network}
               value={assetId}
-              onChange={(e) => onAssetChange(e.target.value)}
-              className="console-select h-11 w-full rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-sm text-[color:var(--text-strong)] outline-none focus:border-[color:var(--accent)]"
-            >
-              <option value={policyHex}>L-BTC</option>
-              {tokenIds.map((id) => (
-                <option key={id} value={id}>
-                  {KNOWN_ASSETS[id]?.label ??
+              onChange={onAssetChange}
+              options={[
+                { id: policyHex, label: "L-BTC" },
+                ...tokenIds.map((id) => ({
+                  id,
+                  label:
+                    KNOWN_ASSETS[id]?.label ??
                     assets[id]?.ticker ??
                     assets[id]?.name ??
-                    shortenHex(id, 6, 6)}
-                </option>
-              ))}
-            </select>
+                    shortenHex(id, 6, 6),
+                })),
+              ]}
+            />
           </Field>
         )}
         <Field label="Destination address">
