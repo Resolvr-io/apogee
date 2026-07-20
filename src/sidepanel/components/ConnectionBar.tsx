@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { StatusDot } from "@/sidepanel/components/ui";
 import { wallet } from "@/sidepanel/wallet-client";
+import { browser } from "@/lib/ext";
 import type { ApprovalRequest } from "@/engine/protocol";
 
 export type ConnectionStatus = "connected" | "idle" | "pending";
@@ -54,10 +55,10 @@ function useConnectionStatus(): {
         setPendingConnect(false);
       }
     };
-    chrome.runtime.onMessage.addListener(onMsg);
+    browser.runtime.onMessage.addListener(onMsg);
     return () => {
       alive = false;
-      chrome.runtime.onMessage.removeListener(onMsg);
+      browser.runtime.onMessage.removeListener(onMsg);
     };
   }, []);
 

@@ -1,7 +1,7 @@
 // Engine host. lwk_wasm (Wollet / Signer / EsploraClient) lives here: the MV3
 // service worker is ephemeral and CSP-restricted, so the wasm wallet engine
 // runs in this persistent offscreen document. The service worker drives it over
-// chrome.runtime messages tagged `target: "offscreen"`.
+// browser.runtime messages tagged `target: "offscreen"`.
 //
 // The message listener is registered SYNCHRONOUSLY and lwk_wasm is loaded lazily
 // on first use, so a request can't be dropped while the wasm initializes
@@ -20,6 +20,7 @@ import {
   ENTERPRISE_TOKEN_URL,
 } from "@/lib/debug";
 import { SCAN_STATE_DB } from "@/engine/protocol";
+import { browser } from "@/lib/ext";
 import type {
   AddressDTO,
   AssetInfo,
@@ -154,8 +155,8 @@ const wollets = new Map<string, CachedWollet>();
 // stored array roughly the number of updates that actually changed the wallet;
 // past a size cap the state is dropped outright (one fresh scan) rather than
 // growing unbounded. The service worker deletes the database on wallet/reset.
-// Stored in IndexedDB: an offscreen document has no chrome.storage (offscreen
-// pages only get chrome.runtime), and the service worker can reach the same
+// Stored in IndexedDB: an offscreen document has no browser.storage (offscreen
+// pages only get browser.runtime), and the service worker can reach the same
 // IndexedDB database to delete it on wallet/reset.
 const SCAN_STATE_PREFIX = "apogee:scanstate:";
 const SCAN_STATE_MAX_CHARS = 3_000_000; // ~3 MB of base64 per wallet
@@ -1025,7 +1026,7 @@ async function handle(req: EngineRequest): Promise<unknown> {
   }
 }
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.target !== "offscreen") return false;
   handle(msg.req as EngineRequest)
     .then((value) => sendResponse({ ok: true, value }))

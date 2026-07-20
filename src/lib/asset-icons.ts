@@ -1,12 +1,13 @@
 // Asset icons for the token list. USDt ships bundled (instant, offline); other
 // assets resolve at runtime from liquid.network's asset-icon endpoint
 // (mempool's open-source Liquid instance, serving the public asset registry's
-// artwork) and are cached as data-URIs in chrome.storage.local. Lookup failures
+// artwork) and are cached as data-URIs in browser.storage.local. Lookup failures
 // are remembered in-memory only, so an icon registered later can still surface
 // after a panel restart.
 
 import type { LiquidNetwork } from "@/keystore/keystore";
 import { LBTC_MAINNET_ASSET_ID, LBTC_TESTNET_ASSET_ID, USDT_LIQUID_ASSET_ID } from "@/lib/asset-registry";
+import { browser } from "@/lib/ext";
 
 export const BUNDLED_ASSET_ICONS: Record<string, string> = {
   [LBTC_MAINNET_ASSET_ID]: "/icons/assets/lbtc.svg",
@@ -33,7 +34,7 @@ export async function assetIconSrc(
   if (bundled) return bundled;
   if (!/^[0-9a-f]{64}$/i.test(assetId) || failed.has(assetId)) return null;
   const key = CACHE_PREFIX + assetId;
-  const cached = (await chrome.storage.local.get(key))[key];
+  const cached = (await browser.storage.local.get(key))[key];
   if (typeof cached === "string") return cached;
   const base = ICON_API[network];
   if (!base) return null;
@@ -49,7 +50,7 @@ export async function assetIconSrc(
       r.onerror = () => reject(r.error ?? new Error("icon read failed"));
       r.readAsDataURL(blob);
     });
-    await chrome.storage.local.set({ [key]: dataUri });
+    await browser.storage.local.set({ [key]: dataUri });
     return dataUri;
   } catch {
     failed.add(assetId);

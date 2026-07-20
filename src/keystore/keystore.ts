@@ -1,6 +1,6 @@
 // Mnemonic keystore — the keystore-of-record. Runs in the service worker.
 //
-// Holds BIP-39 mnemonics encrypted at rest in chrome.storage.local, with the
+// Holds BIP-39 mnemonics encrypted at rest in browser.storage.local, with the
 // watch-only descriptor stored in cleartext so the offscreen engine can sync
 // balances/addresses/history while locked. The seed is needed only to sign.
 //
@@ -12,6 +12,7 @@
 // Multi-wallet and BIP-39 based. MV3 session recovery (ensureLoaded) keeps
 // the keystore unlocked across service-worker eviction.
 
+import { browser } from "@/lib/ext";
 import {
   type Enc,
   type Kdf,
@@ -102,7 +103,7 @@ const unlockedMnemonics = new Map<string, string>(); // walletId → mnemonic
 // Progressive lockout against password guessing at the keyboard. Enforced HERE
 // (the service worker) rather than in the UI — any extension surface can send
 // wallet/unlock, so a UI-only guard would be bypassable — and persisted in
-// chrome.storage.local so reopening the panel or restarting the browser doesn't
+// browser.storage.local so reopening the panel or restarting the browser doesn't
 // reset it. unlock() and verifyPassword() share one counter: the reveal-seed
 // step-up is the same password oracle.
 //
@@ -169,26 +170,26 @@ async function recordUnlockFailure(): Promise<void> {
 }
 
 async function clearUnlockFailures(): Promise<void> {
-  await chrome.storage.local.remove(THROTTLE_KEY);
+  await browser.storage.local.remove(THROTTLE_KEY);
 }
 
-// ---- chrome.storage helpers ----
+// ---- browser.storage helpers ----
 async function localGet<T>(key: string): Promise<T | undefined> {
-  const obj = await chrome.storage.local.get(key);
+  const obj = await browser.storage.local.get(key);
   return obj[key] as T | undefined;
 }
 async function localSet(key: string, value: unknown): Promise<void> {
-  await chrome.storage.local.set({ [key]: value });
+  await browser.storage.local.set({ [key]: value });
 }
 async function sessionGet<T>(key: string): Promise<T | undefined> {
-  const obj = await chrome.storage.session.get(key);
+  const obj = await browser.storage.session.get(key);
   return obj[key] as T | undefined;
 }
 async function sessionSet(key: string, value: unknown): Promise<void> {
-  await chrome.storage.session.set({ [key]: value });
+  await browser.storage.session.set({ [key]: value });
 }
 async function sessionClear(key: string): Promise<void> {
-  await chrome.storage.session.remove(key);
+  await browser.storage.session.remove(key);
 }
 
 async function loadStore(): Promise<StoreShape | undefined> {
@@ -313,7 +314,7 @@ export async function reset(): Promise<void> {
   await sessionClear(SESSION_KEY);
   // THROTTLE_KEY goes too: the counter guards the vault being destroyed, and a
   // survivor would lock the user out of the NEXT vault they create/restore.
-  await chrome.storage.local.remove([STORE_KEY, ACTIVE_KEY, THROTTLE_KEY]);
+  await browser.storage.local.remove([STORE_KEY, ACTIVE_KEY, THROTTLE_KEY]);
 }
 
 /**
@@ -322,10 +323,10 @@ export async function reset(): Promise<void> {
  * in-memory unlocked state is NOT captured — a rollback lands on a locked wallet.
  */
 export async function snapshotLocal(): Promise<Record<string, unknown>> {
-  return chrome.storage.local.get([STORE_KEY, ACTIVE_KEY]);
+  return browser.storage.local.get([STORE_KEY, ACTIVE_KEY]);
 }
 export async function restoreLocal(snap: Record<string, unknown>): Promise<void> {
-  await chrome.storage.local.set(snap);
+  await browser.storage.local.set(snap);
 }
 
 /** Verify a password without changing lock state (step-up auth). Shares the

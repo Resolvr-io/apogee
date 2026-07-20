@@ -16,6 +16,7 @@ import { explorerTxUrl } from "@/lib/explorer";
 import { Button, Card, CopyButton, ErrorText, Field, Input, Spinner } from "@/sidepanel/components/ui";
 import { AssetSelect } from "@/sidepanel/components/AssetSelect";
 import { errMessage, wallet } from "@/sidepanel/wallet-client";
+import { browser } from "@/lib/ext";
 
 type Step = "form" | "review" | "sent";
 
@@ -47,8 +48,8 @@ function unitsToText(units: number, precision: number): string {
 }
 
 function openScanner(): void {
-  void chrome.windows.create({
-    url: chrome.runtime.getURL("src/scanner/scanner.html"),
+  void browser.windows.create({
+    url: browser.runtime.getURL("src/scanner/scanner.html"),
     type: "popup",
     width: 420,
     height: 560,
@@ -186,8 +187,8 @@ export function Send({
         setAmount(isBtc ? (sats / 100_000_000).toFixed(8).replace(/\.?0+$/, "") : String(sats));
       }
     };
-    chrome.runtime.onMessage.addListener(onMsg);
-    return () => chrome.runtime.onMessage.removeListener(onMsg);
+    browser.runtime.onMessage.addListener(onMsg);
+    return () => browser.runtime.onMessage.removeListener(onMsg);
   }, [isBtc, isLbtc, policyHex, sync]);
 
   // Keep the displayed "Max" amount in sync if the balance changes while Max is

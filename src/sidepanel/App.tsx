@@ -6,6 +6,7 @@ import { ToastView, type ToastNotice } from "@/sidepanel/components/Toast";
 import { ConnectionBar } from "@/sidepanel/components/ConnectionBar";
 import { VersionBadge } from "@/sidepanel/components/VersionBadge";
 import { errMessage, wallet } from "@/sidepanel/wallet-client";
+import { browser } from "@/lib/ext";
 import { Scene } from "@/sidepanel/components/Scene";
 import { useAnimations } from "@/sidepanel/use-animations";
 import { useIdleHeartbeat } from "@/sidepanel/use-idle-heartbeat";
@@ -87,8 +88,8 @@ export function App() {
         setApproval((cur) => (cur && cur.id === m.id ? null : cur));
       }
     };
-    chrome.runtime.onMessage.addListener(onMsg);
-    return () => chrome.runtime.onMessage.removeListener(onMsg);
+    browser.runtime.onMessage.addListener(onMsg);
+    return () => browser.runtime.onMessage.removeListener(onMsg);
   }, [refresh, showToast]);
 
   const unlocked = Boolean(state && state.initialized && !state.locked && state.wallets.length > 0);
@@ -138,7 +139,7 @@ export function App() {
             <IconButton
               label="Guide"
               onClick={() =>
-                void chrome.tabs.create({ url: chrome.runtime.getURL("src/guide/guide.html") })
+                void browser.tabs.create({ url: browser.runtime.getURL("src/guide/guide.html") })
               }
             >
               <Compass size={16} />

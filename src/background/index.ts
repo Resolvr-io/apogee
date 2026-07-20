@@ -11,6 +11,7 @@ import type { LiquidNetwork } from "@/keystore/keystore";
 import * as keystore from "@/keystore/keystore";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "@/lib/debug";
 import { SCAN_STATE_DB } from "@/engine/protocol";
+import { browser } from "@/lib/ext";
 import type {
   AddressDTO,
   ApprovalRequest,
@@ -37,9 +38,9 @@ import type {
 // only honored when they come from one of our own pages (side panel, approval
 // prompt, Jade tab) — see the onMessage router. A content script injected into a
 // web page carries the page's origin, so this cleanly excludes web pages.
-const EXT_ORIGIN = `chrome-extension://${chrome.runtime.id}`;
+const EXT_ORIGIN = `chrome-extension://${browser.runtime.id}`;
 
-chrome.runtime.onInstalled.addListener(() => {
+browser.runtime.onInstalled.addListener(() => {
   console.log("[apogee] installed");
   // On reload/update, drop any persisted offscreen document so the next engine
   // call rebuilds it from the new code. Without this, a surviving offscreen keeps
@@ -59,7 +60,7 @@ const AUTOLOCK_KEY = "apogee:autolock";
 const DEFAULT_AUTOLOCK_MINUTES = 15;
 
 async function autoLockMinutes(): Promise<number> {
-  const v = (await chrome.storage.local.get(AUTOLOCK_KEY))[AUTOLOCK_KEY];
+  const v = (await browser.storage.local.get(AUTOLOCK_KEY))[AUTOLOCK_KEY];
   return typeof v === "number" ? v : DEFAULT_AUTOLOCK_MINUTES;
 }
 
@@ -71,9 +72,9 @@ let lastActivityAt = 0;
 /** Clear + (re)create the alarm for the given delay (minutes). No-op while the
  *  wallet is locked or when the delay is non-positive ("never"). */
 async function armAutoLock(delayMinutes: number): Promise<void> {
-  await chrome.alarms.clear(AUTOLOCK_ALARM);
+  await browser.alarms.clear(AUTOLOCK_ALARM);
   if (delayMinutes > 0 && !keystore.isLocked()) {
-    await chrome.alarms.create(AUTOLOCK_ALARM, { delayInMinutes: delayMinutes });
+    await browser.alarms.create(AUTOLOCK_ALARM, { delayInMinutes: delayMinutes });
   }
 }
 
@@ -83,7 +84,7 @@ async function armAutoLock(delayMinutes: number): Promise<void> {
 async function rescheduleAutoLock(): Promise<void> {
   const minutes = await autoLockMinutes();
   if (minutes <= 0) {
-    await chrome.alarms.clear(AUTOLOCK_ALARM);
+    await browser.alarms.clear(AUTOLOCK_ALARM);
     return;
   }
   lastActivityAt = Date.now();
@@ -113,7 +114,7 @@ const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
   "wallet/touch",
 ]);
 
-chrome.alarms.onAlarm.addListener(async (alarm) => {
+browser.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== AUTOLOCK_ALARM) return;
   const minutes = await autoLockMinutes();
   // The alarm is coarse and may fire early — only lock once the idle window has
@@ -125,7 +126,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
   void keystore.lock().then(() => {
     // Drop the side panel to the lock screen (ignored if none is open).
-    chrome.runtime.sendMessage({ type: "apogee/locked" }).catch(() => {});
+    browser.runtime.sendMessage({ type: "apogee/locked" }).catch(() => {});
   });
 });
 
@@ -141,10 +142,10 @@ async function chainServer(network: LiquidNetwork): Promise<string | undefined> 
   // endpoint through this same override channel (see lib/debug.ts). Checked
   // first so it outranks the visible Chain server picker while enabled.
   if (DEBUG_ENTERPRISE_BUILD) {
-    const dbg = (await chrome.storage.local.get(DEBUG_ENTERPRISE_KEY))[DEBUG_ENTERPRISE_KEY];
+    const dbg = (await browser.storage.local.get(DEBUG_ENTERPRISE_KEY))[DEBUG_ENTERPRISE_KEY];
     if (dbg === true) return ENTERPRISE_ROOTS[network] ?? undefined;
   }
-  const v = (await chrome.storage.local.get(CHAINSERVER_KEY))[CHAINSERVER_KEY];
+  const v = (await browser.storage.local.get(CHAINSERVER_KEY))[CHAINSERVER_KEY];
   const url = v && typeof v === "object" ? (v as Record<string, unknown>)[network] : undefined;
   return typeof url === "string" && url !== "" ? url : undefined;
 }
@@ -157,7 +158,7 @@ let creating: Promise<void> | null = null;
 async function ensureOffscreen(): Promise<void> {
   const existing = await chrome.runtime.getContexts({
     contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
-    documentUrls: [chrome.runtime.getURL(OFFSCREEN_URL)],
+    documentUrls: [browser.runtime.getURL(OFFSCREEN_URL)],
   });
   if (existing.length > 0) return;
   // Guard against concurrent createDocument calls (it throws if one exists).
@@ -179,7 +180,7 @@ async function ensureOffscreen(): Promise<void> {
 async function closeOffscreen(): Promise<void> {
   const existing = await chrome.runtime.getContexts({
     contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
-    documentUrls: [chrome.runtime.getURL(OFFSCREEN_URL)],
+    documentUrls: [browser.runtime.getURL(OFFSCREEN_URL)],
   });
   if (existing.length > 0) await chrome.offscreen.closeDocument().catch(() => {});
 }
@@ -198,7 +199,7 @@ let engineQueue: Promise<unknown> = Promise.resolve();
  *  anything queued behind one). */
 async function engineDirect<T>(req: EngineRequest): Promise<T> {
   await ensureOffscreen();
-  const reply = await chrome.runtime.sendMessage({ target: "offscreen", req });
+  const reply = await browser.runtime.sendMessage({ target: "offscreen", req });
   if (!reply?.ok) throw new Error(reply?.error ?? "engine error");
   return reply.value as T;
 }
@@ -206,7 +207,7 @@ async function engineDirect<T>(req: EngineRequest): Promise<T> {
 async function engine<T>(req: EngineRequest): Promise<T> {
   const run = engineQueue.then(async () => {
     await ensureOffscreen();
-    const reply = await chrome.runtime.sendMessage({ target: "offscreen", req });
+    const reply = await browser.runtime.sendMessage({ target: "offscreen", req });
     if (!reply?.ok) throw new Error(reply?.error ?? "engine error");
     return reply.value as T;
   });
@@ -248,7 +249,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
     case "wallet/reset": {
       // Revoke connected dapp sessions on a wipe, so any connected app
       // disconnects (its next call gets NOT_CONNECTED) instead of going stale.
-      await chrome.storage.session.remove(SITES_KEY);
+      await browser.storage.session.remove(SITES_KEY);
       broadcastSitesChanged();
       // Fail any parked approvals too, so a reset doesn't leave one approvable.
       rejectPendingApprovals(undefined, "Apogee was reset.");
@@ -320,7 +321,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
           // wallet, so connected sites must not silently carry over to it, and
           // any parked approval (holding a snapshot of the old wallet) must not
           // stay approvable.
-          await chrome.storage.session.remove(SITES_KEY);
+          await browser.storage.session.remove(SITES_KEY);
           broadcastSitesChanged();
           rejectPendingApprovals(undefined, "Apogee was reset.");
           await keystore.reset();
@@ -421,11 +422,11 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       // Validate a non-empty URL in the engine (reachable + right network)
       // before persisting; "" clears back to automatic.
       if (url) await engineDirect<boolean>({ kind: "checkEsplora", url, network: msg.network });
-      const v = (await chrome.storage.local.get(CHAINSERVER_KEY))[CHAINSERVER_KEY];
+      const v = (await browser.storage.local.get(CHAINSERVER_KEY))[CHAINSERVER_KEY];
       const map = v && typeof v === "object" ? { ...(v as Record<string, string>) } : {};
       if (url) map[msg.network] = url;
       else delete map[msg.network];
-      await chrome.storage.local.set({ [CHAINSERVER_KEY]: map });
+      await browser.storage.local.set({ [CHAINSERVER_KEY]: map });
       return;
     }
 
@@ -433,7 +434,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       return autoLockMinutes();
 
     case "wallet/setAutoLock":
-      await chrome.storage.local.set({ [AUTOLOCK_KEY]: msg.minutes });
+      await browser.storage.local.set({ [AUTOLOCK_KEY]: msg.minutes });
       return;
 
     case "wallet/touch":
@@ -498,7 +499,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       });
       // Nudge the side panel to poll the balance to settlement instead of
       // waiting for the periodic auto-sync.
-      chrome.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
+      browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
       return sent;
     }
 
@@ -557,19 +558,19 @@ function toDappNetwork(n: LiquidNetwork): DappNetwork {
 const SITES_KEY = "apogee_connected_sites";
 
 async function getConnectedSites(): Promise<string[]> {
-  const v = (await chrome.storage.session.get(SITES_KEY))[SITES_KEY];
+  const v = (await browser.storage.session.get(SITES_KEY))[SITES_KEY];
   return Array.isArray(v) ? (v as string[]) : [];
 }
 
 function broadcastSitesChanged(): void {
-  chrome.runtime.sendMessage({ type: "apogee/sites-changed" }).catch(() => {});
+  browser.runtime.sendMessage({ type: "apogee/sites-changed" }).catch(() => {});
 }
 
 async function addConnectedSite(origin: string | undefined): Promise<void> {
   if (!origin) return;
   const sites = await getConnectedSites();
   if (!sites.includes(origin)) {
-    await chrome.storage.session.set({ [SITES_KEY]: [...sites, origin] });
+    await browser.storage.session.set({ [SITES_KEY]: [...sites, origin] });
     broadcastSitesChanged();
   }
 }
@@ -578,7 +579,7 @@ async function removeConnectedSite(origin: string | undefined): Promise<void> {
   if (!origin) return;
   const sites = await getConnectedSites();
   if (sites.includes(origin)) {
-    await chrome.storage.session.set({ [SITES_KEY]: sites.filter((s) => s !== origin) });
+    await browser.storage.session.set({ [SITES_KEY]: sites.filter((s) => s !== origin) });
     broadcastSitesChanged();
   }
   // Fail any parked approval for this origin so a revoked site can't still be
@@ -832,8 +833,8 @@ function parkApproval(id: string, entry: PendingApproval): void {
     // Clear whichever surface is showing it: the side-panel overlay dismisses
     // itself on this broadcast; a popup window is closed outright (its
     // onRemoved handler finds the map entry gone and no-ops).
-    chrome.runtime.sendMessage({ type: "apogee/approval-expired", id }).catch(() => {});
-    if (entry.windowId !== undefined) chrome.windows.remove(entry.windowId).catch(() => {});
+    browser.runtime.sendMessage({ type: "apogee/approval-expired", id }).catch(() => {});
+    if (entry.windowId !== undefined) browser.windows.remove(entry.windowId).catch(() => {});
   }, APPROVAL_TTL_MS);
 }
 
@@ -846,8 +847,8 @@ function rejectPendingApprovals(origin: string | undefined, reason: string): voi
       pendingApprovals.delete(id);
       clearTimeout(p.timer);
       p.reject(new Error(reason));
-      chrome.runtime.sendMessage({ type: "apogee/approval-expired", id }).catch(() => {});
-      if (p.windowId !== undefined) chrome.windows.remove(p.windowId).catch(() => {});
+      browser.runtime.sendMessage({ type: "apogee/approval-expired", id }).catch(() => {});
+      if (p.windowId !== undefined) browser.windows.remove(p.windowId).catch(() => {});
     }
   }
 }
@@ -858,11 +859,11 @@ async function routeApproval(request: ApprovalRequest): Promise<void> {
     contextTypes: [chrome.runtime.ContextType.SIDE_PANEL],
   });
   if (panels.length > 0) {
-    chrome.runtime.sendMessage({ type: "apogee/approval-request", request }).catch(() => {});
+    browser.runtime.sendMessage({ type: "apogee/approval-request", request }).catch(() => {});
     return;
   }
-  const win = await chrome.windows.create({
-    url: chrome.runtime.getURL(`src/prompt/prompt.html?id=${encodeURIComponent(request.id)}`),
+  const win = await browser.windows.create({
+    url: browser.runtime.getURL(`src/prompt/prompt.html?id=${encodeURIComponent(request.id)}`),
     type: "popup",
     width: 380,
     height: 620,
@@ -875,7 +876,7 @@ async function routeApproval(request: ApprovalRequest): Promise<void> {
   if (parked) parked.windowId = winId;
   const onClosed = (closedId: number) => {
     if (closedId !== winId) return;
-    chrome.windows.onRemoved.removeListener(onClosed);
+    browser.windows.onRemoved.removeListener(onClosed);
     const p = pendingApprovals.get(request.id);
     if (p) {
       pendingApprovals.delete(request.id);
@@ -888,7 +889,7 @@ async function routeApproval(request: ApprovalRequest): Promise<void> {
       );
     }
   };
-  chrome.windows.onRemoved.addListener(onClosed);
+  browser.windows.onRemoved.addListener(onClosed);
 }
 
 /** Apply the user's decision: reject, or unlock-gated sign + broadcast. */
@@ -998,7 +999,7 @@ async function handleApprovalDecision(
     pending.resolve(result);
     // Tell open surfaces (the side panel) to re-sync now instead of waiting for
     // the periodic poll, so the balance updates right after a dapp send.
-    chrome.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
+    browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
     return result;
   } catch (e) {
     const err = e instanceof Error ? e : new Error(String(e));
@@ -1074,9 +1075,9 @@ async function signWithJade(
       // The tab (if still open) errors on its next message; don't yank it away.
       p?.reject(new Error("Jade signing timed out. Try the send again."));
     }, JADE_SIGN_TTL_MS);
-    chrome.tabs
+    browser.tabs
       .create({
-        url: chrome.runtime.getURL(
+        url: browser.runtime.getURL(
           `src/jade/jade.html?sign=${encodeURIComponent(id)}&network=${encodeURIComponent(network)}`,
         ),
       })
@@ -1092,7 +1093,7 @@ async function signWithJade(
 }
 
 // Closing the signing tab before it returns a signature cancels the send.
-chrome.tabs.onRemoved.addListener((tabId) => {
+browser.tabs.onRemoved.addListener((tabId) => {
   for (const [id, p] of pendingJadeSigns) {
     if (p.tabId === tabId) {
       takeJadeSign(id);
@@ -1101,7 +1102,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.target === "offscreen") return false; // belongs to the offscreen doc
   if (typeof msg?.type !== "string") return false;
   // Trust boundary: wallet/* and apogee/* are extension-internal — they come from
@@ -1110,7 +1111,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // web-facing surface and is authenticated by sender.origin in handleProvider.
   // Key on ORIGIN, not sender.tab: the Jade tab is an extension page opened as a
   // tab, so it legitimately has sender.tab set while sharing our origin.
-  const fromExtension = sender.origin === EXT_ORIGIN && sender.id === chrome.runtime.id;
+  const fromExtension = sender.origin === EXT_ORIGIN && sender.id === browser.runtime.id;
   if (!fromExtension && (msg.type.startsWith("wallet/") || msg.type.startsWith("apogee/"))) {
     return false; // drop silently — don't confirm the probe to an untrusted page
   }
@@ -1156,7 +1157,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       )
       .then((res) => {
         p.resolve(res.txid);
-        chrome.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
+        browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
         sendResponse({ ok: true, txid: res.txid });
       })
       .catch((e) => {
@@ -1182,7 +1183,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // Only genuine user actions defer the idle lock — not passive polling
         // (see AUTOLOCK_DEFERRING). Explicit lock/reset clears the alarm instead.
         if (req.type === "wallet/lock" || req.type === "wallet/reset") {
-          void chrome.alarms.clear(AUTOLOCK_ALARM);
+          void browser.alarms.clear(AUTOLOCK_ALARM);
         } else if (AUTOLOCK_DEFERRING.has(req.type)) {
           void rescheduleAutoLock();
         }

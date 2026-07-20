@@ -3,6 +3,8 @@
 // can. On a successful scan it messages the value back to the side panel
 // (apogee/qr-result) and closes.
 
+import { browser } from "@/lib/ext";
+
 type BarcodeDetectorCtor = new (opts: { formats: string[] }) => {
   detect: (source: CanvasImageSource) => Promise<{ rawValue: string }[]>;
 };
@@ -53,7 +55,7 @@ async function start(): Promise<void> {
     try {
       const codes = await detector.detect(video);
       if (codes.length > 0 && codes[0]?.rawValue) {
-        chrome.runtime.sendMessage({ type: "apogee/qr-result", value: codes[0].rawValue });
+        browser.runtime.sendMessage({ type: "apogee/qr-result", value: codes[0].rawValue });
         cleanup();
         window.close();
         return;
