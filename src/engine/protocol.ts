@@ -50,13 +50,37 @@ export type EngineRequest =
   // Probe a user-supplied Esplora server: reachable, and serving the expected
   // network (checked against the chain genesis hash). Throws with a clean
   // message on failure; returns true.
-  | { kind: "checkEsplora"; url: string; network: LiquidNetwork };
+  | { kind: "checkEsplora"; url: string; network: LiquidNetwork }
+  // Health probe of the effective chain server. `esploraUrl` is the per-network
+  // override (absent = automatic). A pinned URL probes just that endpoint;
+  // automatic probes waterfalls (primary) plus the Esplora fallbacks, returning
+  // a per-provider breakdown so the badge can show "primary down, on fallback".
+  | { kind: "probeChainServer"; network: LiquidNetwork; esploraUrl?: string };
 
 /** Result of `descriptorInfo`: the master fingerprint embedded in a watch-only
  *  descriptor, and whether it targets mainnet (used to sanity-check the network). */
 export interface DescriptorInfo {
   fingerprint: string;
   mainnet: boolean;
+}
+
+/** Chain-server health probe result. `status` is the headline; in automatic
+ *  mode `providers` breaks it down per endpoint so the UI can show a primary
+ *  outage alongside a working fallback. */
+export type ProbeStatus = "up" | "slow" | "down";
+
+export interface ProviderProbe {
+  label: string;
+  status: ProbeStatus;
+  latencyMs: number | null; // null when unreachable
+}
+
+export interface ChainServerHealth {
+  mode: "automatic" | "pinned";
+  status: ProbeStatus; // overall (the primary's, or the pinned server's)
+  latencyMs: number | null;
+  url?: string; // present when pinned
+  providers?: ProviderProbe[]; // per-provider, automatic mode only
 }
 
 /** Envelope the SW sends; the offscreen listener filters on `target`. */
@@ -132,6 +156,7 @@ export type WalletRequest =
   | { type: "wallet/getAsset"; assetId: string; network: LiquidNetwork }
   | { type: "wallet/getChainServer"; network: LiquidNetwork } // per-network Esplora override ("" = automatic)
   | { type: "wallet/setChainServer"; network: LiquidNetwork; url: string } // "" clears back to automatic
+  | { type: "wallet/probeChainServer"; network: LiquidNetwork } // health probe for the Advanced status badge
   | { type: "wallet/getAutoLock" } // idle auto-lock timeout in minutes (0 = never)
   | { type: "wallet/setAutoLock"; minutes: number }
   // Heartbeat from genuine side-panel activity (pointer/keyboard) that re-arms

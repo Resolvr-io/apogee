@@ -23,10 +23,13 @@ import { SCAN_STATE_DB } from "@/engine/protocol";
 import type {
   AddressDTO,
   AssetInfo,
+  ChainServerHealth,
   DerivedWallet,
   DescriptorInfo,
   EngineRequest,
   PrepareSendResult,
+  ProviderProbe,
+  ProbeStatus,
   SendResult,
   SyncResult,
   WalletTxDTO,
@@ -489,6 +492,34 @@ async function esploraReachable(url: string): Promise<boolean> {
   }
 }
 
+// Health probe thresholds for the Advanced status badge. Under PROBE_SLOW_MS is
+// "up"; up to PROBE_TIMEOUT_MS is "slow"; beyond/errored is "down".
+const PROBE_SLOW_MS = 1_500;
+const PROBE_TIMEOUT_MS = 4_000;
+
+/** One timed reachability probe of a chain-server root. Waterfalls exposes its
+ *  own health path (/v1/server_recipient); Esplora roots answer /blocks/tip/height. */
+async function probeRoot(url: string, healthPath: string): Promise<ProviderProbe> {
+  const start = performance.now();
+  try {
+    const res = await fetch(`${url}${healthPath}`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    const ms = Math.round(performance.now() - start);
+    if (!res.ok) return { label: "", status: "down", latencyMs: null };
+    const status: ProbeStatus = ms > PROBE_SLOW_MS ? "slow" : "up";
+    return { label: "", status, latencyMs: ms };
+  } catch {
+    return { label: "", status: "down", latencyMs: null };
+  }
+}
+
+/** Overall status from a per-provider breakdown: the primary (first entry)
+ *  drives the headline, but if it's down and a fallback answers, the wallet is
+ *  still usable — call that "slow" (degraded) rather than alarming "down". */
+function aggregateStatus(primary: ProviderProbe, fallbacks: ProviderProbe[]): ProbeStatus {
+  if (primary.status !== "down") return primary.status;
+  return fallbacks.some((p) => p.status !== "down") ? "slow" : "down";
+}
+
 async function waterfallsReachable(network: LiquidNetwork): Promise<boolean> {
   if (Date.now() < waterfallsDownUntil) return false;
   try {
@@ -773,6 +804,42 @@ async function handle(req: EngineRequest): Promise<unknown> {
         throw new Error("That server is for a different network than this wallet.");
       }
       return true;
+    }
+
+    case "probeChainServer": {
+      // A pinned override: probe that single endpoint. Automatic: probe
+      // waterfalls (the primary) plus both Esplora fallbacks so the badge can
+      // show a primary outage against a working fallback.
+      const waterfalls = WATERFALLS[req.network];
+      const primaryEsplora = ESPLORA[req.network];
+      const altEsplora = ESPLORA_ALT[req.network];
+      if (req.esploraUrl) {
+        const root = req.esploraUrl.replace(/\/+$/, "");
+        const p = await probeRoot(root, "/blocks/tip/height");
+        const health: ChainServerHealth = {
+          mode: "pinned",
+          status: p.status,
+          latencyMs: p.latencyMs,
+          url: root,
+        };
+        return health;
+      }
+      const [wf, pri, alt] = await Promise.all([
+        probeRoot(waterfalls, "/v1/server_recipient"),
+        probeRoot(primaryEsplora, "/blocks/tip/height"),
+        probeRoot(altEsplora, "/blocks/tip/height"),
+      ]);
+      wf.label = "Waterfalls";
+      pri.label = "Liquid.network";
+      alt.label = "Blockstream";
+      const providers = [wf, pri, alt];
+      const health: ChainServerHealth = {
+        mode: "automatic",
+        status: aggregateStatus(wf, [pri, alt]),
+        latencyMs: wf.latencyMs,
+        providers,
+      };
+      return health;
     }
 
     case "qr":

@@ -15,6 +15,7 @@ import type {
   AddressDTO,
   ApprovalRequest,
   AssetInfo,
+  ChainServerHealth,
   CreatedWallet,
   DappNetwork,
   DerivedWallet,
@@ -405,6 +406,14 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
 
     case "wallet/getChainServer": {
       return (await chainServer(msg.network)) ?? "";
+    }
+
+    case "wallet/probeChainServer": {
+      return engineDirect<ChainServerHealth>({
+        kind: "probeChainServer",
+        network: msg.network,
+        esploraUrl: await chainServer(msg.network),
+      });
     }
 
     case "wallet/setChainServer": {
