@@ -13,7 +13,7 @@ Your keys, your coins. Apogee generates and stores your keys locally, encrypted 
 WHAT YOU CAN DO
 • Create a new wallet, or restore one from a standard BIP-39 recovery phrase.
 • Import a watch-only wallet from a Liquid descriptor: track balances and receive without keys on this device. Restore the matching seed later and it upgrades to a full wallet in place.
-• Hold and receive L-BTC and other Liquid assets; send L-BTC. Tokens show their registry names, icons, and correct decimal precision.
+• Hold, receive, and send L-BTC and other Liquid assets — like USDt — with an asset picker, registry names and icons, correct decimal precision, and an approximate fiat value for USD-pegged tokens.
 • Keep amounts private with Liquid's confidential transactions.
 • Pair a Blockstream Jade hardware wallet and approve transactions on the device.
 • Connect to Liquid web apps and authorize their transactions — you review and sign every action.
