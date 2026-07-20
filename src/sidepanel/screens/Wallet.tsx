@@ -1527,10 +1527,11 @@ function SubView({
 /** Color-coded chain-server health badge for the Advanced drawer. Probes on
  *  open and every 30s while open; a manual re-check button sits at the right.
  *  In automatic mode a per-provider breakdown shows which fallback is carrying
- *  the load when the primary is down. */
+ *  the load when the primary (Waterfalls, encrypted) is down — the headline
+ *  distinguishes "On fallback server" from a plain "Slow". */
 function ChainServerStatus({ network }: { network: LiquidNetwork }) {
   const [health, setHealth] = useState<ChainServerHealth | null>(null);
-  const [probing, setProbing] = useState(false);
+  const [probing, setProbing] = useState(true);
 
   const probe = useCallback(async () => {
     setProbing(true);
@@ -1544,10 +1545,24 @@ function ChainServerStatus({ network }: { network: LiquidNetwork }) {
   }, [network]);
 
   useEffect(() => {
-    void probe();
-    const id = window.setInterval(probe, 30_000);
-    return () => window.clearInterval(id);
-  }, [probe]);
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const h = await wallet.probeChainServer(network);
+        if (!cancelled) setHealth(h);
+      } catch {
+        if (!cancelled) setHealth(null);
+      } finally {
+        if (!cancelled) setProbing(false);
+      }
+    };
+    void run();
+    const id = window.setInterval(run, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [network]);
 
   const tone: StatusTone =
     health == null
@@ -1557,16 +1572,26 @@ function ChainServerStatus({ network }: { network: LiquidNetwork }) {
         : health.status === "slow"
           ? "pending"
           : "error";
-  const headline =
-    health == null
-      ? probing
-        ? "Checking chain server…"
-        : "Status unknown"
-      : health.status === "up"
-        ? "Chain server connected"
-        : health.status === "slow"
-          ? "Slow or degraded"
-          : "Unreachable";
+
+  // Headline: distinguish a primary outage riding on a fallback ("On fallback
+  // server") from a merely slow primary ("Slow") — the single most useful thing
+  // the badge can say during the exact outage it was built to diagnose.
+  let headline: string;
+  if (health == null) {
+    headline = probing ? "Checking chain server…" : "Status unknown";
+  } else if (health.status === "up") {
+    headline = "Chain server connected";
+  } else if (health.status === "down") {
+    headline = "Unreachable";
+  } else if (
+    health.mode === "automatic" &&
+    health.providers?.[0]?.status === "down" &&
+    health.providers.slice(1).some((p) => p.status !== "down")
+  ) {
+    headline = "On fallback server";
+  } else {
+    headline = "Slow";
+  }
 
   return (
     <div className="flex flex-col gap-2 rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 py-2">
@@ -1588,13 +1613,25 @@ function ChainServerStatus({ network }: { network: LiquidNetwork }) {
       </div>
       {health?.providers && health.providers.length > 0 && (
         <div className="flex flex-col gap-1">
-          {health.providers.map((p) => {
+          <span className="text-[10px] text-[color:var(--text-subtle)]">
+            Automatic uses these servers
+          </span>
+          {health.providers.map((p, i) => {
             const ptone: StatusTone =
               p.status === "up" ? "connected" : p.status === "slow" ? "pending" : "error";
+            // The first provider is the Waterfalls primary — the encrypted
+            // default that isn't offered in the dropdown (pinning it would scan
+            // it unencrypted, defeating its purpose).
+            const isPrimary = i === 0;
             return (
               <div key={p.label} className="flex items-center gap-2">
                 <StatusDot tone={ptone} />
-                <span className="text-[11px] text-[color:var(--text-secondary)]">{p.label}</span>
+                <span className="text-[11px] text-[color:var(--text-secondary)]">
+                  {p.label}
+                  {isPrimary && (
+                    <span className="text-[color:var(--text-subtle)]"> · encrypted default</span>
+                  )}
+                </span>
                 {p.latencyMs != null ? (
                   <span className="ml-auto text-[11px] text-[color:var(--text-subtle)]">
                     {p.status === "slow" ? "slow · " : ""}

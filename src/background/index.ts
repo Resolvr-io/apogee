@@ -409,7 +409,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
     }
 
     case "wallet/probeChainServer": {
-      return engine<ChainServerHealth>({
+      return engineDirect<ChainServerHealth>({
         kind: "probeChainServer",
         network: msg.network,
         esploraUrl: await chainServer(msg.network),
