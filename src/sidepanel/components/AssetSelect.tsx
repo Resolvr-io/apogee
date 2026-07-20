@@ -126,6 +126,7 @@ export function AssetSelect({
               <button
                 ref={i === active ? activeRef : undefined}
                 type="button"
+                tabIndex={-1}
                 onClick={() => choose(o.id)}
                 onMouseEnter={() => setActive(i)}
                 className={cn(
