@@ -228,7 +228,7 @@ export function Onboarding({
           </div>
         </div>
         {__FIREFOX__ && (
-          <Modal open={showHwModal} onClose={() => setShowHwModal(false)}>
+          <Modal open={showHwModal} onClose={() => setShowHwModal(false)} label="Not supported in Firefox">
             <img src="/icons/sad-jade.svg" alt="" className="mx-auto block h-28" />
             <h2 className="text-center text-lg font-semibold text-[color:var(--text-strong)]">
               Not supported in Firefox
