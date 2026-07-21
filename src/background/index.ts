@@ -475,7 +475,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
           recipientSats: msg.review?.recipientSats ?? 0,
           fee: msg.review?.fee ?? 0,
           drain: msg.review?.drain ?? false,
-          // Token-send display fields (absent for L-BTC) — the Jade tab renders
+          // Token-send display fields (absent for LBTC) — the Jade tab renders
           // the asset amount and id; the device itself is the signed truth.
           assetId: msg.review?.assetId,
           assetTicker: msg.review?.assetTicker,
@@ -702,8 +702,8 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
         network: info.network,
         esploraUrl: await chainServer(info.network),
       });
-      // Surface the full per-asset map too (L-BTC + tokens); the dapp filters
-      // L-BTC out and resolves token metadata via provider/getAssetInfo.
+      // Surface the full per-asset map too (LBTC + tokens); the dapp filters
+      // LBTC out and resolves token metadata via provider/getAssetInfo.
       const balance: ProviderBalance = {
         locked: false,
         lbtcSats: result.lbtcSats,
