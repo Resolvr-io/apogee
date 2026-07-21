@@ -22,7 +22,7 @@ export interface KnownAsset {
 }
 
 export const KNOWN_ASSETS: Record<string, KnownAsset> = {
-  [LBTC_TESTNET_ASSET_ID]: { label: "L-BTC (testnet)", precision: 8 },
-  [LBTC_MAINNET_ASSET_ID]: { label: "L-BTC", precision: 8 },
+  [LBTC_TESTNET_ASSET_ID]: { label: "LBTC (testnet)", precision: 8 },
+  [LBTC_MAINNET_ASSET_ID]: { label: "LBTC", precision: 8 },
   [USDT_LIQUID_ASSET_ID]: { label: "USDt", precision: 8, pegUsd: true },
 };

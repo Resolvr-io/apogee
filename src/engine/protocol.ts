@@ -31,9 +31,9 @@ export type EngineRequest =
   // Validate a pasted watch-only descriptor and read its fingerprint + network
   // (constructing the WolletDescriptor throws on a malformed descriptor).
   | { kind: "descriptorInfo"; descriptor: string }
-  // `drain` (send max): for L-BTC, drain the wallet (fee deducted from the
+  // `drain` (send max): for LBTC, drain the wallet (fee deducted from the
   // amount); for a token (`asset` set), send the full token balance (the fee is
-  // paid in L-BTC, so no deduction). `sats` is in the asset's base units.
+  // paid in LBTC, so no deduction). `sats` is in the asset's base units.
   | {
       kind: "prepareSend";
       descriptor: string;
@@ -41,7 +41,7 @@ export type EngineRequest =
       address: string;
       sats: number;
       drain?: boolean;
-      asset?: string; // asset id hex; absent → L-BTC (policy asset)
+      asset?: string; // asset id hex; absent → LBTC (policy asset)
     }
   | { kind: "signBroadcast"; mnemonic: string; descriptor: string; network: LiquidNetwork; pset: string; esploraUrl?: string }
   // Finalize an already-signed PSET (e.g. signed on a Jade) + broadcast it. No
@@ -100,11 +100,11 @@ export interface AddressDTO {
   address: string;
 }
 
-/** Result of a full Esplora scan: L-BTC sats plus the full per-asset map. */
+/** Result of a full Esplora scan: LBTC sats plus the full per-asset map. */
 export interface SyncResult {
   lbtcSats: number;
   balance: Record<string, number>; // assetIdHex → sats
-  policyAssetHex: string; // which key in `balance` is L-BTC (vs. tokens)
+  policyAssetHex: string; // which key in `balance` is LBTC (vs. tokens)
 }
 
 /** Liquid asset registry metadata (best-effort; fields null when unregistered). */
@@ -116,7 +116,7 @@ export interface AssetInfo {
 
 export interface WalletTxDTO {
   txid: string;
-  balanceChange: number; // L-BTC (policy asset) delta, sats
+  balanceChange: number; // LBTC (policy asset) delta, sats
   fee: number;
   height: number | null;
   timestamp: number | null;
@@ -200,9 +200,9 @@ export interface CreatedWallet {
 /** A built, reviewable spend: the PSET to sign + the network fee in sats. */
 export interface PrepareSendResult {
   pset: string;
-  fee: number; // network fee, always in L-BTC sats
+  fee: number; // network fee, always in LBTC sats
   recipientSats: number; // what the recipient actually receives, in BASE UNITS of `assetId`
-  assetId: string; // which asset moves — the policy asset hex for L-BTC sends
+  assetId: string; // which asset moves — the policy asset hex for LBTC sends
 }
 
 export interface SendResult {
@@ -212,8 +212,8 @@ export interface SendResult {
 /** Human-readable spend details for the Jade signing tab's review summary. */
 export interface SendReview {
   address: string;
-  recipientSats: number; // base units of the sent asset (sats for L-BTC)
-  fee: number; // L-BTC sats
+  recipientSats: number; // base units of the sent asset (sats for LBTC)
+  fee: number; // LBTC sats
   drain: boolean;
   // Present for token sends (display-only — the PSET is the signed truth, and
   // the Jade device shows asset ids on-screen independently).
@@ -266,7 +266,7 @@ export interface ProviderStatus {
 }
 
 /**
- * L-BTC balance for a connected dapp. A locked wallet does NOT serve a balance:
+ * LBTC balance for a connected dapp. A locked wallet does NOT serve a balance:
  * `locked: true` with `lbtcSats: null` lets the dapp show a "locked" state
  * instead of mistaking it for an empty (0-sat) wallet.
  */
@@ -274,8 +274,8 @@ export interface ProviderBalance {
   locked: boolean;
   lbtcSats: number | null;
   /**
-   * Full per-asset balance map (assetIdHex → base-unit amount), including L-BTC.
-   * Empty `{}` while locked. The dapp filters out L-BTC and resolves each token's
+   * Full per-asset balance map (assetIdHex → base-unit amount), including LBTC.
+   * Empty `{}` while locked. The dapp filters out LBTC and resolves each token's
    * name/ticker/precision via `getAssetInfo`.
    */
   assets: Record<string, number>;

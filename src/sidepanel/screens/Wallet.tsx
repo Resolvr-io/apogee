@@ -109,7 +109,7 @@ function useDemoFunds(): boolean {
 }
 
 type Denom = "btc" | "sats" | "fiat";
-// Tap-to-cycle order — matches the Display settings dropdown (Sats > L-BTC > Fiat).
+// Tap-to-cycle order — matches the Display settings dropdown (Sats > LBTC > Fiat).
 const DENOM_ORDER: Denom[] = ["sats", "btc", "fiat"];
 const DENOM_KEY = "apogee:denomination";
 const FIAT_KEY = "apogee:fiat";
@@ -321,7 +321,7 @@ export function Wallet({
   }, [settleAfterTx]);
 
   // Best-effort: resolve names/tickers for unknown token assets from the
-  // registry (known assets + L-BTC are skipped; failures leave a hex fallback).
+  // registry (known assets + LBTC are skipped; failures leave a hex fallback).
   useEffect(() => {
     if (!sync || !active) return;
     const ids = Object.entries(sync.balance)
@@ -378,7 +378,7 @@ export function Wallet({
     // Mirror the chosen denomination so the toast matches the balance/activity.
     const message =
       denom === "btc"
-        ? `${formatBtc(amt)} L-BTC`
+        ? `${formatBtc(amt)} LBTC`
         : denom === "fiat" && rate != null
           ? formatFiat(satsToFiat(amt, rate), fiat)
           : `${formatSats(amt)} sats`;
@@ -431,7 +431,7 @@ export function Wallet({
             network={active.network}
             // Enter in BTC when that's the chosen denomination; sats otherwise
             // (incl. fiat — the hero shows sats alongside the fiat figure).
-            // Applies to L-BTC only — tokens enter in their own precision.
+            // Applies to LBTC only — tokens enter in their own precision.
             unit={denom === "btc" ? "btc" : "sats"}
             // A Jade wallet signs on-device in a tab; the Send UI cues the user.
             isJade={active.signer === "jade"}
@@ -463,7 +463,7 @@ export function Wallet({
   // Main balance presentation, driven by the tap-to-cycle denomination.
   const sats = sync ? sync.lbtcSats : 0;
   const showStars = hidden || !sync;
-  const unitLabel = denom === "sats" ? "sats" : denom === "fiat" ? fiat : "L-BTC";
+  const unitLabel = denom === "sats" ? "sats" : denom === "fiat" ? fiat : "LBTC";
   let amountNode: React.ReactNode;
   if (showStars) {
     amountNode = <HiddenValue count={5} size={16} gap={9} className="telemetry-stars" />;
@@ -483,7 +483,7 @@ export function Wallet({
   }
   let subtitle = unitLabel;
   if (!showStars && denom === "btc") {
-    subtitle = `L-BTC · ${formatSats(sats)} sats`;
+    subtitle = `LBTC · ${formatSats(sats)} sats`;
   } else if (!showStars && denom === "fiat") {
     subtitle = `${fiat} · ${formatSats(sats)} sats`;
   }
@@ -766,7 +766,7 @@ function TxRow({
   rate: number | null;
   fiat: string;
 }) {
-  // A token-only movement nets ~0 L-BTC, so the policy-asset delta reads as "+0".
+  // A token-only movement nets ~0 LBTC, so the policy-asset delta reads as "+0".
   // Show the token delta instead (precision-scaled + ticker), mirroring the
   // desktop wallet's issuance/redemption rows.
   const token = Object.entries(tx.assetDeltas ?? {}).find(
@@ -776,7 +776,7 @@ function TxRow({
   const pending = tx.height === null;
   const explorer = explorerTxUrl(network, tx.txid);
 
-  // L-BTC amount in the chosen denomination (mirrors the balance). Every formatter
+  // LBTC amount in the chosen denomination (mirrors the balance). Every formatter
   // preserves the sign, so the receive prefix carries over unchanged from sats.
   const lbtcAmount = (satsValue: number): string =>
     denom === "btc"
@@ -786,7 +786,7 @@ function TxRow({
           ? formatFiat(satsToFiat(satsValue, rate), fiat)
           : "—"
         : formatSats(satsValue);
-  const unitLabel = denom === "btc" ? "L-BTC" : denom === "fiat" ? fiat : "sats";
+  const unitLabel = denom === "btc" ? "LBTC" : denom === "fiat" ? fiat : "sats";
 
   let amountText: string;
   if (token) {
@@ -886,7 +886,7 @@ function Receive({ walletId }: { walletId: string }) {
   return (
     <Card>
       <h2 className="mb-3 text-center console-overline console-ruled--center">
-        Receive L-BTC & assets
+        Receive LBTC & assets
       </h2>
       {error ? (
         <ErrorText>{error}</ErrorText>
@@ -1176,7 +1176,7 @@ function SettingsBody({
               className="console-select h-11 w-full rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] px-3 text-sm text-[color:var(--text-strong)] outline-none focus:border-[color:var(--accent)]"
             >
               <option value="sats">Sats</option>
-              <option value="btc">L-BTC</option>
+              <option value="btc">LBTC</option>
               <option value="fiat">Fiat</option>
             </select>
           </Field>

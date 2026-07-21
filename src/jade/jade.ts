@@ -88,8 +88,8 @@ function badgeHtml(net: string): string {
 function summaryHtml(s: SendReview): string {
   // Token sends (assetId present) show the amount in the asset's units plus the
   // shortened asset id so the user can cross-check against the Jade's own
-  // on-device display; the fee is always L-BTC, and a cross-asset Total is
-  // meaningless so the Total row is L-BTC-only.
+  // on-device display; the fee is always LBTC, and a cross-asset Total is
+  // meaningless so the Total row is LBTC-only.
   const isToken = Boolean(s.assetId);
   const amount = isToken
     ? `${formatAssetAmount(s.recipientSats, s.assetPrecision ?? null)} ${esc(s.assetTicker ?? shortenHex(s.assetId ?? "", 6, 6))}`

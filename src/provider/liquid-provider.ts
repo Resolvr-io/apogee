@@ -73,7 +73,7 @@ const ICON =
     networkChanged: new Set(),
   };
   let seq = 0;
-  // The wallet's network, learned on connect/getAccount, used to label L-BTC.
+  // The wallet's network, learned on connect/getAccount, used to label LBTC.
   let cachedNetwork: LiquidNetwork | undefined;
 
   // Trust boundary: same-window postMessage hop. Any script in the page could
@@ -148,7 +148,7 @@ const ICON =
   function lbtcId(net: LiquidNetwork | undefined): string | undefined {
     if (net === "liquid") return LBTC_MAINNET_ASSET_ID;
     if (net === "liquid-testnet") return LBTC_TESTNET_ASSET_ID;
-    return undefined; // regtest policy asset is dynamic; leave L-BTC as a plain entry
+    return undefined; // regtest policy asset is dynamic; leave LBTC as a plain entry
   }
 
   // Public EIP-1193 dispatch.
@@ -197,11 +197,11 @@ const ICON =
         const seen = new Set<string>();
         for (const [assetId, value] of Object.entries(b.assets)) {
           const isLbtc = assetId === lid;
-          out.push(isLbtc ? { assetId, value, ticker: "L-BTC", precision: 8 } : { assetId, value });
+          out.push(isLbtc ? { assetId, value, ticker: "LBTC", precision: 8 } : { assetId, value });
           seen.add(assetId);
         }
         if (lid && !seen.has(lid)) {
-          out.push({ assetId: lid, value: b.lbtcSats ?? 0, ticker: "L-BTC", precision: 8 });
+          out.push({ assetId: lid, value: b.lbtcSats ?? 0, ticker: "LBTC", precision: 8 });
         }
         return out as T;
       }
