@@ -411,7 +411,10 @@ export function Modal({
 }: {
   open: boolean;
   onClose: () => void;
-  title: string;
+  /** Optional heading rendered at the top. Omit to place the heading inside
+   *  `children` (e.g. below an illustration). Still used for the dialog's
+   *  accessible name when provided. */
+  title?: string;
   children: ReactNode;
 }) {
   useEffect(() => {
@@ -435,8 +438,10 @@ export function Modal({
         className="w-full max-w-sm rounded-lg border border-[color:var(--border-strong)] bg-[color:var(--surface-elevated)] p-5 shadow-lg shadow-black/40"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-lg font-semibold text-[color:var(--text-strong)]">{title}</h2>
-        <div className="mt-3 space-y-3 text-sm text-[color:var(--text-secondary)]">{children}</div>
+        {title && <h2 className="text-lg font-semibold text-[color:var(--text-strong)]">{title}</h2>}
+        <div className={cn(title && "mt-3", "space-y-3 text-sm text-[color:var(--text-secondary)]")}>
+          {children}
+        </div>
       </div>
     </div>
   );

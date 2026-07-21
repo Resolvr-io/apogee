@@ -228,8 +228,11 @@ export function Onboarding({
           </div>
         </div>
         {__FIREFOX__ && (
-          <Modal open={showHwModal} onClose={() => setShowHwModal(false)} title="Hardware wallet">
+          <Modal open={showHwModal} onClose={() => setShowHwModal(false)}>
             <img src="/icons/sad-jade.svg" alt="" className="mx-auto block h-28" />
+            <h2 className="text-center text-lg font-semibold text-[color:var(--text-strong)]">
+              Not supported in Firefox
+            </h2>
             <p>
               Hardware wallet signing isn't available on Firefox yet. Firefox blocks the
               Web Serial API in extension pages, which Jade needs to connect over USB.
