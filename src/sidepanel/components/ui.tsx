@@ -399,3 +399,69 @@ export function CopyIconButton({ value, label }: { value: string; label: string 
     </button>
   );
 }
+
+// Centered dialog overlay. Closes on backdrop click or Esc. Used for one-off
+// notices (e.g. the Firefox hardware-wallet limitation) where a full step would
+// be heavier than needed.
+export function Modal({
+  open,
+  onClose,
+  title,
+  label,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** Optional heading rendered at the top. Omit to place the heading inside
+   *  `children` (e.g. below an illustration). Still used for the dialog's
+   *  accessible name when provided. */
+  title?: string;
+  /** Accessible name for the dialog when `title` is omitted (i.e. the heading
+   *  lives inside `children`). Ignored when `title` is set. */
+  label?: string;
+  children: ReactNode;
+}) {
+  const cardRef = useRef<HTMLDivElement>(null);
+  // Read onClose through a ref so the effect can key on `open` alone: an inline
+  // onClose (new identity each render) would otherwise re-run the effect and
+  // bounce focus/re-subscribe the listener on every parent render.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    if (!open) return;
+    // Move focus into the dialog on open (so screen readers announce it and Esc
+    // works), and restore it to the trigger on close.
+    const prevFocus = document.activeElement as HTMLElement | null;
+    cardRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCloseRef.current();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      prevFocus?.focus?.();
+    };
+  }, [open]);
+  if (!open) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        ref={cardRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title ?? label}
+        className="w-full max-w-sm rounded-lg border border-[color:var(--border-strong)] bg-[color:var(--surface-elevated)] p-5 shadow-lg shadow-black/40 focus:outline-none"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {title && <h2 className="text-lg font-semibold text-[color:var(--text-strong)]">{title}</h2>}
+        <div className={cn(title && "mt-3", "space-y-3 text-sm text-[color:var(--text-secondary)]")}>
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
