@@ -1,22 +1,18 @@
 import { defineManifest } from "@crxjs/vite-plugin";
-import { loadEnv } from "vite";
 import pkg from "./package.json";
+import { APP_NAME, CONTENT_SECURITY_POLICY, ICONS, hostPermissions } from "./manifest.shared";
 
-// MV3 manifest, authored in TS so paths point at source files; crxjs
-// rewrites them to the hashed build outputs. A service-worker backend, a
-// side panel, and a page provider front the Liquid wallet engine, which
-// runs lwk_wasm in an offscreen document.
-// Debug builds only: a gitignored .env.local baking enterprise credentials also
-// adds the two enterprise hosts (see src/lib/debug.ts). Store/CI builds have
-// neither.
-const hasEnterprise = (mode: string): boolean => {
-  const e = loadEnv(mode, process.cwd(), "VITE_");
-  return Boolean(e.VITE_BS_ENTERPRISE_CLIENT_ID && e.VITE_BS_ENTERPRISE_CLIENT_SECRET);
-};
-
+// Chrome MV3 manifest, authored via crxjs `defineManifest` (paths point at source
+// files; crxjs rewrites them to hashed build outputs). A service-worker backend,
+// a side panel, and a page provider front the Liquid wallet engine, which runs
+// lwk_wasm in an offscreen document.
+//
+// The Firefox manifest lives in manifest.shared.ts (firefoxManifest) and is
+// emitted by scripts/build-firefox.ts — crxjs is Chromium-only. Fields common to
+// both targets come from manifest.shared.ts so there's a single source of truth.
 export default defineManifest((env) => ({
   manifest_version: 3,
-  name: "Apogee",
+  name: APP_NAME,
   version: pkg.version,
   description: pkg.description,
   minimum_chrome_version: "116",
@@ -34,26 +30,7 @@ export default defineManifest((env) => ({
 
   permissions: ["storage", "sidePanel", "alarms", "offscreen"],
 
-  // Esplora endpoints (extension-origin fetch is CORS-exempt) + the
-  // localhost gateway for contract reads during dev.
-  host_permissions: [
-    ...(hasEnterprise(env.mode)
-      ? ["https://enterprise.blockstream.info/*", "https://login.blockstream.com/*"]
-      : []),
-    "https://waterfalls.liquidwebwallet.org/*", // waterfalls scan server (default sync)
-    "https://*.blockstream.info/*", // plain Esplora + asset registry (assets.blockstream.info)
-    "https://blockstream.info/*", // plain Esplora (override)
-    "https://liquid.network/*", // alternative Esplora provider (override)
-    // Fiat price sources (lwk PricesFetcher takes the median of those reachable).
-    "https://api.coinbase.com/*",
-    "https://api.kraken.com/*",
-    "https://api.coingecko.com/*",
-    "https://api.coinpaprika.com/*",
-    "https://blockchain.info/*",
-    // Dev-only: localhost contract gateway / regtest Esplora. Excluded from
-    // production builds so the shipped extension can't reach loopback.
-    ...(env.mode === "development" ? ["http://localhost/*", "http://127.0.0.1/*"] : []),
-  ],
+  host_permissions: hostPermissions(env.mode),
 
   content_scripts: [
     // Bridge — ISOLATED world, can use chrome.runtime.
@@ -75,15 +52,7 @@ export default defineManifest((env) => ({
     },
   ],
 
-  // wasm-unsafe-eval lets lwk_wasm instantiate under MV3 CSP without eval.
-  content_security_policy: {
-    extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
-  },
+  content_security_policy: CONTENT_SECURITY_POLICY,
 
-  icons: {
-    16: "icons/icon16.png",
-    32: "icons/icon32.png",
-    48: "icons/icon48.png",
-    128: "icons/icon128.png",
-  },
+  icons: ICONS,
 }));
