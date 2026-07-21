@@ -40,6 +40,7 @@ const shared: InlineConfig = {
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __GIT_COMMIT__: JSON.stringify(gitCommit()),
+    __FIREFOX__: JSON.stringify(true),
   },
 };
 
@@ -66,8 +67,10 @@ async function buildPages(): Promise<void> {
   });
 }
 
-// A manifest-referenced loose script → one self-contained IIFE file at the dist
-// root. Plain rollupOptions (not lib mode) so nothing is externalized.
+// A wasm-free content script → one self-contained IIFE file at the dist root.
+// Firefox content scripts can't ES-import at runtime, so no code-splitting: plain
+// rollupOptions (not lib mode) with a single input externalizes nothing. (The
+// background is NOT built this way — it hosts the wasm engine; see buildBackground.)
 async function buildScript(name: string, entry: string): Promise<void> {
   await build({
     ...shared,
@@ -88,9 +91,34 @@ async function buildScript(name: string, entry: string): Promise<void> {
   });
 }
 
+// The background hosts the lwk_wasm engine on Firefox (no offscreen API), so —
+// unlike the content scripts — it's built as an ES module with the wasm +
+// top-level-await plugins, code-split so the ~10 MB wasm loads lazily on the first
+// engine call. The manifest declares `background.type: "module"` to match.
+async function buildBackground(): Promise<void> {
+  await build({
+    ...shared,
+    plugins: [wasm(), topLevelAwait()],
+    build: {
+      outDir,
+      emptyOutDir: false,
+      target: "esnext",
+      rollupOptions: {
+        input: abs("src/background/index.ts"),
+        output: {
+          format: "es",
+          entryFileNames: "background.js",
+          chunkFileNames: "assets/[name]-[hash].js",
+          assetFileNames: "assets/[name]-[hash][extname]",
+        },
+      },
+    },
+  });
+}
+
 async function main(): Promise<void> {
   await buildPages();
-  await buildScript("background", "src/background/index.ts");
+  await buildBackground();
   await buildScript("content", "src/content/content.ts");
   await buildScript("provider", "src/provider/liquid-provider.ts");
   writeFileSync(

@@ -71,8 +71,9 @@ export function firefoxManifest(mode: string, app: { version: string; descriptio
       gecko: { id: "apogee@resolvr.io", strict_min_version: "128.0" },
     },
     action: { default_title: "Open Apogee" },
-    // A single self-contained classic script for now; the engine host lands later.
-    background: { scripts: ["background.js"] },
+    // ES-module background (Firefox 128+): it hosts the lwk_wasm engine, which is
+    // loaded via dynamic import, so it can't be a classic script.
+    background: { scripts: ["background.js"], type: "module" },
     // Firefox uses a sidebar in place of Chrome's side panel.
     sidebar_action: {
       default_panel: "src/sidepanel/index.html",

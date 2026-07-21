@@ -38,7 +38,9 @@ import type {
 // only honored when they come from one of our own pages (side panel, approval
 // prompt, Jade tab) — see the onMessage router. A content script injected into a
 // web page carries the page's origin, so this cleanly excludes web pages.
-const EXT_ORIGIN = `chrome-extension://${browser.runtime.id}`;
+// chrome-extension://<id> on Chrome, moz-extension://<uuid> on Firefox — derived
+// from getURL so the scheme matches the running browser.
+const EXT_ORIGIN = new URL(browser.runtime.getURL("/")).origin;
 
 browser.runtime.onInstalled.addListener(() => {
   console.log("[apogee] installed");
@@ -48,10 +50,13 @@ browser.runtime.onInstalled.addListener(() => {
   void closeOffscreen();
 });
 
-// Open the side panel when the toolbar icon is clicked.
-chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: true })
-  .catch((err) => console.error("[apogee] setPanelBehavior", err));
+// Open the side panel when the toolbar icon is clicked (Chrome only; Firefox uses
+// sidebar_action). __FIREFOX__ is a build constant, so this drops from the FF bundle.
+if (!__FIREFOX__) {
+  chrome.sidePanel
+    .setPanelBehavior({ openPanelOnActionClick: true })
+    .catch((err) => console.error("[apogee] setPanelBehavior", err));
+}
 
 // ---- idle auto-lock -------------------------------------------------------
 
@@ -156,6 +161,7 @@ const OFFSCREEN_URL = "src/offscreen/offscreen.html";
 let creating: Promise<void> | null = null;
 
 async function ensureOffscreen(): Promise<void> {
+  if (__FIREFOX__) return; // Firefox has no offscreen API; the engine runs in-process
   const existing = await chrome.runtime.getContexts({
     contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
     documentUrls: [browser.runtime.getURL(OFFSCREEN_URL)],
@@ -178,6 +184,7 @@ async function ensureOffscreen(): Promise<void> {
 
 /** Drop the offscreen document if one exists, so it's rebuilt fresh next call. */
 async function closeOffscreen(): Promise<void> {
+  if (__FIREFOX__) return;
   const existing = await chrome.runtime.getContexts({
     contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
     documentUrls: [browser.runtime.getURL(OFFSCREEN_URL)],
@@ -193,24 +200,32 @@ async function closeOffscreen(): Promise<void> {
 // a chain ensures only one engine op runs at a time.
 let engineQueue: Promise<unknown> = Promise.resolve();
 
-/** One engine round-trip, outside the serial queue. Only for ops that touch no
- *  Wollet (getRate, qr) — those can't hit the re-entrancy panic, and keeping
- *  them out of the queue means a slow price source can't stall a sync (or
- *  anything queued behind one). */
-async function engineDirect<T>(req: EngineRequest): Promise<T> {
+// One engine round-trip. On Chrome the wasm engine lives in the offscreen document
+// (message it); on Firefox there's no offscreen API, so the engine core runs
+// in-process in this background page. __FIREFOX__ is a build constant, so on Chrome
+// the Firefox branch — and the engine-core import — tree-shake away, and vice versa.
+let ffEngine: ((req: EngineRequest) => Promise<unknown>) | null = null;
+async function runEngine<T>(req: EngineRequest): Promise<T> {
+  if (__FIREFOX__) {
+    if (!ffEngine) ffEngine = (await import("@/engine/engine-core")).handle;
+    return (await ffEngine(req)) as T;
+  }
   await ensureOffscreen();
   const reply = await browser.runtime.sendMessage({ target: "offscreen", req });
   if (!reply?.ok) throw new Error(reply?.error ?? "engine error");
   return reply.value as T;
 }
 
+/** One engine round-trip, outside the serial queue. Only for ops that touch no
+ *  Wollet (getRate, qr) — those can't hit the re-entrancy panic, and keeping
+ *  them out of the queue means a slow price source can't stall a sync (or
+ *  anything queued behind one). */
+async function engineDirect<T>(req: EngineRequest): Promise<T> {
+  return runEngine<T>(req);
+}
+
 async function engine<T>(req: EngineRequest): Promise<T> {
-  const run = engineQueue.then(async () => {
-    await ensureOffscreen();
-    const reply = await browser.runtime.sendMessage({ target: "offscreen", req });
-    if (!reply?.ok) throw new Error(reply?.error ?? "engine error");
-    return reply.value as T;
-  });
+  const run = engineQueue.then(() => runEngine<T>(req));
   // Keep the chain alive even if this call rejects, so one failure doesn't wedge
   // the queue.
   engineQueue = run.then(
@@ -855,12 +870,17 @@ function rejectPendingApprovals(origin: string | undefined, reason: string): voi
 
 /** Show the approval in the side panel (overlay) when open, else a popup window. */
 async function routeApproval(request: ApprovalRequest): Promise<void> {
-  const panels = await chrome.runtime.getContexts({
-    contextTypes: [chrome.runtime.ContextType.SIDE_PANEL],
-  });
-  if (panels.length > 0) {
-    browser.runtime.sendMessage({ type: "apogee/approval-request", request }).catch(() => {});
-    return;
+  // Chrome: if the side panel is open, show the approval as an overlay there.
+  // Firefox has no side panel (sidebar_action) and no getContexts, so it always
+  // falls through to a popup window (__FIREFOX__ drops this block from that build).
+  if (!__FIREFOX__) {
+    const panels = await chrome.runtime.getContexts({
+      contextTypes: [chrome.runtime.ContextType.SIDE_PANEL],
+    });
+    if (panels.length > 0) {
+      browser.runtime.sendMessage({ type: "apogee/approval-request", request }).catch(() => {});
+      return;
+    }
   }
   const win = await browser.windows.create({
     url: browser.runtime.getURL(`src/prompt/prompt.html?id=${encodeURIComponent(request.id)}`),
