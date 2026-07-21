@@ -1,4 +1,4 @@
-// Amount formatting. L-BTC has 8 decimals like Bitcoin.
+// Amount formatting. LBTC has 8 decimals like Bitcoin.
 
 const SATS_PER_BTC = 100_000_000;
 
@@ -7,7 +7,7 @@ export function formatSats(sats: number): string {
   return Math.trunc(sats).toLocaleString("en-US");
 }
 
-/** Render sats as a fixed-8 L-BTC string, e.g. 123456 → "0.00123456". */
+/** Render sats as a fixed-8 LBTC string, e.g. 123456 → "0.00123456". */
 export function formatBtc(sats: number): string {
   return (sats / SATS_PER_BTC).toLocaleString("en-US", {
     minimumFractionDigits: 8,

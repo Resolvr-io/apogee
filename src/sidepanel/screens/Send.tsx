@@ -1,7 +1,7 @@
-// Send L-BTC or any held Liquid asset: pick the asset, enter destination +
+// Send LBTC or any held Liquid asset: pick the asset, enter destination +
 // amount → review the fee → confirm (sign + broadcast). Amounts are entered in
 // the asset's own precision (the sats/BTC denomination toggle applies only to
-// L-BTC); the network fee is always paid in L-BTC. The QR scanner runs in a
+// LBTC); the network fee is always paid in LBTC. The QR scanner runs in a
 // popup window (scanner.html) because MV3 side panels can't surface the camera
 // permission prompt; it messages the scanned value back via apogee/qr-result.
 
@@ -22,7 +22,7 @@ type Step = "form" | "review" | "sent";
 
 /** Parse a scanned value: a bare address, or a BIP21-style
  *  `scheme:addr?amount=&assetid=` URI. The amount is returned as raw text —
- *  its unit depends on the asset (BTC for L-BTC, native units for a token), so
+ *  its unit depends on the asset (BTC for LBTC, native units for a token), so
  *  interpretation happens at the call site where the asset is known. */
 function parseQr(raw: string): { address: string; amountText?: string; assetId?: string } {
   const s = raw.trim();
@@ -97,7 +97,7 @@ export function Send({
     ? 8
     : (KNOWN_ASSETS[assetId]?.precision ?? assets[assetId]?.precision ?? null);
   const assetLabel = isLbtc
-    ? "L-BTC"
+    ? "LBTC"
     : (KNOWN_ASSETS[assetId]?.label ??
       assets[assetId]?.ticker ??
       assets[assetId]?.name ??
@@ -105,7 +105,7 @@ export function Send({
   const lbtcSats = sync?.lbtcSats ?? 0;
   const balance = isLbtc ? lbtcSats : (sync?.balance[assetId] ?? 0);
   // Tokens the picker offers (positive balances only); the picker renders only
-  // when at least one exists, so an L-BTC-only wallet keeps the plain form.
+  // when at least one exists, so an LBTC-only wallet keeps the plain form.
   const tokenIds = sync
     ? Object.entries(sync.balance)
         .filter(([a, amt]) => a !== policyHex && amt > 0)
@@ -113,13 +113,13 @@ export function Send({
     : [];
 
   const isBtc = unit === "btc";
-  // The L-BTC amount is entered in the active denomination; tokens always enter
+  // The LBTC amount is entered in the active denomination; tokens always enter
   // in their own precision. The engine works in base units either way.
   // Unknown precision (unregistered token) degrades to raw base-unit entry —
   // internally consistent, and the label says so.
   const unitLabel = isLbtc
     ? isBtc
-      ? "L-BTC"
+      ? "LBTC"
       : "sats"
     : precision == null
       ? `${assetLabel} base units`
@@ -174,7 +174,7 @@ export function Send({
         return;
       }
       if (parsed.amountText) {
-        if (!isLbtc) return; // an L-BTC-denominated amount can't prefill a token form
+        if (!isLbtc) return; // an LBTC-denominated amount can't prefill a token form
         const btc = parseFloat(parsed.amountText);
         // Only accept a positive, finite amount; ignore negative/garbage so a
         // scanned URI can't prefill a bogus value.
@@ -212,18 +212,18 @@ export function Send({
     } else {
       if (enteredUnits <= 0) return setError(`Enter an amount in ${unitLabel}.`);
       if (enteredUnits > balance) return setError("Amount exceeds your available balance.");
-      // L-BTC only: sending the entire balance as a fixed amount leaves no room
+      // LBTC only: sending the entire balance as a fixed amount leaves no room
       // for the fee and always fails to build — steer to Max (fee taken from the
-      // amount). For a token the fee is paid in L-BTC, so a full-balance fixed
+      // amount). For a token the fee is paid in LBTC, so a full-balance fixed
       // send is valid and proceeds.
       if (isLbtc && enteredUnits === balance) {
         return setError("To send your full balance, use Max — the network fee is taken from the amount.");
       }
     }
-    // Token sends still pay the network fee in L-BTC — fail fast with the cause
+    // Token sends still pay the network fee in LBTC — fail fast with the cause
     // (the engine double-guards).
     if (!isLbtc && lbtcSats <= 0) {
-      return setError("You need L-BTC to pay the network fee — this wallet has none.");
+      return setError("You need LBTC to pay the network fee — this wallet has none.");
     }
     setBusy(true);
     try {
@@ -338,7 +338,7 @@ export function Send({
             console
           />
           <Row label="Network fee" value={`${formatSats(prepared.fee)} sats`} console />
-          {/* A cross-asset total is meaningless — only L-BTC sums with its fee. */}
+          {/* A cross-asset total is meaningless — only LBTC sums with its fee. */}
           {isLbtc && (
             <Row
               label="Total"
@@ -350,7 +350,7 @@ export function Send({
         </dl>
         {!isLbtc && (
           <p className="mt-1.5 text-xs text-[color:var(--text-subtle)]">
-            The network fee is paid in L-BTC.
+            The network fee is paid in LBTC.
           </p>
         )}
         <ErrorText>{error}</ErrorText>
@@ -393,7 +393,7 @@ export function Send({
         <span className="console-value text-lg">
           {isLbtc
             ? isBtc
-              ? `${formatBtc(balance)} L-BTC`
+              ? `${formatBtc(balance)} LBTC`
               : `${formatSats(balance)} sats`
             : `${formatAssetAmount(balance, precision)} ${assetLabel}`}
         </span>
@@ -406,7 +406,7 @@ export function Send({
               value={assetId}
               onChange={onAssetChange}
               options={[
-                { id: policyHex, label: "L-BTC" },
+                { id: policyHex, label: "LBTC" },
                 ...tokenIds.map((id) => ({
                   id,
                   label:
@@ -480,7 +480,7 @@ export function Send({
             <p className="px-1 text-xs text-[color:var(--text-subtle)]">
               {isLbtc
                 ? "Sending all funds. The network fee is deducted from this amount."
-                : `Sending your full ${assetLabel} balance. The network fee is paid in L-BTC.`}
+                : `Sending your full ${assetLabel} balance. The network fee is paid in LBTC.`}
             </p>
           )}
         </div>

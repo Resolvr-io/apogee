@@ -4,7 +4,7 @@
 // wallet state are untouched, and a send still validates against the real
 // balance. The history deliberately sums to the balance on BOTH assets so the
 // numbers hold up under scrutiny in a screenshot:
-//   L-BTC: +250 000 − 420 026 + 75 000 + 1 500 000 − 180 540 + 272 000
+//   LBTC: +250 000 − 420 026 + 75 000 + 1 500 000 − 180 540 + 272 000
 //          + 827 457 − 166 460                            = 2 157 431 sats
 //   USDt:  +100.42 − 15.00 + 65.00                        = 150.42
 

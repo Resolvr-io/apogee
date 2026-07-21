@@ -6,14 +6,14 @@ from source rather than re-typing into the dashboard. Keep in sync with
 
 ## Description
 
-Apogee is a self-custodial wallet for the Liquid Network — the Bitcoin sidechain built for fast, low-fee, confidential transactions in L-BTC and other Liquid assets.
+Apogee is a self-custodial wallet for the Liquid Network — the Bitcoin sidechain built for fast, low-fee, confidential transactions in LBTC and other Liquid assets.
 
 Your keys, your coins. Apogee generates and stores your keys locally, encrypted on your device. They are never uploaded, and Resolvr never has access to them. No accounts, no sign-up, no tracking.
 
 WHAT YOU CAN DO
 • Create a new wallet, or restore one from a standard BIP-39 recovery phrase.
 • Import a watch-only wallet from a Liquid descriptor: track balances and receive without keys on this device. Restore the matching seed later and it upgrades to a full wallet in place.
-• Hold, receive, and send L-BTC and other Liquid assets — like USDt — with an asset picker, registry names and icons, correct decimal precision, and an approximate fiat value for USD-pegged tokens.
+• Hold, receive, and send LBTC and other Liquid assets — like USDt — with an asset picker, registry names and icons, correct decimal precision, and an approximate fiat value for USD-pegged tokens.
 • Keep amounts private with Liquid's confidential transactions.
 • Pair a Blockstream Jade hardware wallet and approve transactions on the device.
 • Connect to Liquid web apps and authorize their transactions — you review and sign every action.
@@ -36,7 +36,7 @@ Pair a Blockstream Jade to keep your keys on a dedicated device. Apogee builds t
 GETTING STARTED
 1. Install Apogee and open it from the browser side panel.
 2. Create a new wallet or restore a recovery phrase, and set a password.
-3. Receive L-BTC to your address, or connect a Liquid app.
+3. Receive LBTC to your address, or connect a Liquid app.
 
 Apogee never asks for your recovery phrase outside of setup. Keep your phrase and password safe — because Apogee is self-custodial, no one can recover them for you if they are lost.
 

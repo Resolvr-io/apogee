@@ -1,6 +1,6 @@
 # Apogee
 
-A self-custodial **Liquid (L-BTC)** wallet browser extension. Apogee holds the
+A self-custodial **Liquid (LBTC)** wallet browser extension. Apogee holds the
 keys and signs; web apps connect to it as a dapp through an injected
 `window.liquid` / `window.apogee` provider, MetaMask-style. The app never
 exposes a seed to the page.
@@ -54,7 +54,7 @@ ever receive watch-only data and signing requests.
 - Onboarding makes hardware-vs-local a **one-time choice at init**, and picks the
   network (**Mainnet** or **Testnet**) for create, restore, and Jade pairing alike:
   create or restore a seed, **or** connect a hardware wallet.
-- Unlock, balance (sats / L-BTC / fiat, hide-balance; defaults to sats), receive (branded address + QR),
+- Unlock, balance (sats / LBTC / fiat, hide-balance; defaults to sats), receive (branded address + QR),
   send (build → review → sign → broadcast), Received / Sent **toasts**, a persistent
   **connection-status bar**, and settings (network, currency, denomination, auto-lock,
   background animation, reveal seed, connected apps).
@@ -103,7 +103,7 @@ discovery); the implementation is in
 - **Send any held Liquid asset** — USDt and other issued assets are first-class
   in Send: an asset picker appears when you hold more than one, amounts are
   entered in the asset's own precision, and Max sends the full token balance.
-  The network fee is always paid in L-BTC (with an upfront check so a wallet
+  The network fee is always paid in LBTC (with an upfront check so a wallet
   holding only tokens gets a clear error, not a failed build). Each token's
   drawer gains a direct Send button, BIP21 payment links with an `assetid`
   preselect the right asset, and a Jade send shows the asset amount and id
