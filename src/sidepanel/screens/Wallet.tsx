@@ -30,6 +30,7 @@ import { KNOWN_ASSETS } from "@/lib/asset-registry";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY } from "@/lib/debug";
 import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS } from "@/lib/demo-funds";
 import { cn, shortenHex } from "@/lib/utils";
+import { browser } from "@/lib/ext";
 import {
   formatAssetAmount,
   formatBtc,
@@ -73,12 +74,12 @@ const SEED_REVEAL_TIMEOUT_S = 30;
 function useHideBalance(): [boolean, () => void] {
   const [hidden, setHidden] = useState(false);
   useEffect(() => {
-    void chrome.storage.local.get(HIDE_KEY).then((o) => setHidden(Boolean(o[HIDE_KEY])));
+    void browser.storage.local.get(HIDE_KEY).then((o) => setHidden(Boolean(o[HIDE_KEY])));
   }, []);
   const toggle = useCallback(() => {
     setHidden((h) => {
       const next = !h;
-      void chrome.storage.local.set({ [HIDE_KEY]: next });
+      void browser.storage.local.set({ [HIDE_KEY]: next });
       return next;
     });
   }, []);
@@ -92,7 +93,7 @@ function useDemoFunds(): boolean {
   const [on, setOn] = useState(false);
   useEffect(() => {
     if (!DEBUG_ENTERPRISE_BUILD) return;
-    void chrome.storage.local.get(DEMO_FUNDS_KEY).then((o) => setOn(o[DEMO_FUNDS_KEY] === true));
+    void browser.storage.local.get(DEMO_FUNDS_KEY).then((o) => setOn(o[DEMO_FUNDS_KEY] === true));
     const onChanged = (
       changes: { [key: string]: chrome.storage.StorageChange },
       area: string,
@@ -101,8 +102,8 @@ function useDemoFunds(): boolean {
         setOn(changes[DEMO_FUNDS_KEY].newValue === true);
       }
     };
-    chrome.storage.onChanged.addListener(onChanged);
-    return () => chrome.storage.onChanged.removeListener(onChanged);
+    browser.storage.onChanged.addListener(onChanged);
+    return () => browser.storage.onChanged.removeListener(onChanged);
   }, []);
   return on;
 }
@@ -117,13 +118,13 @@ const FIAT_OPTIONS = ["USD", "EUR", "GBP", "CAD", "AUD", "CHF", "JPY"];
 function useFiat(): [string, (code: string) => void] {
   const [fiat, setFiat] = useState("USD");
   useEffect(() => {
-    void chrome.storage.local.get(FIAT_KEY).then((o) => {
+    void browser.storage.local.get(FIAT_KEY).then((o) => {
       if (typeof o[FIAT_KEY] === "string") setFiat(o[FIAT_KEY]);
     });
   }, []);
   const update = useCallback((code: string) => {
     setFiat(code);
-    void chrome.storage.local.set({ [FIAT_KEY]: code });
+    void browser.storage.local.set({ [FIAT_KEY]: code });
   }, []);
   return [fiat, update];
 }
@@ -133,19 +134,19 @@ function useDenomination(): [Denom, (d: Denom) => void, () => void] {
   // it explicitly. Both write the same persisted key.
   const [denom, setDenom] = useState<Denom>("sats");
   useEffect(() => {
-    void chrome.storage.local.get(DENOM_KEY).then((o) => {
+    void browser.storage.local.get(DENOM_KEY).then((o) => {
       const v = o[DENOM_KEY];
       if (v === "btc" || v === "sats" || v === "fiat") setDenom(v);
     });
   }, []);
   const set = useCallback((d: Denom) => {
     setDenom(d);
-    void chrome.storage.local.set({ [DENOM_KEY]: d });
+    void browser.storage.local.set({ [DENOM_KEY]: d });
   }, []);
   const cycle = useCallback(() => {
     setDenom((cur) => {
       const next = DENOM_ORDER[(DENOM_ORDER.indexOf(cur) + 1) % DENOM_ORDER.length];
-      void chrome.storage.local.set({ [DENOM_KEY]: next });
+      void browser.storage.local.set({ [DENOM_KEY]: next });
       return next;
     });
   }, []);
@@ -315,8 +316,8 @@ export function Wallet({
         settleAfterTx();
       }
     };
-    chrome.runtime.onMessage.addListener(onMsg);
-    return () => chrome.runtime.onMessage.removeListener(onMsg);
+    browser.runtime.onMessage.addListener(onMsg);
+    return () => browser.runtime.onMessage.removeListener(onMsg);
   }, [settleAfterTx]);
 
   // Best-effort: resolve names/tickers for unknown token assets from the
@@ -987,28 +988,28 @@ function SettingsBody({
   // Controlled so the health probe only runs while the drawer is open.
   const [advancedOpen, setAdvancedOpen] = useState(false);
   // Debug builds: the enterprise toggle (see lib/debug.ts). Read/written straight
-  // to chrome.storage — the SW checks the same key on every scan/broadcast.
+  // to browser.storage — the SW checks the same key on every scan/broadcast.
   const [debugEnterprise, setDebugEnterprise] = useState(false);
   useEffect(() => {
     if (!DEBUG_ENTERPRISE_BUILD) return;
-    void chrome.storage.local
+    void browser.storage.local
       .get(DEBUG_ENTERPRISE_KEY)
       .then((o) => setDebugEnterprise(o[DEBUG_ENTERPRISE_KEY] === true));
   }, []);
   function toggleDebugEnterprise(on: boolean) {
     setDebugEnterprise(on);
-    void chrome.storage.local.set({ [DEBUG_ENTERPRISE_KEY]: on });
+    void browser.storage.local.set({ [DEBUG_ENTERPRISE_KEY]: on });
   }
   const [demoFundsOn, setDemoFundsOn] = useState(false);
   useEffect(() => {
     if (!DEBUG_ENTERPRISE_BUILD) return;
-    void chrome.storage.local
+    void browser.storage.local
       .get(DEMO_FUNDS_KEY)
       .then((o) => setDemoFundsOn(o[DEMO_FUNDS_KEY] === true));
   }, []);
   function toggleDemoFunds(on: boolean) {
     setDemoFundsOn(on);
-    void chrome.storage.local.set({ [DEMO_FUNDS_KEY]: on });
+    void browser.storage.local.set({ [DEMO_FUNDS_KEY]: on });
   }
   // Screenshot helper: hide the Debug card briefly. Plain component state, so
   // leaving and reopening Settings also brings it back (SettingsBody remounts).
@@ -1110,8 +1111,8 @@ function SettingsBody({
         load();
       }
     };
-    chrome.runtime.onMessage.addListener(onMsg);
-    return () => chrome.runtime.onMessage.removeListener(onMsg);
+    browser.runtime.onMessage.addListener(onMsg);
+    return () => browser.runtime.onMessage.removeListener(onMsg);
   }, []);
   function revokeSite(origin: string) {
     setSites((s) => s.filter((o) => o !== origin));

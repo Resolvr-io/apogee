@@ -18,6 +18,7 @@ import type { SendReview } from "@/engine/protocol";
 import { explorerTxUrl } from "@/lib/explorer";
 import { formatAssetAmount, formatSats } from "@/lib/format";
 import { isValidFingerprint, shortenHex } from "@/lib/utils";
+import { browser } from "@/lib/ext";
 
 const params = new URLSearchParams(location.search);
 const network = (params.get("network") ?? "liquid") as LiquidNetwork;
@@ -228,7 +229,7 @@ function showSignDone(summary: SendReview, txid: string): void {
 function signOnConnected(id: string) {
   return async (lwk: typeof Lwk, jade: Lwk.Jade): Promise<void> => {
     try {
-      const res = await chrome.runtime.sendMessage({ type: "apogee/jade-sign-get", id });
+      const res = await browser.runtime.sendMessage({ type: "apogee/jade-sign-get", id });
       if (!res?.ok) throw new Error(res?.error ?? "Couldn't load the transaction to sign.");
 
       // Verify this is the wallet's device before asking it to sign — fail CLOSED:
@@ -250,7 +251,7 @@ function signOnConnected(id: string) {
       const signed = await jade.sign(new lwk.Pset(String(res.pset)));
 
       showBroadcasting();
-      const out = await chrome.runtime.sendMessage({
+      const out = await browser.runtime.sendMessage({
         type: "apogee/jade-signed",
         id,
         pset: signed.toString(),
@@ -259,7 +260,7 @@ function signOnConnected(id: string) {
       showSignDone(summary, String(out.txid));
     } catch (e) {
       const message = friendlyJadeError(e);
-      chrome.runtime.sendMessage({ type: "apogee/jade-sign-failed", id, error: message }).catch(() => {});
+      browser.runtime.sendMessage({ type: "apogee/jade-sign-failed", id, error: message }).catch(() => {});
       showFailed(message);
     }
   };
@@ -300,7 +301,7 @@ function showPairConfirm(device: { descriptor: string; fingerprint: string }): v
       // undefined — and pretending success would strand the user.
       let acked = false;
       try {
-        const res = await chrome.runtime.sendMessage({
+        const res = await browser.runtime.sendMessage({
           type: "apogee/jade-paired",
           descriptor: device.descriptor,
           fingerprint: device.fingerprint,

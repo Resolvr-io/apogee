@@ -1,11 +1,13 @@
 // Content script (ISOLATED world). Bridges the MAIN-world page provider
 // (window.apogee) to the service worker: it receives postMessage requests from
-// the provider, relays them to the background via chrome.runtime, and posts the
+// the provider, relays them to the background via browser.runtime, and posts the
 // reply back. The ISOLATED world is the only one of the two that can reach
-// chrome.runtime, so this hop is required.
+// browser.runtime, so this hop is required.
 //
 // Per-site approval routing (connect/sign prompts) lands in a follow-up; for now
 // the bridge forwards the small set of provider methods straight through.
+
+import { browser } from "@/lib/ext";
 
 const PROVIDER_METHODS = new Set([
   "connect",
@@ -50,10 +52,10 @@ window.addEventListener("message", (event) => {
   const { id, method, params } = data;
 
   // If the extension was reloaded/updated, this already-injected content script
-  // is orphaned: chrome.runtime is invalidated and can never reach the (new)
+  // is orphaned: browser.runtime is invalidated and can never reach the (new)
   // service worker. Signal the page to reload instead of letting the request
   // hang — only a fresh page load re-injects a working bridge.
-  if (!chrome.runtime?.id) {
+  if (!browser.runtime?.id) {
     reply(id, { ok: false, error: "PROVIDER_DISCONNECTED" });
     return;
   }
@@ -76,7 +78,7 @@ window.addEventListener("message", (event) => {
     }
   }
 
-  chrome.runtime
+  browser.runtime
     .sendMessage({ ...safeParams, type: `provider/${method}` })
     .then((res: { ok: true; value: unknown } | { ok: false; error: string } | undefined) => {
       reply(id, res ?? { ok: false, error: "No response from Apogee" });
@@ -86,7 +88,7 @@ window.addEventListener("message", (event) => {
       // it as PROVIDER_DISCONNECTED so the page can prompt a reload.
       const message = err instanceof Error ? err.message : String(err);
       const orphaned =
-        !chrome.runtime?.id || /context invalidated|Receiving end does not exist/i.test(message);
+        !browser.runtime?.id || /context invalidated|Receiving end does not exist/i.test(message);
       reply(id, { ok: false, error: orphaned ? "PROVIDER_DISCONNECTED" : message });
     });
 });

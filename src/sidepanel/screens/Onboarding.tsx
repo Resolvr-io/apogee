@@ -9,6 +9,7 @@ import { Button, Card, CopyButton, ErrorText, Field, Input, Spinner, Textarea, W
 import { errMessage, wallet } from "@/sidepanel/wallet-client";
 import { openJadeWindow } from "@/sidepanel/jade-window";
 import { cn } from "@/lib/utils";
+import { browser } from "@/lib/ext";
 
 type Step = "choose" | "create" | "backup" | "restore" | "hardware-connect" | "hardware" | "watch";
 
@@ -84,8 +85,8 @@ export function Onboarding({
       setStep("hardware");
       sendResponse({ ok: true });
     };
-    chrome.runtime.onMessage.addListener(onMsg);
-    return () => chrome.runtime.onMessage.removeListener(onMsg);
+    browser.runtime.onMessage.addListener(onMsg);
+    return () => browser.runtime.onMessage.removeListener(onMsg);
   }, []);
 
   function validatePassword(): string | null {

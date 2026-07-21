@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import type { ApprovalRequest } from "@/engine/protocol";
 import { Spinner } from "@/sidepanel/components/ui";
 import { Approval } from "@/sidepanel/screens/Approval";
+import { browser } from "@/lib/ext";
 import "../sidepanel/theme.css";
 
 // Standalone approval popup — opened by the service worker when no side panel is
@@ -19,7 +20,7 @@ function Prompt() {
       setError("No pending request.");
       return;
     }
-    chrome.runtime
+    browser.runtime
       .sendMessage({ type: "apogee/get-approval", id })
       .then((res: { ok: boolean; value?: ApprovalRequest; error?: string }) => {
         if (res?.ok && res.value) setRequest(res.value);

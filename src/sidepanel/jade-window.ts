@@ -3,8 +3,10 @@
 // We open it as a full TAB rather than a popup window: Chrome's Web Serial
 // device chooser reliably enumerates ports in a normal tab, but often comes up
 // EMPTY in an extension popup window.
+import { browser } from "@/lib/ext";
+
 export function openJadeWindow(network: string): void {
-  void chrome.tabs.create({
-    url: chrome.runtime.getURL(`src/jade/jade.html?network=${encodeURIComponent(network)}`),
+  void browser.tabs.create({
+    url: browser.runtime.getURL(`src/jade/jade.html?network=${encodeURIComponent(network)}`),
   });
 }

@@ -10,6 +10,7 @@ import { formatSats } from "@/lib/format";
 import { shortenHex } from "@/lib/utils";
 import { Button, Card, ErrorText, Field, Input, Spinner } from "@/sidepanel/components/ui";
 import { errMessage, unlockErrMessage, wallet } from "@/sidepanel/wallet-client";
+import { browser } from "@/lib/ext";
 
 // Sputnik-style connection glyph for the connect success state: a satellite
 // emblem, thickened with a matching currentColor stroke and tilted so it reads
@@ -48,7 +49,7 @@ function decide(
   approved: boolean,
   password?: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  return chrome.runtime.sendMessage({ type: "apogee/approval-decision", id, approved, password });
+  return browser.runtime.sendMessage({ type: "apogee/approval-decision", id, approved, password });
 }
 
 /** Human-friendly network label for the approval UI. */

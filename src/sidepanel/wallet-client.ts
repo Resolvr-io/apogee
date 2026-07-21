@@ -1,4 +1,4 @@
-// Typed client for the side panel: wraps chrome.runtime.sendMessage to the
+// Typed client for the side panel: wraps browser.runtime.sendMessage to the
 // service worker's wallet/* router and unwraps the Reply<T> envelope, throwing
 // the engine/keystore error message on failure.
 
@@ -22,9 +22,10 @@ import type {
   WalletInfo,
   WalletSigner,
 } from "@/keystore/keystore";
+import { browser } from "@/lib/ext";
 
 async function call<T>(msg: WalletRequest): Promise<T> {
-  const reply = (await chrome.runtime.sendMessage(msg)) as Reply<T> | undefined;
+  const reply = (await browser.runtime.sendMessage(msg)) as Reply<T> | undefined;
   if (!reply) throw new Error("no response from background");
   if (!reply.ok) throw new Error(reply.error);
   return reply.value;
