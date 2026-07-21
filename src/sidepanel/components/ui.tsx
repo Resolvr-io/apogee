@@ -399,3 +399,45 @@ export function CopyIconButton({ value, label }: { value: string; label: string 
     </button>
   );
 }
+
+// Centered dialog overlay. Closes on backdrop click or Esc. Used for one-off
+// notices (e.g. the Firefox hardware-wallet limitation) where a full step would
+// be heavier than needed.
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  children: ReactNode;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <div
+        className="w-full max-w-sm rounded-lg border border-[color:var(--border-strong)] bg-[color:var(--surface-elevated)] p-5 shadow-lg shadow-black/40"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-semibold text-[color:var(--text-strong)]">{title}</h2>
+        <div className="mt-3 space-y-3 text-sm text-[color:var(--text-secondary)]">{children}</div>
+      </div>
+    </div>
+  );
+}

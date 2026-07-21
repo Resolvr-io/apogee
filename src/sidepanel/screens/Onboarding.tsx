@@ -5,7 +5,7 @@
 import { Check, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { LiquidNetwork } from "@/keystore/keystore";
-import { Button, Card, CopyButton, ErrorText, Field, Input, Spinner, Textarea, WelcomeShell } from "@/sidepanel/components/ui";
+import { Button, Card, CopyButton, ErrorText, Field, Input, Modal, Spinner, Textarea, WelcomeShell } from "@/sidepanel/components/ui";
 import { errMessage, wallet } from "@/sidepanel/wallet-client";
 import { openJadeWindow } from "@/sidepanel/jade-window";
 import { cn } from "@/lib/utils";
@@ -52,6 +52,7 @@ export function Onboarding({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [savedConfirmed, setSavedConfirmed] = useState(false); // seed backup gate
+  const [showHwModal, setShowHwModal] = useState(false); // Firefox HW-wallet limitation notice
 
   // Every step starts with clean form fields: a password typed in one flow must
   // not silently carry into another (e.g. seed-restore -> back -> watch-only
@@ -201,18 +202,46 @@ export function Onboarding({
           <Button variant="secondary" onClick={() => setStep("restore")}>
             Restore from seed phrase
           </Button>
-          <Button variant="secondary" onClick={() => setStep("hardware-connect")}>
-            Connect hardware wallet
-          </Button>
-          {/* De-emphasized: a plain muted text link, not a button. */}
-          <button
-            type="button"
-            onClick={() => setStep("watch")}
-            className="mt-1 self-center text-xs text-[color:var(--text-subtle)] hover:text-[color:var(--text-secondary)]"
-          >
-            Import watch-only wallet
-          </button>
+          {!__FIREFOX__ && (
+            <Button variant="secondary" onClick={() => setStep("hardware-connect")}>
+              Connect hardware wallet
+            </Button>
+          )}
+          {/* De-emphasized: plain muted text links, not buttons. */}
+          <div className="mt-1 flex flex-col items-center gap-1.5 text-xs text-[color:var(--text-subtle)]">
+            <button
+              type="button"
+              onClick={() => setStep("watch")}
+              className="hover:text-[color:var(--text-secondary)]"
+            >
+              Import watch-only wallet
+            </button>
+            {__FIREFOX__ && (
+              <button
+                type="button"
+                onClick={() => setShowHwModal(true)}
+                className="hover:text-[color:var(--text-secondary)]"
+              >
+                Use a hardware wallet
+              </button>
+            )}
+          </div>
         </div>
+        {__FIREFOX__ && (
+          <Modal open={showHwModal} onClose={() => setShowHwModal(false)} title="Hardware wallet">
+            <p>
+              Hardware wallet signing isn't available on Firefox yet. Firefox blocks the
+              Web Serial API in extension pages, which Jade needs to connect over USB.
+            </p>
+            <button
+              type="button"
+              onClick={() => void browser.tabs.create({ url: "https://apogee.resolvr.io" })}
+              className="font-medium text-[color:var(--accent)] hover:underline"
+            >
+              Get Apogee for Chrome →
+            </button>
+          </Modal>
+        )}
       </WelcomeShell>
     );
   }
