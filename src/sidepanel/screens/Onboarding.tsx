@@ -270,7 +270,7 @@ export function Onboarding({
   if (step === "watch") {
     return (
       <Screen
-        title="Import a watch-only wallet"
+        title="Watch-only wallet"
         subtitle="Paste a Liquid descriptor to track a wallet's balance and receive to it. It can't sign or send. This password unlocks Apogee on this device."
       >
         <form
