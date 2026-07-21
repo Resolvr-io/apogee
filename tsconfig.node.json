@@ -13,5 +13,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["vite.config.ts", "manifest.config.ts"]
+  "include": ["vite.config.ts", "manifest.config.ts", "manifest.shared.ts", "scripts/build-firefox.ts"]
 }
