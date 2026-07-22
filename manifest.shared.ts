@@ -68,7 +68,15 @@ export function firefoxManifest(mode: string, app: { version: string; descriptio
     // Required for stable storage + signing; strict_min_version 128 is the floor
     // for declarative content-script `world: "MAIN"`.
     browser_specific_settings: {
-      gecko: { id: "apogee@resolvr.io", strict_min_version: "128.0" },
+      // AMO requires new listings to declare data collection (since 2025-11-03).
+      // Apogee collects/transmits no user data — keys and wallet state stay
+      // local, and Liquid balances are confidential on-chain — so "none"
+      // (mutually exclusive; declares no collection).
+      gecko: {
+        id: "apogee@resolvr.io",
+        strict_min_version: "128.0",
+        data_collection_permissions: { required: ["none"] },
+      },
     },
     action: { default_title: "Open Apogee" },
     // ES-module background (Firefox 128+): it hosts the lwk_wasm engine, which is
