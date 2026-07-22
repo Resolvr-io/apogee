@@ -4,6 +4,9 @@ Version-controlled copy of the AMO submission text. This is the first Firefox
 release, so it states features rather than a "what's new." Keep in sync with
 `package.json` and the Firefox manifest in `manifest.shared.ts` (`firefoxManifest`).
 
+Listing URL: https://addons.mozilla.org/firefox/addon/apogee-wallet/ — the slug is
+`apogee-wallet` because `apogee` is taken on AMO by an unrelated 2019 theme.
+
 ## Name
 
 Apogee
