@@ -74,7 +74,8 @@ Plain text — the AMO reviewer-notes field renders literally, so no markdown be
 
 No account or login required. Choose Create wallet, set a password, and you're in; keys are generated and stored locally, with no backend.
 
-To exercise send/receive without real funds, switch the network toggle to Testnet on the create screen (the add-on defaults to Mainnet), then fund the wallet from a Liquid testnet faucet.
+Testing tip: switch the network toggle to Testnet on the create screen. Then fund it from a Liquid testnet faucet to exercise receive/send without real funds.
+https://liquidtestnet.com/faucet
 
 Apogee lives in the Firefox sidebar.
 
