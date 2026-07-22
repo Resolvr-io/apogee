@@ -100,6 +100,11 @@ discovery); the implementation is in
 
 ## 0.5.0
 
+- **Firefox support.** Apogee now runs on Firefox, built from the same codebase
+  as the Chrome extension. Creating, restoring, and watch-only wallets all work,
+  and the wallet lives in the Firefox sidebar. Hardware-wallet signing isn't
+  available there yet — Firefox blocks the Web Serial API that Jade needs — so
+  that option opens a short notice pointing to the Chrome build.
 - **Send any held Liquid asset** — USDt and other issued assets are first-class
   in Send: an asset picker appears when you hold more than one, amounts are
   entered in the asset's own precision, and Max sends the full token balance.
@@ -112,6 +117,10 @@ discovery); the implementation is in
   fiat value beneath it (converted into your display currency via a BTC→USD
   cross-rate). Assets without a price source show no figure rather than a
   guessed one.
+- **Token icons in the Send asset picker** — held assets show their icons when
+  you choose what to send, matching the balance list.
+- **Chain-server health badge** — the Advanced drawer shows at a glance whether
+  the configured Liquid chain server is reachable.
 - **Version badge** — a small telemetry-face version readout appears at the
   foot of the panel when it opens and fades out after 15 seconds, so you can
   confirm at a glance which build you're running. Version strings now read
