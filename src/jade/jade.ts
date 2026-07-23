@@ -315,7 +315,7 @@ function showPairConfirm(device: { descriptor: string; fingerprint: string }): v
         showPaired();
       } else {
         showFailed(
-          "Apogee didn't receive the pairing. Open the Apogee side panel, choose Connect hardware wallet, then pair again.",
+          "Apogee didn't receive the pairing. Open the Apogee side panel, choose 'Use a hardware wallet', then pair again.",
           () => showPairConfirm(device),
         );
       }

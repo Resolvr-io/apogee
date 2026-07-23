@@ -202,36 +202,32 @@ export function Onboarding({
           <Button variant="secondary" onClick={() => setStep("restore")}>
             Restore from seed phrase
           </Button>
-          {!__FIREFOX__ && (
-            <Button variant="secondary" onClick={() => setStep("hardware-connect")}>
-              Connect hardware wallet
-            </Button>
-          )}
-          {/* De-emphasized: plain muted text links, not buttons. */}
-          <div className="mt-1 flex flex-col items-center gap-1.5 text-xs text-[color:var(--text-subtle)]">
+          {/* Secondary text links — de-emphasized alternatives to the primary
+              flows. Hardware wallets are a less common (cold-wallet) path;
+              Firefox can't do Web Serial, so it opens the not-supported modal
+              instead of pairing. Same links on both browsers. */}
+          <div className="mt-3 flex flex-col items-center gap-2 text-sm">
             <button
               type="button"
               onClick={() => setStep("watch")}
-              className="hover:text-[color:var(--text-secondary)]"
+              className="text-[color:var(--text-secondary)] underline-offset-4 transition-colors hover:text-[color:var(--text-strong)] hover:underline"
             >
               Import watch-only wallet
             </button>
-            {__FIREFOX__ && (
-              <button
-                type="button"
-                onClick={() => setShowHwModal(true)}
-                className="hover:text-[color:var(--text-secondary)]"
-              >
-                Use a hardware wallet
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => (__FIREFOX__ ? setShowHwModal(true) : setStep("hardware-connect"))}
+              className="text-[color:var(--text-secondary)] underline-offset-4 transition-colors hover:text-[color:var(--text-strong)] hover:underline"
+            >
+              Use a hardware wallet
+            </button>
           </div>
         </div>
         {__FIREFOX__ && (
           <Modal open={showHwModal} onClose={() => setShowHwModal(false)} label="Not supported in Firefox">
             <img src="/icons/sad-jade.svg" alt="" className="mx-auto block h-28" />
-            <h2 className="text-center text-lg font-semibold text-[color:var(--text-strong)]">
-              Not supported in Firefox
+            <h2 className="console-title text-center text-lg">
+              Not supported<br />in Firefox
             </h2>
             <p>
               Hardware wallet signing isn't available on Firefox yet. Firefox blocks the
@@ -259,8 +255,7 @@ export function Onboarding({
         {networkPicker}
         <Button onClick={() => openJadeWindow(network)}>Connect Jade</Button>
         <p className="text-center text-xs text-[color:var(--text-subtle)]">
-          A Jade window opens to pair. Come back here when it's done. Mainnet needs a
-          mainnet-ready Jade; testnet needs a testnet signer.
+          A Jade window opens to pair. Come back here when it's done.
         </p>
         <BackLink onClick={() => reset(setStep, setError)} />
       </Screen>
@@ -271,7 +266,7 @@ export function Onboarding({
     return (
       <Screen
         title="Watch-only wallet"
-        subtitle="Paste a Liquid descriptor to track a wallet's balance and receive to it. It can't sign or send. This password unlocks Apogee on this device."
+        subtitle="Track a Liquid wallet's balance and receive to it. It can't sign or send."
       >
         <form
           className="contents"
