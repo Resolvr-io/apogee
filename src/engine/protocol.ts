@@ -65,7 +65,10 @@ export type EngineRequest =
       network: LiquidNetwork;
       pset: string;
       terms: VerifyDealerPsetTermsDTO;
-    };
+    }
+  // List the wallet's unspent outputs with their unblinding data (asset, value,
+  // and both blinding factors) — what SideSwap's `start_quotes` needs per UTXO.
+  | { kind: "getUtxos"; descriptor: string; network: LiquidNetwork };
 
 /** Wire form of swap terms for `verifyDealerPset`. Amounts are base-10 strings
  *  — BigInt isn't JSON-serializable across the chrome.runtime boundary. */
@@ -83,6 +86,19 @@ export interface VerifyDealerPsetTermsDTO {
 export type VerifyDealerPsetWireResult =
   | { ok: true; sent: string; received: string; fee: string }
   | { ok: false; reason: string };
+
+/** A wallet UTXO with its unblinding data. `value` is a base-10 string
+ *  (BigInt-safe over JSON); the blinding factors are hex. `redeemScript` is
+ *  omitted — Apogee wallets are P2WPKH (no redeem script); the swap flow sets
+ *  `redeem_script: null` for SideSwap. */
+export interface UtxoDTO {
+  txid: string;
+  vout: number;
+  asset: string; // hex asset id
+  assetBf: string; // hex asset blinding factor
+  value: string; // base-10
+  valueBf: string; // hex value blinding factor
+}
 
 /** Result of `descriptorInfo`: the master fingerprint embedded in a watch-only
  *  descriptor, and whether it targets mainnet (used to sanity-check the network). */

@@ -33,6 +33,7 @@ import type {
   ProbeStatus,
   SendResult,
   SyncResult,
+  UtxoDTO,
   WalletTxDTO,
 } from "@/engine/protocol";
 
@@ -776,6 +777,24 @@ export async function handle(req: EngineRequest): Promise<unknown> {
             fee: result.fee.toString(),
           }
         : { ok: false as const, reason: result.reason };
+    }
+
+    case "getUtxos": {
+      // Unspent outputs with their unblinding data — SideSwap's `start_quotes`
+      // needs asset/value + both blinding factors per UTXO.
+      const entry = await ensureWollet(lwk, req.descriptor, req.network);
+      return entry.wollet.utxos().map((u): UtxoDTO => {
+        const op = u.outpoint();
+        const sec = u.unblinded();
+        return {
+          txid: op.txid().toString(),
+          vout: op.vout(),
+          asset: sec.asset().toString(),
+          assetBf: sec.assetBlindingFactor().toString(),
+          value: sec.value().toString(),
+          valueBf: sec.valueBlindingFactor().toString(),
+        };
+      });
     }
 
     case "getRate": {
