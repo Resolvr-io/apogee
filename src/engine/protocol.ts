@@ -77,7 +77,6 @@ export interface VerifyDealerPsetTermsDTO {
   sendAmount: string;
   recvAssetId: string;
   minRecvAmount: string;
-  recvAddress: string;
   maxFee?: string;
 }
 

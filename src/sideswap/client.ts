@@ -113,12 +113,17 @@ export class SideSwapClient {
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private quoteHandler: ((quote: SideSwapQuoteNotification) => void) | null = null;
+  // Quotes that arrived before a handler was registered — drained on onQuote.
+  private queuedQuotes: SideSwapQuoteNotification[] = [];
 
   constructor(private readonly network: LiquidNetwork) {}
 
-  /** Register the receiver for async `quote` notifications (after start_quotes). */
+  /** Register the receiver for async `quote` notifications (after start_quotes).
+   *  Any quotes that arrived before registration are flushed to the handler. */
   onQuote(handler: (quote: SideSwapQuoteNotification) => void): void {
     this.quoteHandler = handler;
+    for (const q of this.queuedQuotes) handler(q);
+    this.queuedQuotes = [];
   }
 
   /** Open the WebSocket. Resolves once connected; rejects on error. */
@@ -183,7 +188,15 @@ export class SideSwapClient {
         reject,
         timer,
       });
-      ws.send(payload);
+      try {
+        ws.send(payload);
+      } catch (e) {
+        // Socket dropped between the readyState check and the send — clean up so
+        // the timer/pending entry don't leak until the timeout sweeps them.
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(e instanceof Error ? e : new Error("SideSwap send failed"));
+      }
     });
   }
 
@@ -195,8 +208,10 @@ export class SideSwapClient {
       return; // ignore malformed frames
     }
 
-    // Response to a request we sent (has our id).
-    if (msg.id !== undefined) {
+    // Response to a request we sent (has our numeric id). Use typeof rather than
+    // `!== undefined` so a notification carrying `id: null` isn't misclassified
+    // as a response and silently dropped.
+    if (typeof msg.id === "number") {
       const pending = this.pending.get(msg.id);
       if (!pending) return;
       this.pending.delete(msg.id);
@@ -214,7 +229,10 @@ export class SideSwapClient {
     // Async notification: a quote pushed after start_quotes.
     if (msg.method === "market") {
       const params = (msg as { params?: { quote?: SideSwapQuoteNotification } }).params;
-      if (params?.quote) this.quoteHandler?.(params.quote);
+      if (params?.quote) {
+        if (this.quoteHandler) this.quoteHandler(params.quote);
+        else this.queuedQuotes.push(params.quote); // flushed when onQuote registers
+      }
     }
   }
 

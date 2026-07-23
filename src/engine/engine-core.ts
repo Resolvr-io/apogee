@@ -766,7 +766,6 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         sendAmount: BigInt(t.sendAmount),
         recvAssetId: t.recvAssetId,
         minRecvAmount: BigInt(t.minRecvAmount),
-        recvAddress: t.recvAddress,
         maxFee: t.maxFee !== undefined ? BigInt(t.maxFee) : undefined,
       });
       return result.ok
