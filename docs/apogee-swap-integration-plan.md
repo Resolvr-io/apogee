@@ -52,13 +52,20 @@ The docs reference GDK's `GA_psbt_get_details` / `GA_psbt_sign`; LWK's `psetDeta
 1. ✅ Read the SideSwap API docs — flow documented above (current `market` API; old instant/P2P APIs are gone).
 2. ✅ Browser feasibility — plain WebSocket from an MV3 service worker or offscreen document; no auth, no daemon.
 3. ✅ LWK capability — confirmed, no gaps (above).
-4. **Dealer PSET verification (next):** `psetDetails().balance()` → assert asset / amount-paid-to-us / change / fee vs the quote within a slippage tolerance. Testable pure function over a parsed PSET, in the offscreen engine.
+4. ✅ **Dealer PSET verification** — implemented as a pure function over a parsed PSET in the offscreen engine (`engine/verify-dealer-pset.ts`): fair receive, no drain on the send asset or any other asset, required fee cap. Security-reviewed (see `audits/security-review-track1-sideswap-pr32.md`); wiring prerequisites below.
 5. Dealer downtime — fail closed, clear error, no quote-spam retry loops.
 6. PayJoin sibling — same cooperative-PSET shape; lets a USDt-only wallet pay fees in USDt. Ship after the core swap.
 
+### Verification gate — hardening and wiring prerequisites
+
+The gate (`engine/verify-dealer-pset.ts`) and its engine handlers (`verifyDealerPset`, `getUtxos`) are foundation only — nothing dispatches them yet. Two fixes landed after the security review: check 3 was removed (`PsetBalance.recipients()` lists only outputs that don't belong to the wallet, so scanning it for our own receive output failed the happy path — check 1's net-from-wallet-POV inflow is the real guarantee), and `maxFee` was made required (so the L-BTC-send fee is never left unbounded for a hostile dealer to inflate). Two items depend on the swap flow and MUST be honored when it is wired:
+
+- **Verify and sign the same bytes atomically.** `verifyDealerPset` (read-only) and the generic `signPset` are separate engine calls; nothing binds the verified bytes to the signed bytes. The flow MUST NOT sign a dealer PSET via the bare `signPset` — verify and sign the identical parsed PSET in one engine op, so an unverified PSET can never slip in between.
+- **`start_quotes` forwards only send-asset UTXOs.** `getUtxos` returns unblinding data (both blinding factors) for the whole wallet; forwarding all of it would let SideSwap unblind UTXOs unrelated to the swap. The flow MUST filter to the send-asset UTXOs the dealer needs for coin selection before building the request.
+
 ### Spike
 
-Throwaway Node script (not the extension): one testnet L-BTC→USDt instant swap via `lwk_wasm` + SideSwap, including the verification function (task 4) and a tampered-PSET negative test; also confirms the wallet-provided blinding factors yield a PSET that `Signer.sign` accepts (`fingerprintsMissing()` empty post-sign). Success criterion: swap settles, verification rejects the tampered PSET.
+Throwaway Node script (not the extension): one testnet L-BTC→USDt instant swap via `lwk_wasm` + SideSwap, exercising the verification gate (task 4) with both a positive case (an honest dealer PSET passes — this also proves check 3's removal was correct) and tampered-PSET negative cases: an inflated send amount, a third-asset drain, and a redirected receive output. Also confirms the wallet-provided blinding factors yield a PSET that `Signer.sign` accepts (`fingerprintsMissing()` empty post-sign). Success criterion: the swap settles, and verification rejects every tampered PSET while accepting the honest one.
 
 ### Decision gate
 

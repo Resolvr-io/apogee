@@ -77,7 +77,10 @@ export interface VerifyDealerPsetTermsDTO {
   sendAmount: string;
   recvAssetId: string;
   minRecvAmount: string;
-  maxFee?: string;
+  /** Required cap on the send-asset (L-BTC) network fee — bounds an L-BTC send
+   *  and is a harmless no-op for a USDt send. Required so the fee is never left
+   *  unbounded. See `verify-dealer-pset.ts`. */
+  maxFee: string;
 }
 
 /** Wire result of `verifyDealerPset`: ok plus the PSET-derived amounts (as
