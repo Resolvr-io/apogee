@@ -15,29 +15,55 @@ Goal: select and validate the integration method for three swap categories, prod
 
 ## Track 1: L-BTC \<\> USDt (native Liquid atomic swap)
 
+> **Decision (2026-07-22): SideSwap, instant dealer-quoted swaps.** Research tasks 1–3 are complete (findings inline below). The order-book "Swap Market" was removed in SideSwap's Feb 2025 API revision, so the instant-vs-market choice resolves to instant. Implementation is gated on the dealer-PSET verification function (task 4) and the testnet spike; ADR-1 to follow.
+
+### SideSwap API (current — post Feb-2025 revision)
+
+JSON-RPC 2.0 over WebSocket (`wss://api.sideswap.io/json-rpc-ws`; testnet `wss://api-testnet.sideswap.io/json-rpc-ws`); no batch requests. Every swap action is a single `"market"` method with the action named in `params`:
+
+1. `list_markets` → available pairs (L-BTC `144c6543…` ↔ stablecoins).
+2. `start_quotes` → submit pair / amount / direction + confidential `receive_address` and `change_address`, plus the wallet's **UTXOs with full unblinding data** (`asset`, `asset_bf`, `value`, `value_bf`). Server pushes async `quote` notifications: `Success { base_amount, quote_amount, fixed_fee, server_fee, quote_id, ttl }`.
+3. `get_quote { quote_id }` → `{ pset (base64), ttl }` — the dealer-built unsigned PSET.
+4. `taker_sign { quote_id, pset }` → `{ txid }`. **The server broadcasts**; the client only signs. Near-instant (bounded by `ttl`), so MV3 lifecycle risk is minimal — no long-lived refund/claim.
+
+The revision removed the old "Instant Swaps" and "P2P Swaps" (order-book) APIs; the current `market` API is dealer-quoted instant execution (no order book, limit orders, or partial fills).
+
+### LWK capability check (task 3 — confirmed, no gaps)
+
+`lwk_wasm@^0.18` exposes the full surface:
+
+- Parse a dealer PSET — `new Pset(base64)`.
+- Verify before signing — `Wollet.psetDetails(pset).balance()` → `.balances()` / `.recipients()` / `.fees()`; plus `PsetDetails.signatures()`, `.fingerprintsMissing()`, `.fingerprintsHas()`.
+- Sign — `Signer.sign(pset): Pset`. The existing `signPset` handler (`engine-core.ts:751`) is already this call.
+- UTXO blinding factors (for `start_quotes`) — `WolletTxOut.unblinded().assetBlindingFactor()` / `.valueBlindingFactor()`.
+- Merge / extract — `Pset.combine(other)`, `Pset.extractTx()`.
+
+The docs reference GDK's `GA_psbt_get_details` / `GA_psbt_sign`; LWK's `psetDetails` / `Signer.sign` are the direct equivalent (LWK is GDK's successor). The `sideswapclient` reference client is Rust/LWK-based.
+
 ### Candidates
 
-- **SideSwap Instant Swap API.** Dealer-quoted price, cooperative PSET construction over WebSocket, single atomic Liquid transaction. Roughly 0.6% instant swap fee. Reference client in the sideswapclient repo (Rust core).  
-- **SideSwap Swap Market.** Order book with market and limit orders, 0.2% taker fee or 500 sats minimum, partial fills supported. More complex client protocol, better pricing.  
-- **TDEX.** Open protocol for Liquid atomic swaps with independent liquidity providers. Verify current network health, active providers, USDt pair liquidity, and TypeScript SDK maturity before treating it as viable.  
-- **Boltz.** Confirm whether Boltz supports any USDt pair. Working assumption: it does not (BTC, L-BTC, Lightning only). If confirmed, exclude and note in the ADR.
+- **SideSwap instant swaps (current `market` API).** Chosen — dealer-quoted, cooperative PSET over WebSocket, single atomic Liquid transaction, server broadcasts.
+- ~~**SideSwap Swap Market.**~~ Removed in the Feb 2025 revision (was the order-book "P2P Swaps"). No longer an option.
+- **TDEX.** Fallback only if SideSwap becomes unsuitable. Verify network health, USDt pair liquidity, and TS SDK maturity before treating it as viable.
+- **Boltz.** No USDt pair (BTC, L-BTC, Lightning only). Excluded from Track 1; belongs to Track 3.
 
 ### Research tasks
 
-1. Read the SideSwap API docs end to end (sideswap.io/docs). Document the exact instant swap message flow: price subscription, swap request, PSET exchange, signing order, broadcast responsibility, timeout behavior.  
-2. Confirm the protocol works from a browser: WebSocket endpoint reachable from an MV3 service worker or offscreen document, no client daemon assumed. Identify any origin or auth requirements.  
-3. Verify LWK (`lwk_wasm`) exposes what the flow needs: PSET parse, unblinding of counterparty outputs, input signing on an arbitrary externally constructed PSET, and blinding factor access. List any gaps against the lwk\_wasm API surface actually shipped in the version Apogee pins.  
-4. Specify dealer PSET verification: before signing, unblind and confirm asset IDs, amount paid to our address vs the quote (with an explicit slippage tolerance), our change outputs, and fee. This check lives in the offscreen engine. Write it as a testable pure function over a parsed PSET.  
-5. Assess SideSwap dealer availability history if discoverable; otherwise define client-side behavior on dealer downtime (fail closed, clear error, no retry loops that spam quotes).  
-6. Evaluate the SideSwap PayJoin API as a sibling deliverable: server-provided L-BTC UTXOs let a USDt-only wallet pay fees in USDt. Same cooperative-PSET shape. Decide whether it ships in the same milestone or after; it likely removes the current "no L-BTC for fees" error path.
+1. ✅ Read the SideSwap API docs — flow documented above (current `market` API; old instant/P2P APIs are gone).
+2. ✅ Browser feasibility — plain WebSocket from an MV3 service worker or offscreen document; no auth, no daemon.
+3. ✅ LWK capability — confirmed, no gaps (above).
+4. **Dealer PSET verification (next):** `psetDetails().balance()` → assert asset / amount-paid-to-us / change / fee vs the quote within a slippage tolerance. Testable pure function over a parsed PSET, in the offscreen engine.
+5. Dealer downtime — fail closed, clear error, no quote-spam retry loops.
+6. PayJoin sibling — same cooperative-PSET shape; lets a USDt-only wallet pay fees in USDt. Ship after the core swap.
 
 ### Spike
 
-Build a throwaway script (Node or a test page, not the extension) that completes one testnet instant swap L-BTC to USDt using lwk\_wasm and the SideSwap API, including the verification function from task 4\. Success criterion: swap settles, verification rejects a tampered PSET in a negative test.
+Throwaway Node script (not the extension): one testnet L-BTC→USDt instant swap via `lwk_wasm` + SideSwap, including the verification function (task 4) and a tampered-PSET negative test; also confirms the wallet-provided blinding factors yield a PSET that `Signer.sign` accepts (`fingerprintsMissing()` empty post-sign). Success criterion: swap settles, verification rejects the tampered PSET.
 
 ### Decision gate
 
-Choose Instant Swap vs Swap Market vs TDEX based on: protocol complexity in a browser context, fee/price quality at expected trade sizes ($10 to $10k), liquidity depth, and verification tractability. Default expectation is SideSwap Instant Swap first, Swap Market as a later upgrade behind the same interface. Record in ADR-1.
+Met in principle for SideSwap instant — browser-feasible, LWK-capable, near-instant (low MV3 risk), verification tractable. Closes formally when the spike passes. ADR-1 records the choice plus the trust-model disclosure: dealer-quoted, server broadcasts, client verifies its own outputs before signing.
+
 
 ## Track 2: USDt \<\> external chains (Ethereum, Solana, Tron, BNB)
 
