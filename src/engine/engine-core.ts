@@ -20,6 +20,7 @@ import {
   ENTERPRISE_TOKEN_URL,
 } from "@/lib/debug";
 import { SCAN_STATE_DB } from "@/engine/protocol";
+import { verifyDealerPset } from "@/engine/verify-dealer-pset";
 import type {
   AddressDTO,
   AssetInfo,
@@ -751,6 +752,30 @@ export async function handle(req: EngineRequest): Promise<unknown> {
     case "signPset": {
       const signer = new lwk.Signer(new lwk.Mnemonic(req.mnemonic), lwkNetwork(lwk, req.network));
       return signer.sign(new lwk.Pset(req.pset)).toString();
+    }
+
+    case "verifyDealerPset": {
+      // Gate a dealer-built PSET (SideSwap `get_quote`) against the accepted
+      // quote before signing. The seed isn't needed — only the watch-only
+      // Wollet, to read the PSET's net balances from our point of view.
+      const entry = await ensureWollet(lwk, req.descriptor, req.network);
+      const t = req.terms;
+      const result = verifyDealerPset(new lwk.Pset(req.pset), entry.wollet, {
+        sendAssetId: t.sendAssetId,
+        sendAmount: BigInt(t.sendAmount),
+        recvAssetId: t.recvAssetId,
+        minRecvAmount: BigInt(t.minRecvAmount),
+        recvAddress: t.recvAddress,
+        maxFee: t.maxFee !== undefined ? BigInt(t.maxFee) : undefined,
+      });
+      return result.ok
+        ? {
+            ok: true as const,
+            sent: result.sent.toString(),
+            received: result.received.toString(),
+            fee: result.fee.toString(),
+          }
+        : { ok: false as const, reason: result.reason };
     }
 
     case "getRate": {

@@ -55,7 +55,34 @@ export type EngineRequest =
   // override (absent = automatic). A pinned URL probes just that endpoint;
   // automatic probes waterfalls (primary) plus the Esplora fallbacks, returning
   // a per-provider breakdown so the badge can show "primary down, on fallback".
-  | { kind: "probeChainServer"; network: LiquidNetwork; esploraUrl?: string };
+  | { kind: "probeChainServer"; network: LiquidNetwork; esploraUrl?: string }
+  // Verify a dealer-built PSET (SideSwap `get_quote`) against the accepted
+  // quote before signing: fair receive to our address, no extra wallet-input
+  // drain, fee within cap. See `engine/verify-dealer-pset.ts`.
+  | {
+      kind: "verifyDealerPset";
+      descriptor: string;
+      network: LiquidNetwork;
+      pset: string;
+      terms: VerifyDealerPsetTermsDTO;
+    };
+
+/** Wire form of swap terms for `verifyDealerPset`. Amounts are base-10 strings
+ *  — BigInt isn't JSON-serializable across the chrome.runtime boundary. */
+export interface VerifyDealerPsetTermsDTO {
+  sendAssetId: string;
+  sendAmount: string;
+  recvAssetId: string;
+  minRecvAmount: string;
+  recvAddress: string;
+  maxFee?: string;
+}
+
+/** Wire result of `verifyDealerPset`: ok plus the PSET-derived amounts (as
+ *  base-10 strings), or a rejection reason. */
+export type VerifyDealerPsetWireResult =
+  | { ok: true; sent: string; received: string; fee: string }
+  | { ok: false; reason: string };
 
 /** Result of `descriptorInfo`: the master fingerprint embedded in a watch-only
  *  descriptor, and whether it targets mainnet (used to sanity-check the network). */
