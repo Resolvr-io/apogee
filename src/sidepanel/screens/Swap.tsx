@@ -6,7 +6,7 @@
 
 import { useState } from "react";
 import { ArrowDown, Check, ExternalLink } from "lucide-react";
-import type { AssetInfo, SwapResultDTO, SyncResult } from "@/engine/protocol";
+import type { AssetInfo, SwapQuoteResultDTO, SwapResultDTO, SyncResult } from "@/engine/protocol";
 import type { LiquidNetwork } from "@/keystore/keystore";
 import { shortenHex } from "@/lib/utils";
 import { formatAssetAmount, formatBtc, formatSats, parseAssetAmount } from "@/lib/format";
@@ -42,6 +42,7 @@ export function Swap({
   const [recvAssetId, setRecvAssetId] = useState<string>("");
   const [amount, setAmount] = useState("");
   const [result, setResult] = useState<SwapResultDTO | null>(null);
+  const [quote, setQuote] = useState<SwapQuoteResultDTO | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -141,13 +142,22 @@ export function Swap({
     }
   }
 
-  function review() {
+  async function review() {
     setError("");
     if (!recvId) return setError("Select an asset to receive.");
     if (sendId === recvId) return setError("Select two different assets to swap.");
     if (enteredUnits <= 0) return setError(`Enter an amount in ${sendUnitLabel}.`);
     if (enteredUnits > sendBalance) return setError("Amount exceeds your available balance.");
-    setStep("review");
+    setBusy(true);
+    try {
+      const q = await wallet.swapQuote(sendId, recvId, enteredUnits);
+      setQuote(q);
+      setStep("review");
+    } catch (e) {
+      setError(errMessage(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function executeSwap() {
@@ -244,9 +254,17 @@ export function Swap({
             </dd>
           </div>
           <div className="flex items-center justify-between gap-3">
-            <dt className="text-[color:var(--text-subtle)]">You receive (est.)</dt>
+            <dt className="text-[color:var(--text-subtle)]">You receive</dt>
             <dd className="console-value font-semibold text-[color:var(--text-strong)]">
-              {recvLabel}
+              {quote ? `${formatAssetAmount(quote.receivedAmount, recvPrecision)} ${recvLabel}` : `${recvLabel}`}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <dt className="text-[color:var(--text-subtle)]">Rate</dt>
+            <dd className="console-value text-[color:var(--text-primary)]">
+              {quote && enteredUnits > 0
+                ? `1 ${sendLabel} = ${formatAssetAmount(quote.receivedAmount / (enteredUnits / Math.pow(10, sendPrecision ?? 8)), recvPrecision)} ${recvLabel}`
+                : "—"}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-3">
@@ -255,9 +273,8 @@ export function Swap({
           </div>
         </dl>
         <p className="mt-2 text-xs text-[color:var(--text-subtle)]">
-          The exact receive amount is set by the dealer's quote. The swap is
-          verified before signing — if the rate changed unfavorably, the
-          transaction will not sign.
+          Rate from SideSwap dealer. The swap is verified before signing — if
+          the rate changed unfavorably, the transaction will not sign.
         </p>
         <ErrorText>{error}</ErrorText>
         <div className="mt-3 flex flex-col gap-2">

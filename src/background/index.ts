@@ -28,6 +28,7 @@ import type {
   ProviderRequest,
   ProviderStatus,
   SwapResultDTO,
+  SwapQuoteResultDTO,
   SendResult,
   SendReview,
   SyncResult,
@@ -112,6 +113,7 @@ const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
   "wallet/prepareSend",
   "wallet/send",
   "wallet/swap",
+  "wallet/swapQuote",
   "wallet/revealMnemonic",
   "wallet/verifyPassword",
   "wallet/setAutoLock",
@@ -559,6 +561,46 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
           sent: result.sent.toString(),
           received: result.received.toString(),
           fee: result.fee.toString(),
+        };
+        return dto;
+      } catch (e) {
+        if (e instanceof SwapError) throw e;
+        throw e instanceof Error ? e : new Error(String(e));
+      } finally {
+        client.disconnect();
+      }
+    }
+
+    case "wallet/swapQuote": {
+      const info = await walletInfo(msg.walletId);
+      if (info.signer === "watch") {
+        throw new Error("Watch-only wallets can't swap.");
+      }
+      const mnemonic = keystore.getMnemonic(info.id);
+      const { SideSwapClient } = await import("@/sideswap/client");
+      const { previewSwapQuote, SwapError } = await import("@/sideswap/orchestrator");
+      const client = new SideSwapClient(info.network);
+      await client.connect();
+      try {
+        const MAX_FEE_SATS = 1000n;
+        const preview = await previewSwapQuote(
+          {
+            sendAssetId: msg.sendAssetId,
+            recvAssetId: msg.recvAssetId,
+            sendAmount: msg.sendAmount,
+            maxFee: MAX_FEE_SATS,
+          },
+          {
+            client,
+            engineCall: engine,
+            descriptor: info.descriptor,
+            network: info.network,
+            mnemonic,
+          },
+        );
+        const dto: SwapQuoteResultDTO = {
+          sentAmount: preview.sentAmount,
+          receivedAmount: preview.receivedAmount,
         };
         return dto;
       } catch (e) {
