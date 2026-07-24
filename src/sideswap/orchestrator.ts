@@ -78,9 +78,8 @@ interface OrientedPair {
   mapAmounts: (baseAmount: number, quoteAmount: number) => { sent: number; received: number };
 }
 
-/** Orient the pair so LBTC is always base. `trade_dir` is relative to the
- *  base asset (LBTC): "Sell" when the user sends LBTC, "Buy" when the user
- *  receives LBTC. */
+/** Orient the pair so LBTC is always base. For sell-exact mode (the only
+ *  mode currently supported), trade_dir is always "Sell". */
 function orientPair(
   sendAssetId: string,
   recvAssetId: string,
@@ -101,7 +100,7 @@ function orientPair(
   return {
     asset_pair: { base: lbtc, quote: sendAssetId },
     asset_type: "Quote",
-    trade_dir: "Buy",
+    trade_dir: "Sell",
     mapAmounts: (baseAmount, quoteAmount) => ({ sent: quoteAmount, received: baseAmount }),
   };
 }
