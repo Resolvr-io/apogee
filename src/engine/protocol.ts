@@ -8,6 +8,8 @@
 // keystore. Requests are plain JSON (structured-clone over chrome.runtime).
 
 import type { LiquidNetwork, WalletInfo, WalletSigner } from "@/keystore/keystore";
+import type { CompileParam } from "@/manifest/covenant";
+import type { PlannedWitness } from "@/manifest/runner";
 
 // ---- service worker → offscreen engine -------------------------------------
 
@@ -35,15 +37,43 @@ export type EngineRequest =
   // amount); for a token (`asset` set), send the full token balance (the fee is
   // paid in LBTC, so no deduction). `sats` is in the asset's base units.
   | {
-      kind: "prepareSend";
-      descriptor: string;
-      network: LiquidNetwork;
-      address: string;
-      sats: number;
-      drain?: boolean;
-      asset?: string; // asset id hex; absent → LBTC (policy asset)
-    }
+    kind: "prepareSend";
+    descriptor: string;
+    network: LiquidNetwork;
+    address: string;
+    sats: number;
+    drain?: boolean;
+    asset?: string; // asset id hex; absent → LBTC (policy asset)
+  }
   | { kind: "signBroadcast"; mnemonic: string; descriptor: string; network: LiquidNetwork; pset: string; esploraUrl?: string }
+  // Build (but don't sign) the transaction a txmanifest action describes. The
+  // engine derives every covenant address itself from the manifest's `.simf`
+  // sources — it never trusts a destination the caller supplied — and reports the
+  // net effect from the built PSET's own wallet delta.
+  | {
+    kind: "prepareManifest";
+    descriptor: string;
+    network: LiquidNetwork;
+    action: string;
+    manifest: string; // raw txmanifest.json TEXT (see ManifestRunParams)
+    sources: Record<string, string>; // source path → raw .simf text
+    instance?: string; // raw instance.json text; absent for constructors
+    providedInputs?: Record<string, ProvidedInputDTO>;
+    actionParams?: Record<string, string>;
+  }
+  // Sign + finalize + broadcast a manifest PSET. Separate from `signBroadcast`
+  // only because the reply carries the created UTXOs (their txid is not known
+  // until broadcast), which the caller needs to spend the contract later.
+  | {
+    kind: "signBroadcastManifest";
+    mnemonic: string;
+    descriptor: string;
+    network: LiquidNetwork;
+    pset: string;
+    outputs: ManifestOutputRef[];
+    /** Covenant inputs to finalize after the wallet inputs are signed (keyless). */
+    covenantSpends: ManifestCovenantSpend[];
+  }
   // Finalize an already-signed PSET (e.g. signed on a Jade) + broadcast it. No
   // seed — the watch-only Wollet finalizes and the Esplora client broadcasts.
   | { kind: "finalizeBroadcast"; descriptor: string; network: LiquidNetwork; pset: string; esploraUrl?: string }
@@ -201,13 +231,13 @@ export type WalletRequest =
   // `replace` (forgot-password recovery): wipe the existing unlockable-no-more
   // vault first, but only after the phrase validates, so a typo can't destroy it.
   | {
-      type: "wallet/restore";
-      password?: string;
-      mnemonic: string;
-      label: string;
-      network: LiquidNetwork;
-      replace?: boolean;
-    }
+    type: "wallet/restore";
+    password?: string;
+    mnemonic: string;
+    label: string;
+    network: LiquidNetwork;
+    replace?: boolean;
+  }
   | { type: "wallet/sync"; walletId?: string }
   | { type: "wallet/getAddress"; walletId?: string; index?: number }
   | { type: "wallet/getBalance"; walletId?: string }
@@ -234,24 +264,24 @@ export type WalletRequest =
   // Pair a hardware (Jade) wallet: watch-only descriptor read from the device,
   // no seed. `password` initializes the keystore on first run, like create/restore.
   | {
-      type: "wallet/addHardwareWallet";
-      password?: string;
-      signer: WalletSigner;
-      descriptor: string;
-      fingerprint: string;
-      label: string;
-      network: LiquidNetwork;
-    }
+    type: "wallet/addHardwareWallet";
+    password?: string;
+    signer: WalletSigner;
+    descriptor: string;
+    fingerprint: string;
+    label: string;
+    network: LiquidNetwork;
+  }
   // Import a watch-only wallet from a pasted descriptor: no seed, no signer.
   // The SW validates the descriptor and derives the fingerprint (via
   // descriptorInfo); `password` initializes the keystore on first run.
   | {
-      type: "wallet/addWatchOnlyWallet";
-      password?: string;
-      descriptor: string;
-      label: string;
-      network: LiquidNetwork;
-    };
+    type: "wallet/addWatchOnlyWallet";
+    password?: string;
+    descriptor: string;
+    label: string;
+    network: LiquidNetwork;
+  };
 
 /** What `wallet/create` returns: the persisted wallet + the phrase to back up. */
 export interface CreatedWallet {
@@ -282,6 +312,159 @@ export interface SendReview {
   assetId?: string;
   assetTicker?: string | null;
   assetPrecision?: number | null;
+}
+
+// ---- txmanifest ------------------------------------------------------------
+//
+// A dapp hands Apogee a manifest + an action; Apogee builds the transaction,
+// shows what it actually does, and only signs on approval. Everything the dapp
+// sends is UNTRUSTED. Two things make that safe:
+//
+//   1. Covenant destinations are DERIVED (Spec §11) from the manifest's own
+//      `.simf` source, never taken from the caller. A lie about an instance
+//      field changes the derived address, which then won't match the on-chain
+//      UTXO — so lying is detectable rather than profitable.
+//   2. The amounts the user approves come from the built PSET's wallet delta,
+//      never from caller input — the same rule `prepareSend` already follows.
+//
+// Manifest/instance/params cross the wire as JSON *text*, not objects: u64 runs
+// past 2^53 and `JSON.parse` silently rounds, and hashing the literal bytes we
+// were handed is what makes a publisher signature checkable later (no JCS).
+// Integers are therefore carried as decimal STRINGS throughout.
+
+/** An externally-supplied UTXO (ELIP-0206 `provided_inputs`). Untrusted. */
+export interface ProvidedInputDTO {
+  txid: string; // 64 hex, natural byte order
+  vout: number;
+  amount_sat: string; // decimal string — u64 exceeds Number.MAX_SAFE_INTEGER
+  asset: string; // 64 hex
+}
+
+/** A transaction output the manifest run creates, identified before broadcast. */
+export interface ManifestOutputRef {
+  utxo_type: string; // which `utxo_types` entry this output is an instance of
+  utxo_id: string; // the manifest output `id` (e.g. "will_out")
+  vout: number;
+  amount_sat: string;
+  asset: string;
+  address: string; // the address WE derived, not one we were handed
+}
+
+/** A covenant leg the manifest itself declares — the contract input it spends or
+ *  the output it checks. UNTRUSTED prose from the author, cross-checked for
+ *  derived addresses. Used internally to annotate the full-transaction legs. */
+export interface ManifestLeg {
+  id: string; // manifest input/output id
+  kind: "input" | "output";
+  label: string; // author-supplied prose — UNTRUSTED, attribute to the site
+  address?: string;
+  amountSat: string;
+  asset: string;
+  /** True when this leg is a covenant address Apogee derived and verified. */
+  derived: boolean;
+  /** True when the leg belongs to the user's own wallet (change, self-sends). */
+  mine: boolean;
+}
+
+/** One input or output of the BUILT transaction, for the full detail view. Unlike
+ *  ManifestLeg (the covenant's OWN declared legs), this enumerates every leg the
+ *  wallet actually assembled — funding inputs, change, the fee — so the reviewer
+ *  sees the whole transaction, not just the contract's slice of it.
+ *
+ *  The wallet blinds its own outputs, so a confidential leg's amount/asset are
+ *  genuinely unreadable from the PSET (null here). That's expected, not an error:
+ *  the authoritative totals live in `net`; this view is for structure. */
+export interface ManifestTxLeg {
+  /** Explicit amount in sats, or null when the value is confidential (blinded). */
+  amountSat: number | null;
+  /** Explicit asset id hex, or null when confidential. */
+  asset: string | null;
+  /** For an input: the prevout, "txid:vout". For a contract output: the derived
+   *  destination address. Absent for the fee and blinded wallet outputs. */
+  ref?: string;
+  /** What this leg is, for display and trust framing:
+   *  - "contract": a covenant leg the manifest declares (verified when derived).
+   *  - "wallet":   the user's own confidential input / change / receipt.
+   *  - "fee":      the network fee output.
+   *  - "external": an explicit non-covenant output (e.g. an OP_RETURN beacon). */
+  role: "contract" | "wallet" | "fee" | "external";
+  /** True when this is a covenant address Apogee derived and verified. */
+  verified: boolean;
+  /** Manifest author's prose for a contract leg — UNTRUSTED, attribute to site. */
+  label?: string;
+}
+
+/**
+ * What the user actually approves. `net` is authoritative for the IMMEDIATE move
+ * (it comes from the PSET's own wallet delta) and says nothing about the
+ * covenant's future behaviour — that's what the derived-address check covers.
+ */
+export interface ManifestReview {
+  protocol: string; // manifest `protocol` — untrusted label
+  action: string;
+  description: string; // action description — untrusted prose
+  /** Author's one-line intent summary (`ui.action`), refs interpolated. */
+  intent?: string;
+  /** Per-asset net wallet delta, sats. Negative = leaves the wallet. Keyed by
+   *  asset id hex; the policy asset (`policyAssetHex`) is L-BTC. */
+  net: Record<string, number>;
+  /** The network's policy asset id hex — the key in `net` that means L-BTC,
+   *  as opposed to an issued token. Lets the UI label amounts correctly. */
+  policyAssetHex: string;
+  fee: number;
+  /** Every input of the built transaction, in PSET order. */
+  txInputs: ManifestTxLeg[];
+  /** Every output of the built transaction, in PSET order (fee included). */
+  txOutputs: ManifestTxLeg[];
+  /**
+   * Whether the manifest's authenticity was verified. Always "unverified" today
+   * — the signature/authority scheme doesn't exist yet. Shipped now so that
+   * adding verification later REMOVES a warning rather than adding one to a
+   * screen users have already learned to read as "fine".
+   */
+  trust: "unverified";
+}
+
+/**
+ * Everything the engine needs to finalize ONE keyless covenant input, after the
+ * wallet inputs are signed. Carried from `prepareManifest` through the pending
+ * approval to `signBroadcastManifest` — the second call never re-runs the planner,
+ * so the program to recompile and the witness to satisfy it must travel with it.
+ */
+export interface ManifestCovenantSpend {
+  /** This covenant input's index in the built PSET (located by its outpoint). */
+  inputIndex: number;
+  /** The `.simf` source text, recompiled to derive the program + control block. */
+  source: string;
+  compileParams: CompileParam[];
+  debugSymbols: boolean;
+  /** Keyless witnesses satisfying the covenant, in declaration order. */
+  witnesses: PlannedWitness[];
+}
+
+/** Built, reviewable manifest action: the PSET to sign + what it does. */
+export interface PrepareManifestResult {
+  pset: string;
+  review: ManifestReview;
+  /** Instance JSON text — present (and mandatory) for a constructor action. */
+  instance?: string;
+  /** Outputs this action creates; `txid` is filled in after broadcast. */
+  outputs: ManifestOutputRef[];
+  /** Covenant inputs this action spends, needed to finalize after signing. Empty for Fund. */
+  covenantSpends: ManifestCovenantSpend[];
+}
+
+/** What a dapp gets back from `liquid_runManifest`. */
+export interface RunManifestResult {
+  txid: string;
+  /**
+   * The created contract instance, as JSON text. For a constructor this is
+   * MANDATORY: the wallet computed the fields (including any `default`), and
+   * without them nothing can ever spend what the constructor created.
+   */
+  instance?: string;
+  /** The created UTXOs, for the caller to feed back as `providedInputs` later. */
+  utxos?: Array<ManifestOutputRef & { txid: string }>;
 }
 
 // ---- page provider (dapp) → content bridge → service worker ----------------
@@ -320,7 +503,19 @@ export type ProviderRequest =
   | { type: "provider/getAssetInfo"; assetId: string }
   // The dapp passes intent (address + amount); Apogee builds the PSET, shows an
   // approval, signs, and broadcasts. A watch-only dapp can't build a PSET itself.
-  | { type: "provider/send"; address: string; sats: number; drain?: boolean };
+  | { type: "provider/send"; address: string; sats: number; drain?: boolean }
+  // Run a txmanifest action. Flat, not nested: the content bridge spreads the
+  // page's `params` into the message root. Note `sources` (plural) survives that
+  // hop while a key named `source` would be silently dropped — see content.ts.
+  | {
+    type: "provider/runManifest";
+    action: string;
+    manifest: string; // raw txmanifest.json text
+    sources: Record<string, string>; // source path → raw .simf text
+    instance?: string; // raw instance.json text; omit for constructors
+    providedInputs?: Record<string, ProvidedInputDTO>;
+    actionParams?: Record<string, string>; // `actionParams`, not `params` — params.params is horrible
+  };
 
 /** Lightweight lock state for a connected dapp (no chain sync). */
 export interface ProviderStatus {
@@ -347,30 +542,40 @@ export interface ProviderBalance {
  * A pending dapp action awaiting the user's approval. Rendered as an overlay in
  * the side panel when it's open, or in the standalone prompt popup when it isn't.
  * `connect` authorizes a site; `send` reviews a built spend (PSET + fee) before
- * signing. Only the user's explicit approval proceeds.
+ * signing; `manifest` reviews a built txmanifest action. Only the user's
+ * explicit approval proceeds.
  */
 export type ApprovalRequest =
   | {
-      kind: "connect";
-      id: string;
-      origin: string; // requesting dapp origin
-      network: DappNetwork;
-      fingerprint: string; // wallet fingerprint the site will see
-      signerKind: WalletSigner; // "local" | "jade"
-      locked: boolean; // wallet locked at request time → the UI must unlock first
-    }
+    kind: "connect";
+    id: string;
+    origin: string; // requesting dapp origin
+    network: DappNetwork;
+    fingerprint: string; // wallet fingerprint the site will see
+    signerKind: WalletSigner; // "local" | "jade"
+    locked: boolean; // wallet locked at request time → the UI must unlock first
+  }
   | {
-      kind: "send";
-      id: string;
-      origin: string; // requesting dapp origin
-      address: string; // destination
-      recipientSats: number; // what the recipient receives
-      fee: number; // network fee, sats
-      drain: boolean; // "send max"
-      network: DappNetwork;
-      locked: boolean; // wallet was locked at request time → the UI must unlock first
-      signerKind: WalletSigner; // "local" | "jade" — jade signs on-device in a tab
-    };
+    kind: "send";
+    id: string;
+    origin: string; // requesting dapp origin
+    address: string; // destination
+    recipientSats: number; // what the recipient receives
+    fee: number; // network fee, sats
+    drain: boolean; // "send max"
+    network: DappNetwork;
+    locked: boolean; // wallet was locked at request time → the UI must unlock first
+    signerKind: WalletSigner; // "local" | "jade" — jade signs on-device in a tab
+  }
+  | {
+    kind: "manifest";
+    id: string;
+    origin: string; // requesting dapp origin
+    review: ManifestReview; // built PSET's net effect + the site's own prose
+    network: DappNetwork;
+    locked: boolean;
+    signerKind: WalletSigner; // always "local": a manifest run refuses a Jade
+  };
 
 /** Uniform reply envelope for both channels. */
 export type Reply<T = unknown> = { ok: true; value: T } | { ok: false; error: string };

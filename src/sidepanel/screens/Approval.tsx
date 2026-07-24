@@ -4,8 +4,8 @@
 // prompt popup when it isn't. Reject (or closing the popup) fails the request.
 
 import { useEffect, useState } from "react";
-import { Check } from "lucide-react";
-import type { ApprovalRequest } from "@/engine/protocol";
+import { AlertTriangle, Check } from "lucide-react";
+import type { ApprovalRequest, ManifestReview } from "@/engine/protocol";
 import { formatSats } from "@/lib/format";
 import { shortenHex } from "@/lib/utils";
 import { Button, Card, ErrorText, Field, Input, Spinner } from "@/sidepanel/components/ui";
@@ -61,9 +61,8 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
   const isConnect = request.kind === "connect";
   // A Jade send is signed on the device (in a tab) after approval, not here.
   const jade = request.kind === "send" && request.signerKind === "jade";
-  // A locked wallet must be unlocked before connecting or sending — the SW
-  // rejects a connect/send decision while locked, so gate it behind this form.
-  const [locked, setLocked] = useState(Boolean(request.locked));
+  // Connect just authorizes the site; anything that signs can require an unlock.
+  const [locked, setLocked] = useState(request.kind === "connect" ? false : request.locked);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -84,7 +83,7 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
   }, [done, onClose]);
 
   useEffect(() => {
-    void wallet.getAutoLock().then(setAutoLock).catch(() => {});
+    void wallet.getAutoLock().then(setAutoLock).catch(() => { });
   }, []);
 
   async function unlock(e: React.FormEvent) {
@@ -137,11 +136,10 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
       <Card>
         <div className="flex flex-col items-center gap-3 py-2 text-center">
           <span
-            className={`apogee-pop flex size-14 items-center justify-center rounded-full ${
-              connected
-                ? "bg-[color:var(--accent-soft)] text-[color:var(--accent-strong)]"
-                : "bg-[color:var(--success-bg)] text-[color:var(--success-text)]"
-            }`}
+            className={`apogee-pop flex size-14 items-center justify-center rounded-full ${connected
+              ? "bg-[color:var(--accent-soft)] text-[color:var(--accent-strong)]"
+              : "bg-[color:var(--success-bg)] text-[color:var(--success-text)]"
+              }`}
           >
             {connected ? <Sputnik size={30} /> : <Check size={30} strokeWidth={2.5} />}
           </span>
@@ -167,7 +165,11 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
           <img src="/icons/apogee-icon.svg" alt="" className="relative h-10 w-auto" />
         </span>
         <h2 className="console-overline">
-          {isConnect ? "Connect" : "Approve transaction"}
+          {request.kind === "connect"
+            ? "Connect"
+            : request.kind === "manifest"
+              ? request.review.action
+              : "Approve transaction"}
         </h2>
         <p className="-mt-1 truncate text-xs text-[color:var(--text-subtle)]" title={request.origin}>
           {request.origin}
@@ -185,6 +187,8 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
             <Row label="Network" value={networkLabel(request.network)} />
           </dl>
         </>
+      ) : request.kind === "manifest" ? (
+        <ManifestReviewView review={request.review} network={request.network} />
       ) : (
         <>
           <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
@@ -244,7 +248,17 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
             disabled={busy || (needsSendPassword && !sendPassword)}
             className={busy ? undefined : "apogee-cta"}
           >
-            {busy ? <Spinner /> : isConnect ? "Connect" : jade ? "Approve & sign on Jade" : "Approve & send"}
+            {busy ? (
+              <Spinner />
+            ) : isConnect ? (
+              "Connect"
+            ) : jade ? (
+              "Approve & sign on Jade"
+            ) : request.kind === "manifest" ? (
+              "Approve & sign"
+            ) : (
+              "Approve & send"
+            )}
           </Button>
           <Button variant="secondary" onClick={reject} disabled={busy}>
             Reject
@@ -252,6 +266,182 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
         </div>
       )}
     </Card>
+  );
+}
+
+/**
+ * Manifest review, modelled on the reference wallet's three screens:
+ * Intent (what the site says) → Net effect (what the PSET actually does) →
+ * Detail (every leg).
+ *
+ * The two halves have very different trust and are deliberately styled apart:
+ *
+ *  - Intent and leg labels are prose the SITE wrote. They are not Apogee's
+ *    finding and are attributed to the origin, because nothing verifies them.
+ *  - The net effect comes from the built PSET's own wallet delta, so it is
+ *    authoritative about the immediate move — and silent about what the
+ *    covenant does later, which is exactly what the derived-address check
+ *    ("Address verified by Apogee") covers instead.
+ *
+ * Neither control substitutes for the other: a hostile lookalike contract and
+ * the real one can produce an identical net effect.
+ */
+function ManifestReviewView({
+  review,
+  network,
+}: {
+  review: ManifestReview;
+  network: "mainnet" | "testnet" | "regtest";
+}) {
+  const net = Object.entries(review.net).filter(([, v]) => v !== 0);
+  return (
+    <div className="flex flex-col gap-3">
+      {review.trust === "unverified" && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-xl border border-[color:var(--danger-border)] bg-[color:var(--danger-bg)] p-3 text-xs leading-relaxed text-[color:var(--danger-text)]"
+        >
+          <AlertTriangle className="mt-px size-4 shrink-0" />
+          <span>
+            <span className="font-semibold text-[color:var(--danger-strong)]">
+              High risk — unverified contract.
+            </span>{" "}
+            Apogee can't verify who published this contract. Only continue if you trust the site.
+          </span>
+        </div>
+      )}
+
+      {(review.intent || review.description) && (
+        <div>
+          <p className="text-sm text-[color:var(--text-secondary)]">
+            {review.intent || review.description}
+          </p>
+          <p className="mt-1 text-[11px] text-[color:var(--text-subtle)]">
+            Described by {review.protocol} — not checked by Apogee.
+          </p>
+        </div>
+      )}
+
+      <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
+        <Row label="Network" value={networkLabel(network)} />
+        {net.length === 0 ? (
+          <Row label="Net effect" value="No change to your balance" />
+        ) : (
+          net.map(([asset, value]) => {
+            const assetLabel =
+              asset === review.policyAssetHex ? "L-BTC" : shortenHex(asset, 6, 6);
+            return (
+              <Row
+                key={asset}
+                label={value < 0 ? "Leaves your wallet" : "Enters your wallet"}
+                value={`${formatSats(Math.abs(value))} sats ${assetLabel}`}
+                strong
+              />
+            );
+          })
+        )}
+        {/* The net delta above is the wallet's own balance change, which ALREADY
+            has the fee in it — so for an ordinary spend "of which network fee"
+            reads correctly: the fee is part of the L-BTC that left.
+
+            But the fee is paid in L-BTC, and a transaction can ALSO bring L-BTC
+            in (e.g. an offer's proceeds). That inflow nets against the fee, so
+            the L-BTC shown as leaving can be SMALLER than the fee. "of which"
+            would then claim a subset that isn't one (fee > amount leaving). Only
+            keep that wording when the L-BTC leaving genuinely contains the fee. */}
+        {(() => {
+          const policyNet = review.net[review.policyAssetHex] ?? 0;
+          const feeInsideNet = policyNet < 0 && Math.abs(policyNet) >= review.fee;
+          return (
+            <>
+              <Row
+                label={feeInsideNet ? "of which network fee" : "Network fee (L-BTC)"}
+                value={`${formatSats(review.fee)} sats`}
+              />
+              {!feeInsideNet && (
+                <p className="text-[11px] text-[color:var(--text-subtle)]">
+                  The fee is paid in L-BTC. This transaction also brings L-BTC in, so the
+                  net L-BTC above already has the fee taken out.
+                </p>
+              )}
+            </>
+          );
+        })()}
+      </dl>
+
+      {review.txInputs.length + review.txOutputs.length > 0 && (
+        <details className="rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3">
+          <summary className="cursor-pointer text-xs text-[color:var(--text-subtle)]">
+            Details ({review.txInputs.length} in · {review.txOutputs.length} out)
+          </summary>
+          {/* The whole transaction, not just the contract's legs: the wallet's own
+              funding inputs, change, and the fee are listed alongside the covenant
+              legs (which carry the site's prose and a verified badge). Wallet legs
+              are blinded, so they show as "confidential" — expected, not an error;
+              the authoritative totals are in the Net effect box above. */}
+          {(
+            [
+              ["Inputs", review.txInputs],
+              ["Outputs", review.txOutputs],
+            ] as const
+          ).map(([heading, legs]) =>
+            legs.length === 0 ? null : (
+              <section key={heading} className="mt-3 first:mt-2">
+                <p className="console-overline mb-1.5 text-[color:var(--text-subtle)]">
+                  {heading} ({legs.length})
+                </p>
+                <dl className="flex flex-col gap-3 text-sm">
+                  {legs.map((leg, i) => (
+                    <LegItem key={`${heading}-${i}`} leg={leg} policyAssetHex={review.policyAssetHex} />
+                  ))}
+                </dl>
+              </section>
+            ),
+          )}
+        </details>
+      )}
+    </div>
+  );
+}
+
+const LEG_ROLE_TEXT: Record<ManifestReview["txInputs"][number]["role"], string> = {
+  contract: "Contract leg",
+  wallet: "Your wallet",
+  fee: "Network fee",
+  external: "External output",
+};
+
+/** One input or output of the built transaction. The amount + asset lead on their
+ *  own line (a long site-written prose label can't share a horizontal row without
+ *  truncating the amount). Blinded wallet legs have no readable amount, so they
+ *  read "Confidential" rather than a number. */
+function LegItem({ leg, policyAssetHex }: { leg: ManifestReview["txInputs"][number]; policyAssetHex: string }) {
+  const assetLabel =
+    leg.asset === null ? "" : leg.asset === policyAssetHex ? "L-BTC" : shortenHex(leg.asset, 6, 6);
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-[11px] uppercase tracking-wide text-[color:var(--text-subtle)]">
+          {LEG_ROLE_TEXT[leg.role]}
+        </span>
+        <span className="shrink-0 font-semibold text-[color:var(--text-strong)]">
+          {leg.amountSat === null ? "Confidential" : `${formatSats(leg.amountSat)} sats ${assetLabel}`}
+        </span>
+      </div>
+      {leg.label && (
+        <p className="text-xs leading-relaxed text-[color:var(--text-secondary)]">{leg.label}</p>
+      )}
+      {leg.ref && (
+        <p className="truncate font-mono text-[11px] text-[color:var(--text-subtle)]" title={leg.ref}>
+          {leg.ref.length > 24 ? shortenHex(leg.ref, 10, 8) : leg.ref}
+        </p>
+      )}
+      {leg.verified && (
+        // The load-bearing line: this covenant address was recomputed from the
+        // contract's own source, not accepted from the site.
+        <p className="text-[11px] text-[color:var(--text-secondary)]">Address verified by Apogee</p>
+      )}
+    </div>
   );
 }
 

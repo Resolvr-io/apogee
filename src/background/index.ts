@@ -22,17 +22,22 @@ import type {
   DerivedWallet,
   DescriptorInfo,
   EngineRequest,
+  ManifestCovenantSpend,
+  ManifestOutputRef,
+  PrepareManifestResult,
   PrepareSendResult,
   ProviderAccount,
   ProviderBalance,
   ProviderRequest,
   ProviderStatus,
+  RunManifestResult,
   SendResult,
   SendReview,
   SyncResult,
   WalletRequest,
   WalletTxDTO,
 } from "@/engine/protocol";
+import { MANIFEST_ERROR_PREFIX } from "@/manifest/runner";
 
 // This extension's own origin. Privileged wallet/* and apogee/* messages are
 // only honored when they come from one of our own pages (side panel, approval
@@ -99,8 +104,8 @@ async function rescheduleAutoLock(): Promise<void> {
 // wallet/* messages that count as genuine user activity and so defer the idle
 // auto-lock. Passive/polled reads (getState, sync, getTransactions, getBalance,
 // getRate, getAsset, qr, getConnectedSites, getAutoLock) are intentionally
-// excluded — otherwise the side panel's 20s balance poll would re-arm the alarm
-// forever and an unattended wallet would never idle-lock while the panel is open.
+// excluded — otherwise the side panel's periodic balance poll would re-arm the
+// alarm forever and an unattended wallet would never idle-lock while the panel is open.
 // Allowlist, so any type not listed fails secure (does not defer the lock).
 const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
   "wallet/unlock",
@@ -131,7 +136,7 @@ browser.alarms.onAlarm.addListener(async (alarm) => {
   }
   void keystore.lock().then(() => {
     // Drop the side panel to the lock screen (ignored if none is open).
-    browser.runtime.sendMessage({ type: "apogee/locked" }).catch(() => {});
+    browser.runtime.sendMessage({ type: "apogee/locked" }).catch(() => { });
   });
 });
 
@@ -189,7 +194,7 @@ async function closeOffscreen(): Promise<void> {
     contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
     documentUrls: [browser.runtime.getURL(OFFSCREEN_URL)],
   });
-  if (existing.length > 0) await chrome.offscreen.closeDocument().catch(() => {});
+  if (existing.length > 0) await chrome.offscreen.closeDocument().catch(() => { });
 }
 
 /** Send a request to the offscreen engine and unwrap its reply. */
@@ -514,7 +519,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       });
       // Nudge the side panel to poll the balance to settlement instead of
       // waiting for the periodic auto-sync.
-      browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
+      browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => { });
       return sent;
     }
 
@@ -578,7 +583,7 @@ async function getConnectedSites(): Promise<string[]> {
 }
 
 function broadcastSitesChanged(): void {
-  browser.runtime.sendMessage({ type: "apogee/sites-changed" }).catch(() => {});
+  browser.runtime.sendMessage({ type: "apogee/sites-changed" }).catch(() => { });
 }
 
 async function addConnectedSite(origin: string | undefined): Promise<void> {
@@ -793,6 +798,58 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
         void routeApproval(request);
       });
     }
+
+    case "provider/runManifest": {
+      if (typeof msg.action !== "string" || !msg.action) throw new Error("Invalid manifest action.");
+      if (typeof msg.manifest !== "string" || !msg.manifest) throw new Error("Invalid manifest.");
+      if (!msg.sources || typeof msg.sources !== "object") throw new Error("Invalid manifest sources.");
+      const info = await walletInfo();
+      // A Jade renders its own on-device summary and gates there; it cannot show
+      // a Simplicity covenant spend meaningfully, so it would either fail with a
+      // cryptic code or ask the user to approve something meaningless. Refuse
+      // rather than route a manifest through a review surface that can't describe it.
+      if (info.signer === "jade") throw new Error("Manifest actions need a local wallet, not a Jade.");
+      // Build now (watch-only, works while locked) so the approval shows the real
+      // net effect and fee. The engine derives every covenant address itself.
+      const prepared = await engine<PrepareManifestResult>({
+        kind: "prepareManifest",
+        descriptor: info.descriptor,
+        network: info.network,
+        action: msg.action,
+        manifest: msg.manifest,
+        sources: msg.sources,
+        instance: msg.instance,
+        providedInputs: msg.providedInputs,
+        actionParams: msg.actionParams,
+      });
+      const id = `appr-${approvalSeq++}-${Date.now()}`;
+      const request: ApprovalRequest = {
+        kind: "manifest",
+        id,
+        origin: origin ?? "an unknown site",
+        review: prepared.review,
+        network: toDappNetwork(info.network),
+        locked: keystore.isLocked(),
+        signerKind: info.signer,
+      };
+      return await new Promise<RunManifestResult>((resolve, reject) => {
+        parkApproval(id, {
+          kind: "manifest",
+          request,
+          origin,
+          walletId: info.id,
+          descriptor: info.descriptor,
+          network: info.network,
+          pset: prepared.pset,
+          instance: prepared.instance,
+          outputs: prepared.outputs,
+          covenantSpends: prepared.covenantSpends,
+          resolve: resolve as (r: unknown) => void,
+          reject,
+        });
+        void routeApproval(request);
+      });
+    }
   }
 }
 
@@ -806,28 +863,46 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
 
 type PendingApproval =
   | {
-      kind: "connect";
-      request: ApprovalRequest;
-      origin: string | undefined;
-      account: ProviderAccount;
-      resolve: (result: unknown) => void;
-      reject: (err: Error) => void;
-      timer?: ReturnType<typeof setTimeout>;
-      windowId?: number; // popup window hosting this approval, if any
-    }
+    kind: "connect";
+    request: ApprovalRequest;
+    origin: string | undefined;
+    account: ProviderAccount;
+    resolve: (result: unknown) => void;
+    reject: (err: Error) => void;
+    timer?: ReturnType<typeof setTimeout>;
+    windowId?: number; // popup window hosting this approval, if any
+  }
   | {
-      kind: "send";
-      request: ApprovalRequest;
-      origin: string | undefined;
-      walletId: string;
-      descriptor: string;
-      network: LiquidNetwork;
-      pset: string;
-      resolve: (result: unknown) => void;
-      reject: (err: Error) => void;
-      timer?: ReturnType<typeof setTimeout>;
-      windowId?: number;
-    };
+    kind: "send";
+    request: ApprovalRequest;
+    origin: string | undefined;
+    walletId: string;
+    descriptor: string;
+    network: LiquidNetwork;
+    pset: string;
+    resolve: (result: unknown) => void;
+    reject: (err: Error) => void;
+    timer?: ReturnType<typeof setTimeout>;
+    windowId?: number;
+  }
+  | {
+    kind: "manifest";
+    request: ApprovalRequest;
+    origin: string | undefined;
+    walletId: string;
+    descriptor: string;
+    network: LiquidNetwork;
+    pset: string;
+    /** Constructor output: handed back to the dapp, else the contract is unspendable. */
+    instance: string | undefined;
+    outputs: ManifestOutputRef[];
+    /** Covenant inputs to finalize after signing (keyless spends); empty for Fund. */
+    covenantSpends: ManifestCovenantSpend[];
+    resolve: (result: unknown) => void;
+    reject: (err: Error) => void;
+    timer?: ReturnType<typeof setTimeout>;
+    windowId?: number;
+  };
 
 const pendingApprovals = new Map<string, PendingApproval>();
 let approvalSeq = 0;
@@ -848,8 +923,8 @@ function parkApproval(id: string, entry: PendingApproval): void {
     // Clear whichever surface is showing it: the side-panel overlay dismisses
     // itself on this broadcast; a popup window is closed outright (its
     // onRemoved handler finds the map entry gone and no-ops).
-    browser.runtime.sendMessage({ type: "apogee/approval-expired", id }).catch(() => {});
-    if (entry.windowId !== undefined) browser.windows.remove(entry.windowId).catch(() => {});
+    browser.runtime.sendMessage({ type: "apogee/approval-expired", id }).catch(() => { });
+    if (entry.windowId !== undefined) browser.windows.remove(entry.windowId).catch(() => { });
   }, APPROVAL_TTL_MS);
 }
 
@@ -862,10 +937,17 @@ function rejectPendingApprovals(origin: string | undefined, reason: string): voi
       pendingApprovals.delete(id);
       clearTimeout(p.timer);
       p.reject(new Error(reason));
-      browser.runtime.sendMessage({ type: "apogee/approval-expired", id }).catch(() => {});
-      if (p.windowId !== undefined) browser.windows.remove(p.windowId).catch(() => {});
+      browser.runtime.sendMessage({ type: "apogee/approval-expired", id }).catch(() => { });
+      if (p.windowId !== undefined) browser.windows.remove(p.windowId).catch(() => { });
     }
   }
+}
+
+/** What the dapp is told when the user (or a closed popup) declines. Must stay in
+ *  PROVIDER_SAFE_ERRORS, or the dapp gets a generic failure and can't tell a
+ *  deliberate rejection from a wallet fault. */
+function rejectionMessage(kind: ApprovalRequest["kind"]): string {
+  return kind === "connect" ? "You rejected the connection." : "You rejected the transaction.";
 }
 
 /** Show the approval in the side panel (overlay) when open, else a popup window. */
@@ -878,7 +960,7 @@ async function routeApproval(request: ApprovalRequest): Promise<void> {
       contextTypes: [chrome.runtime.ContextType.SIDE_PANEL],
     });
     if (panels.length > 0) {
-      browser.runtime.sendMessage({ type: "apogee/approval-request", request }).catch(() => {});
+      browser.runtime.sendMessage({ type: "apogee/approval-request", request }).catch(() => { });
       return;
     }
   }
@@ -900,13 +982,7 @@ async function routeApproval(request: ApprovalRequest): Promise<void> {
     const p = pendingApprovals.get(request.id);
     if (p) {
       pendingApprovals.delete(request.id);
-      p.reject(
-        new Error(
-          request.kind === "connect"
-            ? "You rejected the connection."
-            : "You rejected the transaction.",
-        ),
-      );
+      p.reject(new Error(rejectionMessage(request.kind)));
     }
   };
   browser.windows.onRemoved.addListener(onClosed);
@@ -923,13 +999,7 @@ async function handleApprovalDecision(
   pendingApprovals.delete(id);
   clearTimeout(pending.timer);
   if (!approved) {
-    pending.reject(
-      new Error(
-        pending.kind === "connect"
-          ? "You rejected the connection."
-          : "You rejected the transaction.",
-      ),
-    );
+    pending.reject(new Error(rejectionMessage(pending.kind)));
     return { rejected: true };
   }
   if (pending.kind === "connect") {
@@ -958,6 +1028,36 @@ async function handleApprovalDecision(
   // (the device is the gate). Route the PSET to a Jade signing tab; the
   // jade-signed handler finalizes + broadcasts + fires balance-changed.
   const info = await walletInfo(pending.walletId);
+  // A manifest run is local-signing only (handleProvider already refused a Jade),
+  // and its reply carries the created instance + UTXOs — without them a
+  // constructor's contract can never be spent.
+  if (pending.kind === "manifest") {
+    if (keystore.isLocked()) {
+      const err = new Error("Unlock Apogee to approve this transaction.");
+      pending.reject(err);
+      throw err;
+    }
+    try {
+      const mnemonic = keystore.getMnemonic(pending.walletId);
+      const result = await engine<RunManifestResult>({
+        kind: "signBroadcastManifest",
+        mnemonic,
+        descriptor: pending.descriptor,
+        network: pending.network,
+        pset: pending.pset,
+        outputs: pending.outputs,
+        covenantSpends: pending.covenantSpends,
+      });
+      const reply: RunManifestResult = { ...result, instance: pending.instance };
+      pending.resolve(reply);
+      chrome.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => { });
+      return { txid: reply.txid };
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      pending.reject(err);
+      throw err;
+    }
+  }
   // Watch-only wallets can't sign — refuse the spend outright.
   if (info.signer === "watch") {
     const err = new Error("Watch-only wallets can't sign or send.");
@@ -970,11 +1070,11 @@ async function handleApprovalDecision(
     const summary: SendReview =
       pending.request.kind === "send"
         ? {
-            address: pending.request.address,
-            recipientSats: pending.request.recipientSats,
-            fee: pending.request.fee,
-            drain: pending.request.drain,
-          }
+          address: pending.request.address,
+          recipientSats: pending.request.recipientSats,
+          fee: pending.request.fee,
+          drain: pending.request.drain,
+        }
         : { address: "", recipientSats: 0, fee: 0, drain: false };
     try {
       const result = await signWithJade(
@@ -1019,7 +1119,7 @@ async function handleApprovalDecision(
     pending.resolve(result);
     // Tell open surfaces (the side panel) to re-sync now instead of waiting for
     // the periodic poll, so the balance updates right after a dapp send.
-    browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
+    browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => { });
     return result;
   } catch (e) {
     const err = e instanceof Error ? e : new Error(String(e));
@@ -1177,7 +1277,7 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       )
       .then((res) => {
         p.resolve(res.txid);
-        browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
+        browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => { });
         sendResponse({ ok: true, txid: res.txid });
       })
       .catch((e) => {
@@ -1243,11 +1343,21 @@ const PROVIDER_SAFE_ERRORS = new Set([
   "Jade signing was cancelled.",
   "Jade signing timed out. Try the send again.",
   "This approval request timed out.",
+  "Invalid manifest.",
+  "Invalid manifest action.",
+  "Invalid manifest sources.",
+  "Manifest actions need a local wallet, not a Jade.",
 ]);
 
 function providerErrMsg(err: unknown): string {
   const m = err instanceof Error ? err.message : String(err);
   if (PROVIDER_SAFE_ERRORS.has(m)) return m;
+  // A manifest rejection describes the caller's own manifest back to it and
+  // reveals nothing about wallet state, so it's forwarded intact — a dapp author
+  // otherwise can't tell a bad manifest from a broken wallet. The engine marks
+  // these explicitly (see MANIFEST_ERROR_PREFIX); a bare prefix match would
+  // eventually let an internal message through.
+  if (m.startsWith(MANIFEST_ERROR_PREFIX)) return m.slice(MANIFEST_ERROR_PREFIX.length);
   console.debug("[apogee] provider error (genericized):", m);
   return "Apogee request failed.";
 }

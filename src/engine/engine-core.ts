@@ -28,15 +28,31 @@ import type {
   DerivedWallet,
   DescriptorInfo,
   EngineRequest,
+  ManifestCovenantSpend,
+  ManifestLeg,
+  ManifestOutputRef,
+  ManifestTxLeg,
+  PrepareManifestResult,
   PrepareSendResult,
   ProviderProbe,
   ProbeStatus,
+  RunManifestResult,
   SendResult,
   SignSwapPsetWireResult,
   SyncResult,
   UtxoDTO,
   WalletTxDTO,
 } from "@/engine/protocol";
+import {
+  MANIFEST_ERROR_PREFIX,
+  ManifestError,
+  planAction,
+  type PlannedInput,
+  type PlannedOutput,
+} from "@/manifest/runner";
+import { buildArguments, NUMS_KEY } from "@/manifest/covenant";
+import { buildWitnessValues } from "@/manifest/witness";
+import { SwelError } from "@/manifest/swel";
 
 let lwkPromise: Promise<typeof Lwk> | null = null;
 function loadLwk(): Promise<typeof Lwk> {
@@ -434,6 +450,85 @@ async function broadcastResilient(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Max witness weight reserved for a covenant input's Simplicity spend, so lwk
+ * sizes the fee with it included. A keyless Simplicity witness (control block +
+ * program + witness data) is large and hard to predict up front; this is a
+ * deliberate OVER-estimate — too low underpays the fee, too high only
+ * over-reserves it. TUNE against a real finalized Settle's witness weight once
+ * one has been measured on testnet.
+ */
+const COVENANT_WITNESS_MAX_WEIGHT = 100_000;
+
+/**
+ * Fetch a UTXO's funding transaction from Esplora. lwk exposes no tx-by-txid call
+ * and an ExternalUtxo needs the whole funding tx, so this is a plain REST GET of
+ * the raw hex.
+ */
+async function fetchFundingTx(
+  lwk: typeof Lwk,
+  esploraRoot: string,
+  txid: string,
+): Promise<Lwk.Transaction> {
+  const url = `${esploraRoot.replace(/\/$/, "")}/tx/${txid}/hex`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Couldn't fetch the covenant funding transaction (HTTP ${res.status}).`);
+  }
+  return new lwk.Transaction((await res.text()).trim());
+}
+
+/**
+ * Turn each planned covenant input into an lwk `ExternalUtxo`, enforcing the hard
+ * gate first: the address WE derived from the manifest must equal the on-chain
+ * script of the UTXO being spent. A lie about any committed field changes the
+ * derived address, so it fails HERE rather than as a covenant rejection after the
+ * user approved. The covenant output must be explicit (unblinded) — its secrets
+ * come straight from the funding tx, never from the caller's claim.
+ */
+async function buildCovenantUtxos(
+  lwk: typeof Lwk,
+  inputs: PlannedInput[],
+  esploraRoot: string,
+): Promise<Lwk.ExternalUtxo[]> {
+  const utxos: Lwk.ExternalUtxo[] = [];
+  for (const inp of inputs) {
+    const fundingTx = await fetchFundingTx(lwk, esploraRoot, inp.providedInput.txid);
+    const prevout = fundingTx.outputs[inp.providedInput.vout];
+    if (!prevout) {
+      throw new Error(`Funding tx for "${inp.id}" has no output ${inp.providedInput.vout}.`);
+    }
+    const derivedSpk = new lwk.Address(inp.address).scriptPubkey().toString();
+    const onchainSpk = prevout.scriptPubkey().toString();
+    if (derivedSpk !== onchainSpk) {
+      throw new Error(
+        `Input "${inp.id}": the derived covenant address does not match the UTXO on chain.`,
+      );
+    }
+    const asset = prevout.asset();
+    const value = prevout.value();
+    if (!asset || value === undefined) {
+      throw new Error(`Input "${inp.id}": the covenant UTXO is confidential; an explicit one is required.`);
+    }
+    const secrets = lwk.TxOutSecrets.fromExplicit(asset, value);
+    utxos.push(
+      new lwk.ExternalUtxo(inp.providedInput.vout, fundingTx, secrets, COVENANT_WITNESS_MAX_WEIGHT, true),
+    );
+  }
+  return utxos;
+}
+
+/** Decode an even-length hex string to bytes — for an OP_RETURN payload the runner
+ *  already encoded to exact bytes. */
+function hexToBytes(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0 || (hex.length > 0 && !/^[0-9a-fA-F]+$/.test(hex))) {
+    throw new Error("OP_RETURN payload isn't valid hex.");
+  }
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
 }
 
 /**
@@ -1108,6 +1203,311 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       const signed = entry.wollet.finalize(new lwk.Pset(req.pset));
       const txid = await broadcastResilient(lwk, net, req.network, signed, req.esploraUrl);
       const result: SendResult = { txid };
+      return result;
+    }
+
+    case "prepareManifest": {
+      const net = lwkNetwork(lwk, req.network);
+      const entry = await ensureWollet(lwk, req.descriptor, req.network);
+      // Resolve the action first. This is where covenant addresses are DERIVED
+      // from the manifest's own .simf source — the caller never gets to name a
+      // destination. planAction refuses anything it can't fully account for.
+      // Errors from here describe the CALLER's own manifest back to it and leak
+      // nothing about wallet state, so they're safe to forward verbatim. The
+      // engine boundary is a string channel that drops the error class, hence the
+      // explicit marker — an allowlist by prefix alone would eventually let an
+      // internal message through. See PROVIDER_SAFE_ERRORS in the background.
+      let plan;
+      try {
+        plan = planAction(lwk, {
+          manifestText: req.manifest,
+          action: req.action,
+          sources: req.sources,
+          instanceText: req.instance,
+          providedInputs: req.providedInputs,
+          actionParams: req.actionParams,
+          network: req.network,
+        });
+      } catch (e) {
+        if (e instanceof ManifestError || e instanceof SwelError) {
+          throw new Error(`${MANIFEST_ERROR_PREFIX}${e.message}`);
+        }
+        throw e;
+      }
+
+      // lwk's WASM methods CONSUME the AssetId they're handed (its pointer is
+      // freed after one use), so never cache one — capture the hex string (safe
+      // to reuse) and mint a fresh AssetId per call. prepareSend follows the same
+      // rule by calling net.policyAsset() fresh at each site. Reusing a single
+      // cached AssetId here surfaced as "null pointer passed to rust".
+      const policyAssetHex = net.policyAsset().toString();
+      const assetIdFor = (asset: string): Lwk.AssetId =>
+        asset === "lbtc" || asset === "bitcoin" ? net.policyAsset() : lwk.AssetId.fromString(asset);
+
+      // `Address.parse` REJECTS non-blinded addresses ("Expected a blinded
+      // address but got a non-blinded one"), and a covenant address is always
+      // unconfidential — its script is the contract. So parse with the plain
+      // constructor. Skipping parse's network check is safe here and only here:
+      // we DERIVED this address ourselves from `req.network` moments ago rather
+      // than accepting one from the caller, so it cannot be for another network.
+      const covenantAddress = (a: string): Lwk.Address => new lwk.Address(a);
+
+      // Covenant inputs to spend (empty for a constructor like Fund). Each is
+      // verified against its on-chain script here before it can enter the tx.
+      const covenantUtxos =
+        plan.inputs.length > 0
+          ? await buildCovenantUtxos(lwk, plan.inputs, ESPLORA[req.network])
+          : [];
+
+      let builder = new lwk.TxBuilder(net);
+      // Track which outputs we add, in the order we add them, so the vout of each
+      // covenant output is known before broadcast. `change` is left to lwk (it
+      // appends and may omit it entirely when there's nothing to return).
+      const added: PlannedOutput[] = [];
+      for (const o of plan.outputs) {
+        if (o.wallet === "change") continue; // lwk builds change itself
+        if (o.opReturnData !== undefined) {
+          // On-chain metadata (an OP_RETURN discovery record). A zero-value OP_RETURN
+          // carrying the already-encoded payload; it isn't a spendable output, so it
+          // never enters `added`.
+          builder = builder.addOpReturn(hexToBytes(o.opReturnData));
+        } else if (o.address) {
+          if (o.amountSat === undefined) throw new Error(`Output "${o.id}" has no amount.`);
+          // A covenant output is always explicit (unblinded) — its script is the
+          // contract, and blinding it would hide the very thing being committed to. A
+          // fixed external destination (the discovery beacon) is explicit for the same
+          // reason: it's a known NUMS P2TR address, not a wallet address to blind to.
+          builder = builder.addExplicitRecipient(covenantAddress(o.address), o.amountSat, assetIdFor(o.asset));
+          // Only covenant outputs WE derived are spendable created UTXOs handed back to
+          // the caller; an external beacon output is paid but not tracked as one.
+          if (!o.external) added.push(o);
+        } else if (o.wallet === "recipient") {
+          // Pays the user's own wallet — e.g. Settle's `taker_out`, the asset
+          // released from the covenant. A fresh wallet address receives it
+          // (blinded is fine; it's ours). Its amount rides the built PSET like any
+          // other, so the approval's net effect stays PSET-derived.
+          if (o.amountSat === undefined) throw new Error(`Output "${o.id}" has no amount.`);
+          const to = entry.wollet.address(null).address();
+          builder = builder.addRecipient(to, o.amountSat, assetIdFor(o.asset));
+        }
+      }
+      if (covenantUtxos.length > 0) builder = builder.addExternalUtxos(covenantUtxos);
+      const pset = builder.finish(entry.wollet);
+
+      // Enforce declared `required_index` on covenant outputs (consensus-critical:
+      // a covenant's spend witness can commit to a specific output index and check
+      // the asset/amount/script of THAT index). A reordering by lwk must fail here,
+      // not on chain after approval.
+      const psetOutScripts = pset.outputs().map((po) => po.scriptPubkey().toString());
+      for (const o of plan.outputs) {
+        if (o.requiredIndex === undefined || !o.address) continue;
+        const want = covenantAddress(o.address).scriptPubkey().toString();
+        if (psetOutScripts[o.requiredIndex] !== want) {
+          throw new Error(`Output "${o.id}" must be at index ${o.requiredIndex}, but the built tx disagrees.`);
+        }
+      }
+
+      // Locate each covenant input in the built PSET (by outpoint) and package what
+      // signBroadcastManifest needs to finalize it — it never re-runs the planner.
+      const psetInputs = pset.inputs();
+      const covenantSpends: ManifestCovenantSpend[] = plan.inputs.map((inp) => {
+        const idx = psetInputs.findIndex(
+          (pi) =>
+            pi.previousTxid().toString() === inp.providedInput.txid &&
+            pi.previousVout() === inp.providedInput.vout,
+        );
+        if (idx === -1) throw new Error(`Couldn't locate covenant input "${inp.id}" in the built transaction.`);
+        return {
+          inputIndex: idx,
+          source: inp.source,
+          compileParams: inp.compileParams,
+          debugSymbols: inp.debugSymbols,
+          witnesses: inp.witnesses,
+        };
+      });
+
+      // The amounts the user approves come from the built PSET's own wallet
+      // delta, never from the manifest's claims or the caller's params — the
+      // same rule prepareSend follows.
+      const details = entry.wollet.psetDetails(pset);
+      const psetBalance = details.balance();
+      const fee = Number(psetBalance.feesIn(net.policyAsset()));
+      const net_ = balanceToRecord(psetBalance.balances());
+
+      // Map each covenant output back to its vout. Read from the PSET's own
+      // outputs, not extractTx() — nothing is signed yet, and the vout indices
+      // are already fixed at this point.
+      const psetOutputs = pset.outputs().map((po) => po.scriptPubkey().toString());
+      const outputs: ManifestOutputRef[] = added.map((o) => {
+        const script = covenantAddress(o.address as string).scriptPubkey().toString();
+        const idx = psetOutputs.indexOf(script);
+        const vout = idx === -1 ? undefined : idx;
+        if (vout === undefined) {
+          // The address we derived isn't in the transaction we just built —
+          // refuse rather than hand back a reference that points nowhere.
+          throw new Error(`Couldn't locate output "${o.id}" in the built transaction.`);
+        }
+        return {
+          utxo_type: o.utxoType ?? "",
+          utxo_id: o.id,
+          vout,
+          amount_sat: String(o.amountSat),
+          asset: o.asset === "lbtc" ? policyAssetHex : o.asset,
+          address: o.address as string,
+        };
+      });
+
+      // Covenant INPUT legs are `derived: true` — we recomputed the address and
+      // matched it against the on-chain script. That badge covers the COMMITTED
+      // terms only; it says nothing about fields the covenant never inspects on
+      // its spend path (see task 04).
+      const inputLegs: ManifestLeg[] = plan.inputs.map((inp) => ({
+        id: inp.id,
+        kind: "input" as const,
+        label: inp.description,
+        address: inp.address,
+        amountSat: inp.amountSat !== undefined ? String(inp.amountSat) : "",
+        asset: inp.asset === "lbtc" ? policyAssetHex : inp.asset,
+        derived: true,
+        mine: false,
+      }));
+      const outputLegs: ManifestLeg[] = added.map((o) => ({
+        id: o.id,
+        kind: "output" as const,
+        label: o.description,
+        address: o.address,
+        amountSat: String(o.amountSat),
+        asset: o.asset === "lbtc" ? policyAssetHex : o.asset,
+        derived: Boolean(o.address), // we computed this address; we weren't handed it
+        mine: false,
+      }));
+      // Enumerate the FULL transaction from the built PSET — every input the
+      // wallet gathered and every output it created (funding, change, fee), not
+      // just the covenant legs. Covenant legs are annotated from inputLegs/
+      // outputLegs (their prose + verified badge, keyed by PSET position); the
+      // wallet's own legs are blinded, so their amount/asset read as null — that
+      // is expected (the authoritative totals live in `net`).
+      const contractInputByIndex = new Map<number, ManifestLeg>();
+      covenantSpends.forEach((cs, i) => contractInputByIndex.set(cs.inputIndex, inputLegs[i]));
+      const contractOutputByVout = new Map<number, ManifestLeg>();
+      outputs.forEach((o, i) => contractOutputByVout.set(o.vout, outputLegs[i]));
+
+      const txInputs: ManifestTxLeg[] = pset.inputs().map((pi, idx) => {
+        const contract = contractInputByIndex.get(idx);
+        const wu = pi.witnessUtxo();
+        const amt = wu?.value();
+        const ast = wu?.asset();
+        return {
+          amountSat: amt !== undefined ? Number(amt) : null,
+          asset: ast !== undefined ? ast.toString() : null,
+          ref: `${pi.previousTxid().toString()}:${pi.previousVout()}`,
+          role: contract ? "contract" : "wallet",
+          verified: contract?.derived ?? false,
+          label: contract?.label,
+        };
+      });
+
+      const txOutputs: ManifestTxLeg[] = pset.outputs().map((po, idx) => {
+        const contract = contractOutputByVout.get(idx);
+        // The fee output is the one with an empty scriptPubkey (Elements).
+        const isFee = po.scriptPubkey().bytes().length === 0;
+        const amt = po.amount(); // explicit value, or undefined when blinded
+        const ast = po.asset();
+        const role: ManifestTxLeg["role"] = isFee
+          ? "fee"
+          : contract
+            ? "contract"
+            : amt === undefined
+              ? "wallet" // blinded → the user's own change / receipt
+              : "external"; // explicit non-covenant (e.g. an OP_RETURN beacon)
+        return {
+          amountSat:
+            amt !== undefined
+              ? Number(amt)
+              : contract && contract.amountSat !== ""
+                ? Number(contract.amountSat)
+                : null,
+          asset: ast !== undefined ? ast.toString() : contract ? contract.asset : isFee ? policyAssetHex : null,
+          ref: contract?.address,
+          role,
+          verified: contract?.derived ?? false,
+          label: contract?.label,
+        };
+      });
+
+      const result: PrepareManifestResult = {
+        pset: pset.toString(),
+        review: {
+          protocol: plan.protocol,
+          action: plan.action,
+          description: plan.description,
+          intent: plan.intent,
+          net: net_,
+          policyAssetHex,
+          fee,
+          txInputs,
+          txOutputs,
+          trust: "unverified",
+        },
+        instance: plan.instance
+          ? JSON.stringify({ template: plan.instance.template, fields: plan.instance.fields }, null, 2)
+          : undefined,
+        outputs,
+        covenantSpends,
+      };
+      return result;
+    }
+
+    case "signBroadcastManifest": {
+      const net = lwkNetwork(lwk, req.network);
+      const signer = new lwk.Signer(new lwk.Mnemonic(req.mnemonic), net);
+      const entry = await ensureWollet(lwk, req.descriptor, req.network);
+
+      // Sign the wallet inputs and finalize them. For a constructor (Fund) there's
+      // no covenant input, so the finalized PSET is broadcastable as-is.
+      const finalized = entry.wollet.finalize(signer.sign(new lwk.Pset(req.pset)));
+
+      let txid: string;
+      if (req.covenantSpends.length === 0) {
+        txid = await broadcastResilient(lwk, net, req.network, finalized);
+      } else {
+        // Keyless covenant spend: extract the tx (wallet inputs finalized, the
+        // covenant input's witness still empty) and add each covenant input's
+        // Simplicity witness. No signature — the PATH witness is the whole story.
+        const client = new lwk.EsploraClient(net, ESPLORA[req.network], false, 1, false);
+        const nums = lwk.XOnlyPublicKey.fromString(NUMS_KEY);
+        let tx = finalized.extractTx();
+        for (const cov of req.covenantSpends) {
+          // Prevouts for the whole tx, in input order (finalizeTransaction consumes
+          // the array, so rebuild it per input). `inputs()` returns fresh copies.
+          const utxos = finalized.inputs().map((pi) => {
+            const u = pi.witnessUtxo();
+            if (!u) throw new Error("A PSET input is missing its prevout; can't finalize the covenant.");
+            return u;
+          });
+          const args = buildArguments(lwk, cov.compileParams);
+          const program = cov.debugSymbols
+            ? lwk.SimplicityProgram.loadWithDebugSymbols(cov.source, args, true)
+            : lwk.SimplicityProgram.load(cov.source, args);
+          tx = program.finalizeTransaction(
+            tx,
+            nums,
+            utxos,
+            cov.inputIndex,
+            buildWitnessValues(lwk, cov.witnesses),
+            net,
+            lwk.SimplicityLogLevel.None,
+          );
+        }
+        txid = (await client.broadcastTx(tx)).toString();
+      }
+
+      // The created UTXOs only become addressable once the txid exists; the
+      // caller needs them to spend the contract later.
+      const result: RunManifestResult = {
+        txid,
+        utxos: req.outputs.map((o) => ({ ...o, txid })),
+      };
       return result;
     }
   }

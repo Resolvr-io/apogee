@@ -14,3 +14,4 @@ dist-firefox/
 
 # local release artifacts (zips live on GitHub Releases)
 releases/
+/.vscode/
