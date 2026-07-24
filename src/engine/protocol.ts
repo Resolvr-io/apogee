@@ -261,6 +261,15 @@ export type WalletRequest =
       sendAssetId: string;
       recvAssetId: string;
       sendAmount: number; // base units of the send asset
+    }
+  // Rate preview: fetch a SideSwap quote without executing the swap.
+  // Returns SwapQuoteResultDTO with the expected receive amount.
+  | {
+      type: "wallet/swapQuote";
+      walletId?: string;
+      sendAssetId: string;
+      recvAssetId: string;
+      sendAmount: number; // base units of the send asset
     };
 
 /** What `wallet/create` returns: the persisted wallet + the phrase to back up. */
@@ -288,6 +297,12 @@ export interface SwapResultDTO {
   sent: string; // base-10, base units of the send asset
   received: string; // base-10, base units of the receive asset
   fee: string; // base-10, LBTC sats
+}
+
+/** Rate preview result (SideSwap quote without execution). */
+export interface SwapQuoteResultDTO {
+  sentAmount: number; // base units of the send asset
+  receivedAmount: number; // base units of the receive asset
 }
 
 /** Human-readable spend details for the Jade signing tab's review summary. */

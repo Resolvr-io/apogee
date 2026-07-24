@@ -17,9 +17,10 @@
 //      an independent estimate (feerate × vsize, or a fixed sane ceiling) —
 //      never from the dealer's quote or PSET.
 
-import type { SideSwapClient, SideSwapUtxo, SideSwapQuoteNotification } from "./client";
+import type { SideSwapClient, SideSwapUtxo, SideSwapQuoteSuccess, SideSwapAssetPair, SideSwapAssetType, SideSwapTradeDir } from "./client";
 import type { EngineRequest, UtxoDTO, VerifyDealerPsetTermsDTO, SignSwapPsetWireResult } from "@/engine/protocol";
 import type { LiquidNetwork } from "@/keystore/keystore";
+import { LBTC_MAINNET_ASSET_ID, LBTC_TESTNET_ASSET_ID } from "@/lib/asset-registry";
 
 // ---- public types --------------------------------------------------------
 
@@ -56,6 +57,59 @@ export interface SwapResult {
 }
 
 export class SwapError extends Error {}
+
+// ---- pair orientation -----------------------------------------------------
+
+/** The LBTC asset id for a given network. */
+function lbtcAssetId(network: LiquidNetwork): string {
+  return network === "liquid" ? LBTC_MAINNET_ASSET_ID : LBTC_TESTNET_ASSET_ID;
+}
+
+/** Result of orienting an asset pair for SideSwap. The dealer requires LBTC
+ *  to always be the `base` asset. This function computes the correct wire
+ *  params and returns a mapper for translating dealer amounts back to
+ *  send/receive. */
+interface OrientedPair {
+  asset_pair: SideSwapAssetPair;
+  asset_type: SideSwapAssetType;
+  trade_dir: SideSwapTradeDir;
+  /** Map dealer quote amounts (always in base/quote frame) back to the
+   *  caller's send/receive frame. */
+  mapAmounts: (baseAmount: number, quoteAmount: number) => { sent: number; received: number };
+}
+
+/** Orient the pair so LBTC is always base. For sell-exact mode (the only
+ *  mode currently supported), trade_dir is always "Sell". */
+function orientPair(
+  sendAssetId: string,
+  recvAssetId: string,
+  network: LiquidNetwork,
+): OrientedPair {
+  const lbtc = lbtcAssetId(network);
+  const sendingLbtc = sendAssetId === lbtc;
+
+  if (sendingLbtc) {
+    return {
+      asset_pair: { base: lbtc, quote: recvAssetId },
+      asset_type: "Base",
+      trade_dir: "Sell",
+      mapAmounts: (baseAmount, quoteAmount) => ({ sent: baseAmount, received: quoteAmount }),
+    };
+  }
+
+  return {
+    asset_pair: { base: lbtc, quote: sendAssetId },
+    asset_type: "Quote",
+    trade_dir: "Sell",
+    mapAmounts: (baseAmount, quoteAmount) => ({ sent: quoteAmount, received: baseAmount }),
+  };
+}
+
+/** Rate preview returned by previewSwapQuote. */
+export interface SwapQuotePreview {
+  sentAmount: number;
+  receivedAmount: number;
+}
 
 // ---- result of the atomic signSwapPset engine call -----------------------
 //
@@ -125,13 +179,13 @@ export async function executeInstantSwap(
     index: receiveResult.index + 1,
   });
 
-  // 3. Start quotes with filtered UTXOs.
-  const assetPair = { base: sendAssetId, quote: recvAssetId };
+  // 3. Start quotes with filtered UTXOs, oriented so LBTC is always base.
+  const oriented = orientPair(sendAssetId, recvAssetId, network);
   const startResult = await client.startQuotes({
-    asset_pair: assetPair,
-    asset_type: "Base",
+    asset_pair: oriented.asset_pair,
+    asset_type: oriented.asset_type,
     amount: sendAmount,
-    trade_dir: "Sell",
+    trade_dir: oriented.trade_dir,
     utxos: swapUtxos,
     receive_address: receiveResult.address,
     change_address: changeResult.address,
@@ -140,18 +194,19 @@ export async function executeInstantSwap(
   // 4. Wait for the first viable quote notification. waitForQuote only
   //    resolves on Success — it rejects on Error/LowBalance, so no
   //    non-Success branch is needed here.
-  const quote = await waitForQuote(client, startResult.quote_sub_id);
-  const success = quote.status.Success;
+  const success = await waitForQuote(client, startResult.quote_sub_id);
 
   // 5. Get the dealer-built unsigned PSET.
   const quoteResult = await client.getQuote(success.quote_id);
 
   // 6. Atomic verify + sign + finalize in one engine call (prerequisite 1).
   //    The maxFee cap is the caller's independent estimate (prerequisite 3).
-  const minRecv = params.minRecvAmount ?? BigInt(success.quote_amount);
+  //    Map the dealer's base/quote amounts back to send/receive.
+  const amounts = oriented.mapAmounts(success.base_amount, success.quote_amount);
+  const minRecv = params.minRecvAmount ?? BigInt(amounts.received);
   const terms: VerifyDealerPsetTermsDTO = {
     sendAssetId,
-    sendAmount: BigInt(sendAmount).toString(),
+    sendAmount: BigInt(amounts.sent).toString(),
     recvAssetId,
     minRecvAmount: minRecv.toString(),
     maxFee: maxFee.toString(),
@@ -181,6 +236,56 @@ export async function executeInstantSwap(
   };
 }
 
+/** Fetch a quote preview for rate display without executing the swap.
+ *  Connects to SideSwap, starts quotes, waits for the first viable quote,
+ *  then disconnects. Returns the expected send/receive amounts. */
+export async function previewSwapQuote(
+  params: SwapParams,
+  deps: SwapDeps,
+): Promise<SwapQuotePreview> {
+  const { client, engineCall, descriptor, network } = deps;
+  const { sendAssetId, recvAssetId, sendAmount } = params;
+
+  const allUtxos = await engineCall<UtxoDTO[]>({
+    kind: "getUtxos",
+    descriptor,
+    network,
+  });
+
+  const swapUtxos = filterSendAssetUtxos(allUtxos, sendAssetId);
+  if (swapUtxos.length === 0) {
+    throw new SwapError(`no UTXOs found for send asset ${sendAssetId}`);
+  }
+
+  const receiveResult = await engineCall<{ address: string; index: number }>({
+    kind: "getAddress",
+    descriptor,
+    network,
+  });
+  const changeResult = await engineCall<{ address: string }>({
+    kind: "getAddress",
+    descriptor,
+    network,
+    index: receiveResult.index + 1,
+  });
+
+  const oriented = orientPair(sendAssetId, recvAssetId, network);
+  const startResult = await client.startQuotes({
+    asset_pair: oriented.asset_pair,
+    asset_type: oriented.asset_type,
+    amount: sendAmount,
+    trade_dir: oriented.trade_dir,
+    utxos: swapUtxos,
+    receive_address: receiveResult.address,
+    change_address: changeResult.address,
+  });
+
+  const success = await waitForQuote(client, startResult.quote_sub_id);
+  const amounts = oriented.mapAmounts(success.base_amount, success.quote_amount);
+
+  return { sentAmount: amounts.sent, receivedAmount: amounts.received };
+}
+
 // ---- helpers -------------------------------------------------------------
 
 /** Await the first `Success` quote for a given `quote_sub_id`. Rejects on
@@ -188,7 +293,7 @@ export async function executeInstantSwap(
 function waitForQuote(
   client: SideSwapClient,
   quoteSubId: number,
-): Promise<SideSwapQuoteNotification> {
+): Promise<SideSwapQuoteSuccess> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new SwapError("timed out waiting for dealer quote")),
@@ -200,7 +305,7 @@ function waitForQuote(
       clearTimeout(timer);
 
       if ("Success" in q.status) {
-        resolve(q);
+        resolve(q.status.Success);
       } else if ("Error" in q.status) {
         reject(new SwapError(`dealer error: ${q.status.Error.error_msg}`));
       } else {
