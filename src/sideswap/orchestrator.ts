@@ -137,17 +137,10 @@ export async function executeInstantSwap(
     change_address: changeResult.address,
   });
 
-  // 4. Wait for the first viable quote notification.
+  // 4. Wait for the first viable quote notification. waitForQuote only
+  //    resolves on Success — it rejects on Error/LowBalance, so no
+  //    non-Success branch is needed here.
   const quote = await waitForQuote(client, startResult.quote_sub_id);
-
-  if (!("Success" in quote.status)) {
-    const detail =
-      "Error" in quote.status
-        ? quote.status.Error.error_msg
-        : "LowBalance";
-    throw new SwapError(`dealer rejected: ${detail}`);
-  }
-
   const success = quote.status.Success;
 
   // 5. Get the dealer-built unsigned PSET.
@@ -191,7 +184,7 @@ export async function executeInstantSwap(
 // ---- helpers -------------------------------------------------------------
 
 /** Await the first `Success` quote for a given `quote_sub_id`. Rejects on
- *  `Error` status, or after the SideSwap request timeout (15 s). */
+ *  `Error` status, or after a 20 s timeout. */
 function waitForQuote(
   client: SideSwapClient,
   quoteSubId: number,
