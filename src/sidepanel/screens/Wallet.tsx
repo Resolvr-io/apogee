@@ -9,6 +9,7 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowDownLeft,
+  ArrowLeftRight,
   ArrowUp,
   ArrowUpRight,
   ChevronDown,
@@ -61,9 +62,10 @@ import { errMessage, unlockErrMessage, wallet } from "@/sidepanel/wallet-client"
 import { AssetIcon } from "@/sidepanel/components/AssetIcon";
 import { useAnimations } from "@/sidepanel/use-animations";
 import { Send } from "@/sidepanel/screens/Send";
+import { Swap } from "@/sidepanel/screens/Swap";
 import type { ToastNotice } from "@/sidepanel/components/Toast";
 
-export type View = "home" | "receive" | "send" | "settings";
+export type View = "home" | "receive" | "send" | "swap" | "settings";
 
 const HIDE_KEY = "apogee:hideBalance";
 const TX_PAGE = 25; // transactions rendered per lazy-load page
@@ -412,7 +414,7 @@ export function Wallet({
       <SubView
         title={titleFor(view)}
         onBack={() => onView("home")}
-        center={view === "receive" || view === "send"}
+        center={view === "receive" || view === "send" || view === "swap"}
       >
         {view === "receive" && (
           <>
@@ -441,6 +443,14 @@ export function Wallet({
               // settle poll; no extra refresh needed here.
               onView("home");
             }}
+          />
+        )}
+        {view === "swap" && (
+          <Swap
+            sync={sync}
+            assets={assets}
+            network={active.network}
+            onDone={() => onView("home")}
           />
         )}
         {view === "settings" && (
@@ -550,6 +560,11 @@ export function Wallet({
           <Button variant="secondary" className="flex-1" onClick={() => onView("receive")}>
             <ArrowDown size={16} /> Receive
           </Button>
+          {!watchOnly && (
+            <Button variant="secondary" className="flex-1" onClick={() => onView("swap")}>
+              <ArrowLeftRight size={16} /> Swap
+            </Button>
+          )}
         </div>
       </div>
 
@@ -1672,5 +1687,5 @@ function Row({
 }
 
 function titleFor(view: View): string {
-  return view === "receive" ? "Receive" : view === "send" ? "Send" : "Settings";
+  return view === "receive" ? "Receive" : view === "send" ? "Send" : view === "swap" ? "Swap" : "Settings";
 }

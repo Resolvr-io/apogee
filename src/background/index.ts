@@ -27,6 +27,7 @@ import type {
   ProviderBalance,
   ProviderRequest,
   ProviderStatus,
+  SwapResultDTO,
   SendResult,
   SendReview,
   SyncResult,
@@ -110,6 +111,7 @@ const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
   "wallet/addWatchOnlyWallet",
   "wallet/prepareSend",
   "wallet/send",
+  "wallet/swap",
   "wallet/revealMnemonic",
   "wallet/verifyPassword",
   "wallet/setAutoLock",
@@ -516,6 +518,55 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       // waiting for the periodic auto-sync.
       browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
       return sent;
+    }
+
+    case "wallet/swap": {
+      const info = await walletInfo(msg.walletId);
+      if (info.signer === "watch") {
+        throw new Error("Watch-only wallets can't sign or swap.");
+      }
+      const mnemonic = keystore.getMnemonic(info.id);
+      // The SideSwap client lives only for this swap call — connect, execute,
+      // disconnect. A WebSocket in the service worker is fine (MV3 background).
+      const { SideSwapClient } = await import("@/sideswap/client");
+      const { executeInstantSwap, SwapError } = await import("@/sideswap/orchestrator");
+      const client = new SideSwapClient(info.network);
+      await client.connect();
+      try {
+        // Fixed sane fee ceiling: 1000 sats covers any reasonable Liquid swap
+        // (typical swap PSET is ~200-300 vbytes at 0.1-1 sat/vbyte). This is
+        // the independent estimate the verification gate requires — never
+        // derived from dealer data. TODO: replace with a live fee estimate.
+        const MAX_FEE_SATS = 1000n;
+        const result = await executeInstantSwap(
+          {
+            sendAssetId: msg.sendAssetId,
+            recvAssetId: msg.recvAssetId,
+            sendAmount: msg.sendAmount,
+            maxFee: MAX_FEE_SATS,
+          },
+          {
+            client,
+            engineCall: engine,
+            descriptor: info.descriptor,
+            network: info.network,
+            mnemonic,
+          },
+        );
+        browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
+        const dto: SwapResultDTO = {
+          txid: result.txid,
+          sent: result.sent.toString(),
+          received: result.received.toString(),
+          fee: result.fee.toString(),
+        };
+        return dto;
+      } catch (e) {
+        if (e instanceof SwapError) throw e;
+        throw e instanceof Error ? e : new Error(String(e));
+      } finally {
+        client.disconnect();
+      }
     }
 
     case "wallet/addHardwareWallet": {
