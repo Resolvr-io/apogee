@@ -9,14 +9,22 @@ import { ArrowDown, Check, ExternalLink } from "lucide-react";
 import type { AssetInfo, SwapResultDTO, SyncResult } from "@/engine/protocol";
 import type { LiquidNetwork } from "@/keystore/keystore";
 import { shortenHex } from "@/lib/utils";
-import { formatAssetAmount, formatSats, parseAssetAmount } from "@/lib/format";
-import { KNOWN_ASSETS } from "@/lib/asset-registry";
+import { formatAssetAmount, formatBtc, formatSats, parseAssetAmount } from "@/lib/format";
+import {
+  KNOWN_ASSETS,
+  LBTC_MAINNET_ASSET_ID,
+  LBTC_TESTNET_ASSET_ID,
+  USDT_LIQUID_ASSET_ID,
+} from "@/lib/asset-registry";
 import { explorerTxUrl } from "@/lib/explorer";
 import { Button, Card, CopyButton, ErrorText, Field, Input, Spinner } from "@/sidepanel/components/ui";
 import { AssetSelect } from "@/sidepanel/components/AssetSelect";
 import { errMessage, wallet } from "@/sidepanel/wallet-client";
 
 type Step = "form" | "review" | "swapping" | "done";
+
+/** Max fee in sats — must match the service worker's MAX_FEE_SATS cap. */
+const MAX_FEE_SATS = 1000;
 
 export function Swap({
   onDone,
@@ -73,8 +81,14 @@ export function Swap({
         .map(([id]) => id)
     : [policyHex];
 
-  // All known assets for the "to" picker (policy asset + held + known tokens).
-  const allAssetIds = Array.from(new Set([policyHex, ...heldAssetIds, ...Object.keys(KNOWN_ASSETS)]));
+  // All known assets for the "to" picker, filtered to the active network so
+  // testnet wallets don't show mainnet USDt or vice versa.
+  const knownIdsForNetwork = Object.keys(KNOWN_ASSETS).filter((id) => {
+    if (network === "liquid") return id !== LBTC_TESTNET_ASSET_ID;
+    // testnet / regtest: exclude mainnet LBTC and mainnet USDt
+    return id !== LBTC_MAINNET_ASSET_ID && id !== USDT_LIQUID_ASSET_ID;
+  });
+  const allAssetIds = Array.from(new Set([policyHex, ...heldAssetIds, ...knownIdsForNetwork]));
 
   // Parse the entered amount into base units.
   const enteredUnits = (() => {
@@ -107,7 +121,12 @@ export function Swap({
   function setMax() {
     setError("");
     if (sendId === policyHex) {
-      setAmount(String(sendBalance));
+      // Reserve the fee ceiling so the swap can actually succeed — the
+      // service worker caps the fee at MAX_FEE_SATS, and a full-balance
+      // Max leaves nothing for it.
+      const avail = Math.max(0, sendBalance - MAX_FEE_SATS);
+      const btc = (avail / 100_000_000).toFixed(8).replace(/\.?0+$/, "");
+      setAmount(btc || "0");
     } else {
       const prec = sendPrecision ?? 0;
       const p = prec > 0 ? prec : 0;
@@ -285,7 +304,7 @@ export function Swap({
             </span>
             <div className="flex items-center gap-2">
               <span className="text-xs text-[color:var(--text-subtle)]">
-                Balance: {sendId === policyHex ? formatSats(sendBalance) : formatAssetAmount(sendBalance, sendPrecision)} {sendLabel}
+                Balance: {sendId === policyHex ? formatBtc(sendBalance) : formatAssetAmount(sendBalance, sendPrecision)} {sendLabel}
               </span>
               <button
                 type="button"
