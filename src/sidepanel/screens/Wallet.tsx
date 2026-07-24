@@ -293,14 +293,17 @@ export function Wallet({
     [],
   );
 
-  // Auto-refresh so sent/received funds appear without a manual sync: poll every
-  // 20s and whenever the side panel regains focus.
+  // The Sync button (and re-focusing the panel) is the primary way to refresh;
+  // this is just a slow safety net so incoming funds still appear on their own
+  // eventually. Kept infrequent to stay well under the chain endpoint's rate
+  // limit — with waterfalls as the primary scan backend a sync is one request,
+  // so 5 min ≈ 12 req/hr, leaving headroom for other apps sharing the endpoint.
   useEffect(() => {
     if (!active) return;
     const tick = () => {
       if (!document.hidden) void refresh(true);
     };
-    const id = setInterval(tick, 20_000);
+    const id = setInterval(tick, 5 * 60_000);
     document.addEventListener("visibilitychange", tick);
     return () => {
       clearInterval(id);

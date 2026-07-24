@@ -113,10 +113,13 @@ const ICON =
   // Methods that wait on a user approval get a long timeout; reads should return
   // promptly, so a hung read (e.g. an orphaned bridge that never replies) surfaces
   // as PROVIDER_DISCONNECTED in seconds instead of blocking for minutes.
-  const APPROVAL_METHODS = new Set(["connect", "send"]);
+  const APPROVAL_METHODS = new Set(["connect", "send", "runManifest"]);
   function timeoutFor(method: string): number {
     if (method === "connect") return CONNECT_TIMEOUT_MS;
-    if (method === "send") return SEND_TIMEOUT_MS;
+    // runManifest reuses the send ceiling: it also builds ahead of the approval,
+    // and the inequality that matters (page ceiling > extension worst case) holds
+    // for both. See the SEND_TIMEOUT_MS note above.
+    if (method === "send" || method === "runManifest") return SEND_TIMEOUT_MS;
     if (method === "getBalance") return 60_000; // includes a chain sync
     return 20_000; // fast reads
   }
@@ -229,6 +232,43 @@ const ICON =
         });
         return { txid: res.txid } as T;
       }
+      case "liquid_runManifest": {
+        // Everything crosses as TEXT: the site already has the manifest string
+        // from `fetch().then(r => r.text())`, u64 amounts would lose precision
+        // through JSON.parse, and hashing the literal bytes is what a publisher
+        // signature will later be checkable against. Validate shape only — the
+        // extension re-validates and is the actual gate.
+        const action = params.action;
+        const manifest = params.manifest;
+        if (typeof action !== "string" || !action) {
+          throw new ProviderRpcError(-32602, "liquid_runManifest requires `action` (string)");
+        }
+        if (typeof manifest !== "string" || !manifest) {
+          throw new ProviderRpcError(
+            -32602,
+            "liquid_runManifest requires `manifest` as raw JSON text, not an object",
+          );
+        }
+        // A browser wallet has no filesystem, so the manifest's `source` paths
+        // (e.g. "./last_will.simf") are unresolvable — the caller must ship the
+        // program text alongside. Without it we cannot derive covenant addresses,
+        // and deriving them is the whole point.
+        const sources = params.sources;
+        if (!sources || typeof sources !== "object" || Array.isArray(sources)) {
+          throw new ProviderRpcError(
+            -32602,
+            "liquid_runManifest requires `sources`: { './prog.simf': '<source text>' }",
+          );
+        }
+        return (await call<unknown>("runManifest", {
+          action,
+          manifest,
+          sources,
+          instance: params.instance,
+          providedInputs: params.providedInputs,
+          actionParams: params.actionParams,
+        })) as T;
+      }
       case "liquid_getCapabilities": {
         return {
           specVersion: SPEC_VERSION,
@@ -243,8 +283,24 @@ const ICON =
             "liquid_sendTransaction",
             "liquid_disconnect",
             "liquid_getCapabilities",
+            "liquid_runManifest",
           ],
           features: { hardwareSigning: true, issuedAssets: true, confidential: true },
+          // The spec requires rejecting a manifest that uses an extension we
+          // don't implement, so a site needs to know BEFORE it renders a button.
+          txmanifest: {
+            manifestVersion: "0.1.0",
+            extensions: ["contract_templates"],
+            // Deliberately NOT implemented yet — listed so the omission is
+            // legible rather than something a site discovers by failing.
+            unsupported: ["hooks", "validations", "issuance", "op_return", "state_files"],
+            // No manifest signature/authority scheme exists yet; every run is
+            // reviewed as "unverified".
+            authenticity: "unverified",
+            // A manifest run signs locally: a Jade renders its own summary and
+            // cannot meaningfully display a Simplicity covenant spend.
+            hardwareSigning: false,
+          },
         } as T;
       }
       case "liquid_disconnect": {

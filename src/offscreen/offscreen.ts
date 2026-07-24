@@ -14,7 +14,14 @@ browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.target !== "offscreen") return false;
   handle(msg.req as EngineRequest)
     .then((value) => sendResponse({ ok: true, value }))
-    .catch((err: unknown) => sendResponse({ ok: false, error: errMsg(err) }));
+    .catch((err: unknown) => {
+      // The SW sanitizes provider errors to "Apogee request failed", so the raw
+      // cause is otherwise invisible. Log the full error+stack here, in the
+      // offscreen document's own console, where lwk actually threw it.
+      const kind = (msg.req as EngineRequest)?.kind;
+      console.error(`[apogee] engine "${kind}" failed:`, err);
+      sendResponse({ ok: false, error: errMsg(err) });
+    });
   return true; // async sendResponse
 });
 

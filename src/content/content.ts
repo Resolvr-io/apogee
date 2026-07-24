@@ -18,6 +18,10 @@ const PROVIDER_METHODS = new Set([
   "getBalance",
   "getAssetInfo",
   "send",
+  // Note the param scrubber below drops keys named `type`/`source`. runManifest's
+  // bundle key is `sources` (plural), which survives; a singular `source` would
+  // be eaten silently.
+  "runManifest",
 ]);
 
 interface ProviderMessage {

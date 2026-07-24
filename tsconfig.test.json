@@ -1,0 +1,15 @@
+{
+  // Unit tests only. They run in Node (vitest) and read fixtures off disk, so
+  // they need node types — which the app config deliberately withholds, so that
+  // extension code can't reach for a Node API that won't exist in a browser.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // `types` replaces rather than merges, so chrome must be repeated: tests
+    // pull in modules that transitively reference the extension APIs.
+    "types": ["node", "chrome", "vite/client"]
+  },
+  // `exclude` is inherited through `extends`, so the parent's test exclusion has
+  // to be cleared here or this config would have no inputs at all.
+  "exclude": [],
+  "include": ["src/**/*.test.ts"]
+}
