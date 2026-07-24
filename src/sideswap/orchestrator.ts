@@ -17,7 +17,7 @@
 //      an independent estimate (feerate × vsize, or a fixed sane ceiling) —
 //      never from the dealer's quote or PSET.
 
-import type { SideSwapClient, SideSwapUtxo, SideSwapQuoteNotification } from "./client";
+import type { SideSwapClient, SideSwapUtxo, SideSwapQuoteNotification, SideSwapQuoteSuccess } from "./client";
 import type { EngineRequest, UtxoDTO, VerifyDealerPsetTermsDTO, SignSwapPsetWireResult } from "@/engine/protocol";
 import type { LiquidNetwork } from "@/keystore/keystore";
 
@@ -183,12 +183,19 @@ export async function executeInstantSwap(
 
 // ---- helpers -------------------------------------------------------------
 
+/** A quote notification narrowed to the Success variant — the only state
+ *  waitForQuote resolves with. Lets callers access `.status.Success` without
+ *  a runtime narrowing check. */
+type SuccessQuoteNotification = Omit<SideSwapQuoteNotification, "status"> & {
+  status: { Success: SideSwapQuoteSuccess };
+};
+
 /** Await the first `Success` quote for a given `quote_sub_id`. Rejects on
  *  `Error` status, or after a 20 s timeout. */
 function waitForQuote(
   client: SideSwapClient,
   quoteSubId: number,
-): Promise<SideSwapQuoteNotification> {
+): Promise<SuccessQuoteNotification> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new SwapError("timed out waiting for dealer quote")),
@@ -200,7 +207,7 @@ function waitForQuote(
       clearTimeout(timer);
 
       if ("Success" in q.status) {
-        resolve(q);
+        resolve(q as SuccessQuoteNotification);
       } else if ("Error" in q.status) {
         reject(new SwapError(`dealer error: ${q.status.Error.error_msg}`));
       } else {
