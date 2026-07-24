@@ -110,8 +110,10 @@ export async function executeInstantSwap(
     throw new SwapError(`no UTXOs found for send asset ${sendAssetId}`);
   }
 
-  // 2. Get receive and change addresses.
-  const receiveResult = await engineCall<{ address: string }>({
+  // 2. Get receive and change addresses. The engine's getAddress returns the
+  //    next unused address but does not advance wallet state, so two calls
+  //    with no index return the same address. Pass an explicit index for change.
+  const receiveResult = await engineCall<{ address: string; index: number }>({
     kind: "getAddress",
     descriptor,
     network,
@@ -120,6 +122,7 @@ export async function executeInstantSwap(
     kind: "getAddress",
     descriptor,
     network,
+    index: receiveResult.index + 1,
   });
 
   // 3. Start quotes with filtered UTXOs.
