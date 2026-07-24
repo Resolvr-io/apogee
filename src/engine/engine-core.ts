@@ -32,6 +32,7 @@ import type {
   ProviderProbe,
   ProbeStatus,
   SendResult,
+  SignSwapPsetWireResult,
   SyncResult,
   UtxoDTO,
   WalletTxDTO,
@@ -776,6 +777,40 @@ export async function handle(req: EngineRequest): Promise<unknown> {
             fee: result.fee.toString(),
           }
         : { ok: false as const, reason: result.reason };
+    }
+
+    case "signSwapPset": {
+      // Atomic verify-then-sign for dealer-built swap PSETs. The verification
+      // gate runs first — a tampered PSET never reaches the signer. addDetails
+      // is called inside verifyDealerPset, so the PSET is enriched and ready
+      // for signing. sign() consumes the Pset (WASM ownership) and returns a
+      // new one; finalize() converts partial sigs to final_script_witness.
+      const net = lwkNetwork(lwk, req.network);
+      const signer = new lwk.Signer(new lwk.Mnemonic(req.mnemonic), net);
+      const entry = await ensureWollet(lwk, req.descriptor, req.network);
+      const t = req.terms;
+      const pset = new lwk.Pset(req.pset);
+      const verifyResult = verifyDealerPset(pset, entry.wollet, {
+        sendAssetId: t.sendAssetId,
+        sendAmount: BigInt(t.sendAmount),
+        recvAssetId: t.recvAssetId,
+        minRecvAmount: BigInt(t.minRecvAmount),
+        maxFee: BigInt(t.maxFee),
+      });
+      if (!verifyResult.ok) {
+        const result: SignSwapPsetWireResult = { ok: false, reason: verifyResult.reason };
+        return result;
+      }
+      const signedPset = signer.sign(pset);
+      const finalizedPset = entry.wollet.finalize(signedPset);
+      const result: SignSwapPsetWireResult = {
+        ok: true,
+        pset: finalizedPset.toString(),
+        sent: verifyResult.sent.toString(),
+        received: verifyResult.received.toString(),
+        fee: verifyResult.fee.toString(),
+      };
+      return result;
     }
 
     case "getUtxos": {

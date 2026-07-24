@@ -68,7 +68,18 @@ export type EngineRequest =
     }
   // List the wallet's unspent outputs with their unblinding data (asset, value,
   // and both blinding factors) — what SideSwap's `start_quotes` needs per UTXO.
-  | { kind: "getUtxos"; descriptor: string; network: LiquidNetwork };
+  | { kind: "getUtxos"; descriptor: string; network: LiquidNetwork }
+  // Verify a dealer-built swap PSET, then sign + finalize it atomically. The
+  // verification gate (verifyDealerPset) runs first; if it fails the PSET is
+  // never signed. Returns the finalized PSET for SideSwap's `taker_sign`.
+  | {
+      kind: "signSwapPset";
+      descriptor: string;
+      mnemonic: string;
+      network: LiquidNetwork;
+      pset: string;
+      terms: VerifyDealerPsetTermsDTO;
+    };
 
 /** Wire form of swap terms for `verifyDealerPset`. Amounts are base-10 strings
  *  — BigInt isn't JSON-serializable across the chrome.runtime boundary. */
@@ -87,6 +98,12 @@ export interface VerifyDealerPsetTermsDTO {
  *  base-10 strings), or a rejection reason. */
 export type VerifyDealerPsetWireResult =
   | { ok: true; sent: string; received: string; fee: string }
+  | { ok: false; reason: string };
+
+/** Wire result of `signSwapPset`: the finalized PSET plus verification amounts
+ *  on success, or a rejection reason (verification or signing failure). */
+export type SignSwapPsetWireResult =
+  | { ok: true; pset: string; sent: string; received: string; fee: string }
   | { ok: false; reason: string };
 
 /** A wallet UTXO with its unblinding data. `value` is a base-10 string

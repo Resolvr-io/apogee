@@ -59,6 +59,12 @@ export function verifyDealerPset(
   wollet: Lwk.Wollet,
   terms: VerifyDealerPsetTerms,
 ): VerifyDealerPsetResult {
+  // Enrich the PSET with wallet input metadata (derivation paths, witness
+  // UTXOs) before reading balances. Dealer-built PSETs from SideSwap's
+  // get_quote lack this data; without addDetails, psetDetails returns empty
+  // balances and every check passes trivially (0 inflow, 0 outflow, 0 fee).
+  // Proven essential by the testnet spike (spikes/testnet-swap-spike.ts).
+  pset.addDetails(wollet);
   const balance = wollet.psetDetails(pset).balance();
   // Net per asset from the wallet's POV (negative = spent, positive = received).
   const balances = balance.balances().entries() as Map<string, bigint>;
