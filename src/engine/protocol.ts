@@ -55,7 +55,52 @@ export type EngineRequest =
   // override (absent = automatic). A pinned URL probes just that endpoint;
   // automatic probes waterfalls (primary) plus the Esplora fallbacks, returning
   // a per-provider breakdown so the badge can show "primary down, on fallback".
-  | { kind: "probeChainServer"; network: LiquidNetwork; esploraUrl?: string };
+  | { kind: "probeChainServer"; network: LiquidNetwork; esploraUrl?: string }
+  // Verify a dealer-built PSET (SideSwap `get_quote`) against the accepted
+  // quote before signing: fair receive to our address, no extra wallet-input
+  // drain, fee within cap. See `engine/verify-dealer-pset.ts`.
+  | {
+      kind: "verifyDealerPset";
+      descriptor: string;
+      network: LiquidNetwork;
+      pset: string;
+      terms: VerifyDealerPsetTermsDTO;
+    }
+  // List the wallet's unspent outputs with their unblinding data (asset, value,
+  // and both blinding factors) — what SideSwap's `start_quotes` needs per UTXO.
+  | { kind: "getUtxos"; descriptor: string; network: LiquidNetwork };
+
+/** Wire form of swap terms for `verifyDealerPset`. Amounts are base-10 strings
+ *  — BigInt isn't JSON-serializable across the chrome.runtime boundary. */
+export interface VerifyDealerPsetTermsDTO {
+  sendAssetId: string;
+  sendAmount: string;
+  recvAssetId: string;
+  minRecvAmount: string;
+  /** Required cap on the send-asset (L-BTC) network fee — bounds an L-BTC send
+   *  and is a harmless no-op for a USDt send. Required so the fee is never left
+   *  unbounded. See `verify-dealer-pset.ts`. */
+  maxFee: string;
+}
+
+/** Wire result of `verifyDealerPset`: ok plus the PSET-derived amounts (as
+ *  base-10 strings), or a rejection reason. */
+export type VerifyDealerPsetWireResult =
+  | { ok: true; sent: string; received: string; fee: string }
+  | { ok: false; reason: string };
+
+/** A wallet UTXO with its unblinding data. `value` is a base-10 string
+ *  (BigInt-safe over JSON); the blinding factors are hex. `redeemScript` is
+ *  omitted — Apogee wallets are P2WPKH (no redeem script); the swap flow sets
+ *  `redeem_script: null` for SideSwap. */
+export interface UtxoDTO {
+  txid: string;
+  vout: number;
+  asset: string; // hex asset id
+  assetBf: string; // hex asset blinding factor
+  value: string; // base-10
+  valueBf: string; // hex value blinding factor
+}
 
 /** Result of `descriptorInfo`: the master fingerprint embedded in a watch-only
  *  descriptor, and whether it targets mainnet (used to sanity-check the network). */
