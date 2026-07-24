@@ -251,6 +251,16 @@ export type WalletRequest =
       descriptor: string;
       label: string;
       network: LiquidNetwork;
+    }
+  // Instant swap via SideSwap dealer: sells `sendAmount` base units of
+  // `sendAssetId` for `recvAssetId`. The service worker creates the SideSwap
+  // client, runs the full orchestration, and disconnects — a single round-trip.
+  | {
+      type: "wallet/swap";
+      walletId?: string;
+      sendAssetId: string;
+      recvAssetId: string;
+      sendAmount: number; // base units of the send asset
     };
 
 /** What `wallet/create` returns: the persisted wallet + the phrase to back up. */
@@ -269,6 +279,15 @@ export interface PrepareSendResult {
 
 export interface SendResult {
   txid: string;
+}
+
+/** Result of an instant swap (SideSwap). Amounts are base-10 strings for
+ *  BigInt-safe transport across chrome.runtime. */
+export interface SwapResultDTO {
+  txid: string;
+  sent: string; // base-10, base units of the send asset
+  received: string; // base-10, base units of the receive asset
+  fee: string; // base-10, LBTC sats
 }
 
 /** Human-readable spend details for the Jade signing tab's review summary. */
