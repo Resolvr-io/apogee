@@ -187,6 +187,16 @@ export async function executeInstantSwap(
     throw new SwapError("either sendAmount or recvAmount must be specified");
   }
 
+  // Fail-closed: in receive-exact mode the dealer determines the send amount,
+  // so the user-reviewed send cap is the only independent upper bound. If the
+  // preview quote was never obtained (e.g. dealer was down), reject rather
+  // than falling back to uncapped dealer-derived amounts.
+  if (receiveExact && params.reviewedSendAmount == null) {
+    throw new SwapError(
+      "receive-exact swap requires a reviewed send amount from the preview quote"
+    );
+  }
+
   // 1. Get UTXOs and filter to send-asset only (prerequisite 2).
   const allUtxos = await engineCall<UtxoDTO[]>({
     kind: "getUtxos",

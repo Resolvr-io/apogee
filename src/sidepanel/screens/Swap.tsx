@@ -506,8 +506,8 @@ export function Swap({
         </p>
         <ErrorText>{error}</ErrorText>
         <div className="mt-3 flex flex-col gap-2">
-          <Button onClick={executeSwap} disabled={busy}>
-            {busy ? <Spinner /> : "Confirm swap"}
+          <Button onClick={executeSwap} disabled={busy || !quote}>
+            {busy ? <Spinner /> : quote ? "Confirm swap" : "Waiting for quote\u2026"}
           </Button>
           <Button variant="secondary" onClick={() => setStep("form")} disabled={busy}>
             Back

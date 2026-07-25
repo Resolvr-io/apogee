@@ -19,6 +19,7 @@ import {
   orientPair,
   policyAssetId,
   filterSendAssetUtxos,
+  executeInstantSwap,
 } from "./orchestrator";
 import {
   LBTC_MAINNET_ASSET_ID,
@@ -356,5 +357,51 @@ describe("end-to-end: UTXO asset matches server expectation for all swap directi
 
   it("arbitrary→LBTC mainnet", () => {
     verifyUtxoAssetMatch(SOME_OTHER_ASSET, LBTC_MAINNET, MAINNET);
+  });
+});
+
+// ---- fail-closed: receive-exact without reviewed send amount ---------------
+
+describe("executeInstantSwap — fail-closed on missing reviewedSendAmount", () => {
+  it("rejects receive-exact swap when reviewedSendAmount is absent", async () => {
+    // No deps needed — the guard fires before any engine/client calls.
+    const params = {
+      sendAssetId: LBTC_MAINNET,
+      recvAssetId: USDT,
+      recvAmount: 100_000_000,
+      maxFee: 1000n,
+      // reviewedSendAmount intentionally omitted
+    };
+    const fakeDeps = {
+      client: {} as never,
+      engineCall: (() => { throw new Error("should not be called"); }) as never,
+      descriptor: "",
+      network: MAINNET,
+      mnemonic: "",
+    };
+    await expect(executeInstantSwap(params, fakeDeps))
+      .rejects.toThrow("receive-exact swap requires a reviewed send amount");
+  });
+
+  it("does not reject sell-exact swap when reviewedSendAmount is absent", async () => {
+    // Sell-exact should pass the guard (it will fail later on missing UTXOs,
+    // which confirms the guard didn't fire).
+    const params = {
+      sendAssetId: LBTC_MAINNET,
+      recvAssetId: USDT,
+      sendAmount: 100_000,
+      maxFee: 1000n,
+      // reviewedSendAmount intentionally omitted — fine for sell-exact
+    };
+    const fakeDeps = {
+      client: {} as never,
+      engineCall: (() => Promise.resolve([])) as never,
+      descriptor: "",
+      network: MAINNET,
+      mnemonic: "",
+    };
+    // Should fail on "no UTXOs found", not on the reviewedSendAmount guard
+    await expect(executeInstantSwap(params, fakeDeps))
+      .rejects.toThrow("no UTXOs found");
   });
 });
