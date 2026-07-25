@@ -4,6 +4,8 @@
 // plain Node environment. wallet-client re-exports everything here, so existing
 // `from "@/sidepanel/wallet-client"` imports keep working.
 
+import { LOW_BALANCE_PREFIX } from "@/sideswap/constants";
+
 /** Surface an unknown thrown value as a message string. */
 export function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -65,11 +67,11 @@ export type SwapErrorKind =
   | "stale-quote" // gate rejected or dealer re-quoted — the reviewed quote is no longer trustworthy
   | "unknown"; // anything else — treat conservatively, like stale-quote
 
-/** The dealer's fillable amount (base units) from a LowBalance refusal, or null.
- *  The service worker encodes it as a `:<amount>` suffix because only an Error's
- *  message survives the SW→UI hop (see `rethrowSwapError` in background/index.ts). */
+/** The dealer's fillable amount (base units) from a genuine LowBalance refusal,
+ *  or null. Anchored (`^`) on `LOW_BALANCE_PREFIX`, so a dealer `error_msg`
+ *  echoing the marker mid-string can't inject a fabricated amount. */
 export function lowBalanceAvailable(err: unknown): bigint | null {
-  const m = /dealer returned LowBalance:(\d+)/.exec(errMessage(err));
+  const m = new RegExp(`^${LOW_BALANCE_PREFIX}(\\d+)$`).exec(errMessage(err));
   return m ? BigInt(m[1]) : null;
 }
 
@@ -82,13 +84,15 @@ export function swapErrorKind(err: unknown): SwapErrorKind {
   // Throttle refusals come from verifyPassword sharing the unlock throttle.
   if (isUnlockBlocked(err) || throttledUntil(err) !== null) return "auth";
   if (raw.startsWith("Enter your password to swap")) return "auth";
+  if (raw.startsWith(LOW_BALANCE_PREFIX)) return "stale-quote";
   const m = raw.toLowerCase();
   // Gate rejections are prefixed by the orchestrator; dealer/quote failures mean
-  // the dealer's terms moved. Both invalidate the reviewed quote.
+  // the dealer's terms moved. Both invalidate the reviewed quote. (A dealer
+  // echoing any of these substrings only ever lands itself in `stale-quote`,
+  // which is the conservative kind — the quote is dropped either way.)
   if (
     m.includes("verification gate rejected") ||
     m.includes("dealer error") ||
-    m.includes("lowbalance") ||
     m.includes("timed out waiting for dealer quote")
   ) {
     return "stale-quote";
@@ -102,13 +106,14 @@ export function swapErrorMessage(err: unknown): string {
   // Password throttle/lockout already has friendly, cooldown-aware copy.
   if (isUnlockBlocked(err) || throttledUntil(err) !== null) return unlockErrMessage(err);
   if (raw.startsWith("Enter your password to swap")) return raw; // already friendly
-  const m = raw.toLowerCase();
-  if (m.includes("lowbalance")) {
-    // Never leak the machine-readable `:<amount>` suffix. The caller renders the
-    // fillable figure itself via `lowBalanceAvailable` (it needs asset precision
-    // to format), so this stays generic.
+  // Anchored on the SW's marker, so a dealer `error_msg` echoing "LowBalance"
+  // can't force this copy onto an unrelated failure. Never leaks the numeric
+  // suffix — the caller renders the figure via `lowBalanceAvailable` (it needs
+  // asset precision to format), so this stays generic.
+  if (raw.startsWith(LOW_BALANCE_PREFIX)) {
     return "The dealer can't fill a swap this size right now. Try a smaller amount.";
   }
+  const m = raw.toLowerCase();
   if (m.includes("timed out waiting for dealer quote"))
     return "The dealer didn't respond in time — please try again.";
   if (m.includes("dealer error")) return "The dealer declined the swap. Try again.";

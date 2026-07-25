@@ -62,7 +62,21 @@ export function Swap({
   // wallet re-confirms the password (same gate as the Send screen).
   const [autoLock, setAutoLock] = useState(15);
   const [password, setPassword] = useState("");
-  const needsPassword = autoLock === 0;
+  // The service worker is the authority on whether a step-up is required (it reads
+  // auto-lock from storage itself). This local flag is advisory, and `getAutoLock`
+  // can fail — leaving it at the default 15 for a wallet that is actually
+  // never-auto-lock. In that case the SW rejects with the step-up prompt, so also
+  // treat that error as "password required": otherwise the user is told to enter a
+  // password with no field to type it into, and every retry fails identically.
+  const stepUpRejected = error.startsWith("Enter your password to swap");
+  // Renders the field / gates Confirm. Includes the SW-rejected case so the UI can
+  // always satisfy the SW's demand.
+  const needsPassword = autoLock === 0 || stepUpRejected;
+  // Pre-flight check only. Deliberately NOT `needsPassword`: if it were, the
+  // rejection error would latch the local guard on and short-circuit before the
+  // SW is consulted, so a wallet whose auto-lock is genuinely non-zero could never
+  // clear the error. The SW re-checks regardless, so this is purely a UX shortcut.
+  const requiresPasswordLocally = autoLock === 0;
   // True when the review-screen quote preview failed — surfaced with a Retry
   // instead of leaving the user on a disabled "Waiting for quote…" button.
   const [quoteError, setQuoteError] = useState(false);
@@ -390,7 +404,7 @@ export function Swap({
 
   async function executeSwap() {
     setError("");
-    if (needsPassword && !password) return setError("Enter your password to swap.");
+    if (requiresPasswordLocally && !password) return setError("Enter your password to swap.");
     // Never submit against a lapsed quote — taker_sign would reject the dead
     // quote_id anyway, and the attempt would consume a password step-up.
     if (quoteExpired) return setError("This quote expired. Get a fresh quote to continue.");
@@ -409,7 +423,10 @@ export function Swap({
         opts.reviewedSendAmount = quote.sendAmount;
         opts.reviewedRecvAmount = quote.recvAmount;
       }
-      if (needsPassword) opts.password = password;
+      // Send whatever the user typed. Keyed on `password` rather than the advisory
+      // `needsPassword` so a step-up the panel didn't predict (stale/failed
+      // getAutoLock) still gets satisfied; the SW ignores it when not required.
+      if (password) opts.password = password;
       const res = await wallet.swap(sendId, recvId, opts);
       setResult(res);
       setStep("done");

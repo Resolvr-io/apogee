@@ -30,7 +30,7 @@ import {
   SwapError,
   SwapLowBalanceError,
 } from "@/sideswap/orchestrator";
-import { SWAP_MAX_FEE_SATS } from "@/sideswap/constants";
+import { LOW_BALANCE_PREFIX, SWAP_MAX_FEE_SATS } from "@/sideswap/constants";
 import type {
   AddressDTO,
   ApprovalRequest,
@@ -265,12 +265,16 @@ async function engine<T>(req: EngineRequest): Promise<T> {
  *
  *  Only `err.message` survives that hop (the router serializes with `errMsg`),
  *  so a `SwapLowBalanceError`'s `available` field would be lost. Fold it into the
- *  message as a machine-readable suffix the side panel parses back out — that's
- *  what lets the UI say how much the dealer CAN fill instead of a bare
- *  "not enough balance". Keep the prefix in sync with `swapErrorMessage`. */
+ *  message behind `LOW_BALANCE_PREFIX` (see sideswap/constants.ts), which the side
+ *  panel parses back out — that's what lets the UI say how much the dealer CAN
+ *  fill instead of a bare "not enough balance". The marker is emitted ONLY here,
+ *  so the panel's anchored parse can't be spoofed by dealer-supplied text. */
 function rethrowSwapError(e: unknown): never {
   if (e instanceof SwapLowBalanceError) {
-    throw new SwapError(`dealer returned LowBalance:${e.available.toString()}`);
+    // Marker-prefixed and nothing else, so the panel's anchored parse can trust
+    // it. A dealer's own text always arrives as `dealer error: <error_msg>`, so
+    // it can never occupy position 0 and fake a LowBalance refusal.
+    throw new SwapError(`${LOW_BALANCE_PREFIX}${e.available.toString()}`);
   }
   if (e instanceof SwapError) throw e;
   throw e instanceof Error ? e : new Error(String(e));
