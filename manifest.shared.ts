@@ -32,6 +32,9 @@ export function hostPermissions(mode: string): string[] {
     "https://api.coingecko.com/*",
     "https://api.coinpaprika.com/*",
     "https://blockchain.info/*",
+    // Also a fallbackRate source: quotes every FIAT_OPTIONS currency in one
+    // keyless call, so it widens the median's margin when CoinGecko is rate-limited.
+    "https://mempool.space/*",
     // SideSwap dealer (instant swaps): WebSocket (wss://) is covered by the
     // https host permission in Chrome MV3.
     "https://*.sideswap.io/*",
