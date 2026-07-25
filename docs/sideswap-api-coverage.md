@@ -33,6 +33,10 @@ the action named in `params`. Four actions exist, plus an async `quote` notifica
 | `LowBalance.available` | ✅ | Surfaced as "the dealer can currently fill up to X" |
 | `fixed_fee` / `server_fee` | ❌ | **Deferred** — see below |
 
+`get_quote` returns its own, shorter `ttl` alongside the PSET; that one is unused. The countdown
+is driven by the quote notification's `Success.ttl`, which is the window the user is actually
+deciding within on the review screen.
+
 ## Deferred, with rationale
 
 ### 1. Dealer fee disclosure (`fixed_fee` / `server_fee`) — deferred, pending copy
