@@ -17,7 +17,7 @@
 //      an independent estimate (feerate × vsize, or a fixed sane ceiling) —
 //      never from the dealer's quote or PSET.
 
-import type { SideSwapClient, SideSwapUtxo, SideSwapQuoteSuccess, SideSwapAssetPair, SideSwapAssetType, SideSwapTradeDir } from "./client";
+import type { SideSwapClient, SideSwapUtxo, SideSwapQuoteSuccess, SideSwapAssetType, SideSwapTradeDir } from "./client";
 import type { EngineRequest, UtxoDTO, VerifyDealerPsetTermsDTO, SignSwapPsetWireResult } from "@/engine/protocol";
 import type { LiquidNetwork } from "@/keystore/keystore";
 import { LBTC_MAINNET_ASSET_ID, LBTC_TESTNET_ASSET_ID } from "@/lib/asset-registry";
@@ -25,11 +25,23 @@ import { LBTC_MAINNET_ASSET_ID, LBTC_TESTNET_ASSET_ID } from "@/lib/asset-regist
 // ---- public types --------------------------------------------------------
 
 /** Independent fee cap + swap parameters. The caller is responsible for
- *  ensuring `maxFee` is NOT derived from dealer data. */
+ *  ensuring `maxFee` is NOT derived from dealer data.
+ *
+ *  Two quoting modes:
+ *  - **Sell-exact** (`sendAmount` set): "I want to sell exactly X base units."
+ *    The dealer determines how much quote asset you receive.
+ *  - **Receive-exact** (`recvAmount` set): "I want to receive exactly Y quote
+ *    units." The dealer determines how much base asset you must send. This is
+ *    what SideSwap's own app uses — the user types $1 USDT and receives $1. */
 export interface SwapParams {
   sendAssetId: string;
   recvAssetId: string;
-  sendAmount: number;
+  /** Sell-exact: base units of the send asset to sell. Mutually exclusive
+   *  with `recvAmount` — exactly one must be set. */
+  sendAmount?: number;
+  /** Receive-exact: base units of the receive asset the user wants. The dealer
+   *  calculates the required send amount. */
+  recvAmount?: number;
   /** Required cap on the send-asset (L-BTC) network fee, in base units.
    *  MUST be an independent estimate — see module docs. */
   maxFee: bigint;
@@ -58,57 +70,9 @@ export interface SwapResult {
 
 export class SwapError extends Error {}
 
-// ---- pair orientation -----------------------------------------------------
-
-/** The LBTC asset id for a given network. */
-function lbtcAssetId(network: LiquidNetwork): string {
-  return network === "liquid" ? LBTC_MAINNET_ASSET_ID : LBTC_TESTNET_ASSET_ID;
-}
-
-/** Result of orienting an asset pair for SideSwap. The dealer requires LBTC
- *  to always be the `base` asset. This function computes the correct wire
- *  params and returns a mapper for translating dealer amounts back to
- *  send/receive. */
-interface OrientedPair {
-  asset_pair: SideSwapAssetPair;
-  asset_type: SideSwapAssetType;
-  trade_dir: SideSwapTradeDir;
-  /** Map dealer quote amounts (always in base/quote frame) back to the
-   *  caller's send/receive frame. */
-  mapAmounts: (baseAmount: number, quoteAmount: number) => { sent: number; received: number };
-}
-
-/** Orient the pair so LBTC is always base. For sell-exact mode (the only
- *  mode currently supported), trade_dir is always "Sell". */
-function orientPair(
-  sendAssetId: string,
-  recvAssetId: string,
-  network: LiquidNetwork,
-): OrientedPair {
-  const lbtc = lbtcAssetId(network);
-  const sendingLbtc = sendAssetId === lbtc;
-
-  if (sendingLbtc) {
-    return {
-      asset_pair: { base: lbtc, quote: recvAssetId },
-      asset_type: "Base",
-      trade_dir: "Sell",
-      mapAmounts: (baseAmount, quoteAmount) => ({ sent: baseAmount, received: quoteAmount }),
-    };
-  }
-
-  return {
-    asset_pair: { base: lbtc, quote: sendAssetId },
-    asset_type: "Quote",
-    trade_dir: "Sell",
-    mapAmounts: (baseAmount, quoteAmount) => ({ sent: quoteAmount, received: baseAmount }),
-  };
-}
-
-/** Rate preview returned by previewSwapQuote. */
-export interface SwapQuotePreview {
-  sentAmount: number;
-  receivedAmount: number;
+export interface SwapQuotePreviewResult {
+  sendAmount: bigint;
+  recvAmount: bigint;
 }
 
 // ---- result of the atomic signSwapPset engine call -----------------------
@@ -124,7 +88,7 @@ export interface SwapQuotePreview {
 
 /** Filter wallet UTXOs to the send-asset only and map to SideSwap wire format.
  *  Apogee wallets are P2WPKH — no redeem script, so `redeem_script` is null. */
-function filterSendAssetUtxos(utxos: UtxoDTO[], sendAssetId: string): SideSwapUtxo[] {
+export function filterSendAssetUtxos(utxos: UtxoDTO[], sendAssetId: string): SideSwapUtxo[] {
   return utxos
     .filter((u) => u.asset === sendAssetId)
     .map((u) => ({
@@ -136,6 +100,62 @@ function filterSendAssetUtxos(utxos: UtxoDTO[], sendAssetId: string): SideSwapUt
       value_bf: u.valueBf,
       redeem_script: null,
     }));
+}
+
+// ---- SideSwap pair orientation -------------------------------------------
+
+/** Policy asset hex for a given network. */
+export function policyAssetId(network: LiquidNetwork): string {
+  return network === "liquid" ? LBTC_MAINNET_ASSET_ID : LBTC_TESTNET_ASSET_ID;
+}
+
+/** Build a correctly-oriented SideSwap asset pair and trade direction.
+ *
+ *  SideSwap requires `base` to always be the policy asset (LBTC). The `quote`
+ *  is the other asset.
+ *
+ *  `trade_dir` is relative to `asset_type` (NOT to the LBTC direction):
+ *  - "Sell" = "I am selling the `asset_type` asset" (sell-exact mode)
+ *  - "Buy"  = "I am buying the `asset_type` asset" (receive-exact mode)
+ *
+ *  `asset_type` indicates which side the `amount` in `start_quotes` refers to.
+ *  In sell-exact mode it's the send side; in receive-exact mode it's the
+ *  receive side. The value is "Base" when that side is LBTC, "Quote" otherwise. */
+export function orientPair(
+  sendAssetId: string,
+  recvAssetId: string,
+  network: LiquidNetwork,
+  receiveExact: boolean = false,
+): {
+  asset_pair: { base: string; quote: string };
+  trade_dir: SideSwapTradeDir;
+  asset_type: SideSwapAssetType;
+} {
+  const policy = policyAssetId(network);
+  const sellingLbtc = sendAssetId === policy;
+
+  // base is always LBTC, quote is the other asset.
+  const asset_pair = sellingLbtc
+    ? { base: sendAssetId, quote: recvAssetId }
+    : { base: recvAssetId, quote: sendAssetId };
+  // trade_dir is relative to asset_type: "Sell" = selling the asset_type
+  // asset, "Buy" = buying it. In sell-exact mode the user is always selling;
+  // in receive-exact mode, always buying.
+  const trade_dir: SideSwapTradeDir = receiveExact ? "Buy" : "Sell";
+
+  // asset_type tells SideSwap which side the `amount` field refers to.
+  // In sell-exact mode, the amount is the send side.
+  // In receive-exact mode, the amount is the receive side.
+  let asset_type: SideSwapAssetType;
+  if (receiveExact) {
+    // Amount is the receive side. Is the receive asset base (LBTC) or quote?
+    asset_type = recvAssetId === policy ? "Base" : "Quote";
+  } else {
+    // Amount is the send side. Is the send asset base (LBTC) or quote?
+    asset_type = sendAssetId === policy ? "Base" : "Quote";
+  }
+
+  return { asset_pair, trade_dir, asset_type };
 }
 
 // ---- orchestration -------------------------------------------------------
@@ -150,7 +170,13 @@ export async function executeInstantSwap(
   deps: SwapDeps,
 ): Promise<SwapResult> {
   const { client, engineCall, descriptor, network, mnemonic } = deps;
-  const { sendAssetId, recvAssetId, sendAmount, maxFee } = params;
+  const { sendAssetId, recvAssetId, maxFee } = params;
+
+  // Determine quoting mode: receive-exact or sell-exact.
+  const receiveExact = params.recvAmount != null;
+  if (!receiveExact && params.sendAmount == null) {
+    throw new SwapError("either sendAmount or recvAmount must be specified");
+  }
 
   // 1. Get UTXOs and filter to send-asset only (prerequisite 2).
   const allUtxos = await engineCall<UtxoDTO[]>({
@@ -179,13 +205,17 @@ export async function executeInstantSwap(
     index: receiveResult.index + 1,
   });
 
-  // 3. Start quotes with filtered UTXOs, oriented so LBTC is always base.
-  const oriented = orientPair(sendAssetId, recvAssetId, network);
+  // 3. Start quotes with filtered UTXOs. orientPair ensures the asset pair
+  //    has LBTC as base (SideSwap convention) and sets trade_dir/asset_type
+  //    based on the swap direction and quoting mode.
+  const { asset_pair, trade_dir, asset_type } = orientPair(
+    sendAssetId, recvAssetId, network, receiveExact,
+  );
   const startResult = await client.startQuotes({
-    asset_pair: oriented.asset_pair,
-    asset_type: oriented.asset_type,
-    amount: sendAmount,
-    trade_dir: oriented.trade_dir,
+    asset_pair,
+    asset_type,
+    amount: receiveExact ? params.recvAmount! : params.sendAmount!,
+    trade_dir,
     utxos: swapUtxos,
     receive_address: receiveResult.address,
     change_address: changeResult.address,
@@ -201,12 +231,33 @@ export async function executeInstantSwap(
 
   // 6. Atomic verify + sign + finalize in one engine call (prerequisite 1).
   //    The maxFee cap is the caller's independent estimate (prerequisite 3).
-  //    Map the dealer's base/quote amounts back to send/receive.
-  const amounts = oriented.mapAmounts(success.base_amount, success.quote_amount);
-  const minRecv = params.minRecvAmount ?? BigInt(amounts.received);
+  //
+  //    SideSwap's base_amount/quote_amount always refer to the pair's base
+  //    (LBTC) and quote respectively. Map to send/recv based on which asset
+  //    the user is sending: if sending base (LBTC), send=base, recv=quote;
+  //    if sending quote (e.g. USDt), send=quote, recv=base.
+  const sendIsBase = sendAssetId === policyAssetId(network);
+  const quotedSendAmt = BigInt(Math.round(
+    sendIsBase ? success.base_amount : success.quote_amount,
+  ));
+  const quotedRecvAmt = BigInt(Math.round(
+    sendIsBase ? success.quote_amount : success.base_amount,
+  ));
+  // Use the original sendAmount (what the user offered) for sell-exact, or
+  // the dealer's quoted send amount for receive-exact (user didn't specify).
+  const effectiveSendAmount = receiveExact
+    ? quotedSendAmt
+    : BigInt(params.sendAmount!);
+  // Default slippage tolerance: 3%. The dealer may re-price between the quote
+  // notification and the PSET construction, so the exact quote amount is too
+  // tight. Callers can override with an explicit minRecvAmount.
+  const defaultMinRecv = receiveExact
+    ? BigInt(params.recvAmount!)
+    : quotedRecvAmt * 97n / 100n;
+  const minRecv = params.minRecvAmount ?? defaultMinRecv;
   const terms: VerifyDealerPsetTermsDTO = {
     sendAssetId,
-    sendAmount: BigInt(amounts.sent).toString(),
+    sendAmount: effectiveSendAmount.toString(),
     recvAssetId,
     minRecvAmount: minRecv.toString(),
     maxFee: maxFee.toString(),
@@ -236,16 +287,18 @@ export async function executeInstantSwap(
   };
 }
 
-/** Fetch a quote preview for rate display without executing the swap.
- *  Connects to SideSwap, starts quotes, waits for the first viable quote,
- *  then disconnects. Returns the expected send/receive amounts. */
+/** Fetch a dealer quote preview — steps 1-4 only (UTXOs → startQuotes →
+ *  waitForQuote). No PSET fetch, no signing, no broadcast. Returns the
+ *  estimated receive amount from the dealer's live quote. */
 export async function previewSwapQuote(
-  params: SwapParams,
-  deps: SwapDeps,
-): Promise<SwapQuotePreview> {
+  params: Omit<SwapParams, "maxFee" | "minRecvAmount">,
+  deps: Pick<SwapDeps, "client" | "engineCall" | "descriptor" | "network">,
+): Promise<SwapQuotePreviewResult> {
   const { client, engineCall, descriptor, network } = deps;
-  const { sendAssetId, recvAssetId, sendAmount } = params;
+  const { sendAssetId, recvAssetId } = params;
+  const receiveExact = params.recvAmount != null;
 
+  // 1. Get UTXOs and filter to send-asset only.
   const allUtxos = await engineCall<UtxoDTO[]>({
     kind: "getUtxos",
     descriptor,
@@ -257,6 +310,7 @@ export async function previewSwapQuote(
     throw new SwapError(`no UTXOs found for send asset ${sendAssetId}`);
   }
 
+  // 2. Get receive and change addresses.
   const receiveResult = await engineCall<{ address: string; index: number }>({
     kind: "getAddress",
     descriptor,
@@ -269,27 +323,37 @@ export async function previewSwapQuote(
     index: receiveResult.index + 1,
   });
 
-  const oriented = orientPair(sendAssetId, recvAssetId, network);
+  // 3. Start quotes — same pair orientation as executeInstantSwap.
+  const { asset_pair, trade_dir, asset_type } = orientPair(
+    sendAssetId, recvAssetId, network, receiveExact,
+  );
   const startResult = await client.startQuotes({
-    asset_pair: oriented.asset_pair,
-    asset_type: oriented.asset_type,
-    amount: sendAmount,
-    trade_dir: oriented.trade_dir,
+    asset_pair,
+    asset_type,
+    amount: receiveExact ? params.recvAmount! : params.sendAmount!,
+    trade_dir,
     utxos: swapUtxos,
     receive_address: receiveResult.address,
     change_address: changeResult.address,
   });
 
+  // 4. Wait for the first quote.
   const success = await waitForQuote(client, startResult.quote_sub_id);
-  const amounts = oriented.mapAmounts(success.base_amount, success.quote_amount);
 
-  return { sentAmount: amounts.sent, receivedAmount: amounts.received };
+  // Map base_amount/quote_amount to send/recv based on which asset the
+  // user is sending: base (LBTC) or quote (e.g. USDt).
+  const sendIsBase = sendAssetId === policyAssetId(network);
+  return {
+    sendAmount: BigInt(Math.round(sendIsBase ? success.base_amount : success.quote_amount)),
+    recvAmount: BigInt(Math.round(sendIsBase ? success.quote_amount : success.base_amount)),
+  };
 }
 
 // ---- helpers -------------------------------------------------------------
 
 /** Await the first `Success` quote for a given `quote_sub_id`. Rejects on
- *  `Error` status, or after a 20 s timeout. */
+ *  `Error` or `LowBalance` status, or after a 20 s timeout. Returns the
+ *  Success payload directly so callers don't need to narrow the union. */
 function waitForQuote(
   client: SideSwapClient,
   quoteSubId: number,

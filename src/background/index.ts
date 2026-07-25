@@ -7,11 +7,24 @@
 //
 // Auto-lock alarms and provider/prompt orchestration land in later tasks.
 
+// Vite's dynamic-import preload helper references `window.dispatchEvent()` in
+// its error path. The MV3 service worker has no `window` global — only `self` —
+// so a failed dynamic import crashes with "window is not defined" before the
+// real error surfaces. Alias `window` to `self` to let the helper run (the
+// preloadError event is a no-op here; the throw still propagates).
+if (typeof window === "undefined") {
+  (self as unknown as { window: typeof self }).window = self;
+}
+
 import type { LiquidNetwork } from "@/keystore/keystore";
 import * as keystore from "@/keystore/keystore";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "@/lib/debug";
 import { SCAN_STATE_DB } from "@/engine/protocol";
 import { browser } from "@/lib/ext";
+// Static imports — dynamic import() is disallowed in the MV3 service worker
+// global scope per the HTML spec (Chrome blocks it at runtime).
+import { SideSwapClient } from "@/sideswap/client";
+import { executeInstantSwap, previewSwapQuote, SwapError } from "@/sideswap/orchestrator";
 import type {
   AddressDTO,
   ApprovalRequest,
@@ -28,7 +41,7 @@ import type {
   ProviderRequest,
   ProviderStatus,
   SwapResultDTO,
-  SwapQuoteResultDTO,
+  SwapQuotePreview,
   SendResult,
   SendReview,
   SyncResult,
@@ -530,8 +543,6 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       const mnemonic = keystore.getMnemonic(info.id);
       // The SideSwap client lives only for this swap call — connect, execute,
       // disconnect. A WebSocket in the service worker is fine (MV3 background).
-      const { SideSwapClient } = await import("@/sideswap/client");
-      const { executeInstantSwap, SwapError } = await import("@/sideswap/orchestrator");
       const client = new SideSwapClient(info.network);
       await client.connect();
       try {
@@ -545,6 +556,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
             sendAssetId: msg.sendAssetId,
             recvAssetId: msg.recvAssetId,
             sendAmount: msg.sendAmount,
+            recvAmount: msg.recvAmount,
             maxFee: MAX_FEE_SATS,
           },
           {
@@ -576,33 +588,27 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       if (info.signer === "watch") {
         throw new Error("Watch-only wallets can't swap.");
       }
-      const mnemonic = keystore.getMnemonic(info.id);
-      const { SideSwapClient } = await import("@/sideswap/client");
-      const { previewSwapQuote, SwapError } = await import("@/sideswap/orchestrator");
       const client = new SideSwapClient(info.network);
       await client.connect();
       try {
-        const MAX_FEE_SATS = 1000n;
         const preview = await previewSwapQuote(
           {
             sendAssetId: msg.sendAssetId,
             recvAssetId: msg.recvAssetId,
             sendAmount: msg.sendAmount,
-            maxFee: MAX_FEE_SATS,
+            recvAmount: msg.recvAmount,
           },
           {
             client,
             engineCall: engine,
             descriptor: info.descriptor,
             network: info.network,
-            mnemonic,
           },
         );
-        const dto: SwapQuoteResultDTO = {
-          sentAmount: preview.sentAmount,
-          receivedAmount: preview.receivedAmount,
-        };
-        return dto;
+        return {
+          sendAmount: preview.sendAmount.toString(),
+          recvAmount: preview.recvAmount.toString(),
+        } satisfies SwapQuotePreview;
       } catch (e) {
         if (e instanceof SwapError) throw e;
         throw e instanceof Error ? e : new Error(String(e));

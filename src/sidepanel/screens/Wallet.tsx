@@ -174,6 +174,8 @@ export function Wallet({
   const [watchInfo, setWatchInfo] = useState(false); // watch-only explainer modal
   // Asset preselected for the Send screen (set when launching from a token row).
   const [sendAssetId, setSendAssetId] = useState<string | null>(null);
+  // Asset preselected for the Swap screen (set when launching from a token row).
+  const [swapAssetId, setSwapAssetId] = useState<string | null>(null);
   const [hidden, toggleHidden] = useHideBalance();
   const [denom, setDenom, cycleDenom] = useDenomination();
   const [fiat, setFiat] = useFiat();
@@ -450,7 +452,12 @@ export function Wallet({
             sync={sync}
             assets={assets}
             network={active.network}
-            onDone={() => onView("home")}
+            unit={denom === "btc" ? "btc" : "sats"}
+            initialSendAssetId={swapAssetId ?? undefined}
+            onDone={() => {
+              setSwapAssetId(null);
+              onView("home");
+            }}
           />
         )}
         {view === "settings" && (
@@ -537,34 +544,48 @@ export function Wallet({
         <div className="mt-3 flex gap-2">
           {watchOnly ? (
             // Watch-only wallets hold no key: the Send slot becomes a dashed
-            // marker that opens an explainer on tap (matches the button width).
+            // marker that opens an explainer on tap.
             <button
               type="button"
               onClick={() => setWatchInfo(true)}
               aria-label="Why is there no Send?"
-              className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-md border border-dashed border-[color:var(--border-hover)] px-4 text-[12.5px] font-semibold uppercase tracking-[0.08em] text-[color:var(--text-subtle)] transition hover:border-[color:var(--accent-strong)] hover:text-[color:var(--text-secondary)]"
+              title="Watch-only"
+              className="inline-flex h-12 flex-1 items-center justify-center rounded-full border border-dashed border-[color:var(--border-hover)] text-[color:var(--text-subtle)] transition hover:border-[color:var(--accent-strong)] hover:text-[color:var(--text-secondary)]"
             >
-              <Telescope size={16} /> Watch-only
+              <Telescope size={18} />
             </button>
           ) : (
             <Button
-              className="flex-1"
+              className="h-12 flex-1 rounded-full px-0"
+              aria-label="Send"
+              title="Send"
               onClick={() => {
                 setSendAssetId(null);
                 onView("send");
               }}
             >
-              <ArrowUp size={16} /> Send
+              <ArrowUp size={18} strokeWidth={2.5} />
             </Button>
           )}
-          <Button variant="secondary" className="flex-1" onClick={() => onView("receive")}>
-            <ArrowDown size={16} /> Receive
-          </Button>
           {!watchOnly && (
-            <Button variant="secondary" className="flex-1" onClick={() => onView("swap")}>
-              <ArrowLeftRight size={16} /> Swap
+            <Button
+              variant="secondary"
+              className="h-12 flex-1 rounded-full px-0"
+              aria-label="Swap"
+              title="Swap"
+              onClick={() => onView("swap")}
+            >
+              <ArrowLeftRight size={18} strokeWidth={2.5} />
             </Button>
           )}
+          <Button
+            className="h-12 flex-1 rounded-full px-0"
+            aria-label="Receive"
+            title="Receive"
+            onClick={() => onView("receive")}
+          >
+            <ArrowDown size={18} strokeWidth={2.5} />
+          </Button>
         </div>
       </div>
 
@@ -590,6 +611,14 @@ export function Wallet({
               : (id) => {
                   setSendAssetId(id);
                   onView("send");
+                }
+          }
+          onSwap={
+            watchOnly
+              ? null
+              : (id) => {
+                  setSwapAssetId(id);
+                  onView("swap");
                 }
           }
         />
@@ -665,6 +694,7 @@ function Tokens({
   fiat,
   usdToFiat,
   onSend,
+  onSwap,
 }: {
   sync: SyncResult | null;
   hidden: boolean;
@@ -673,6 +703,7 @@ function Tokens({
   fiat: string;
   usdToFiat: number | null; // 1 USD in the display currency (null = unknown)
   onSend: ((assetId: string) => void) | null; // null → no send affordance (watch-only)
+  onSwap: ((assetId: string) => void) | null; // null → no swap affordance (watch-only)
 }) {
   const tokens = sync
     ? Object.entries(sync.balance).filter(([a, amt]) => a !== sync.policyAssetHex && amt > 0)
@@ -753,6 +784,16 @@ function Tokens({
                     <ArrowUp size={14} /> Send {label}
                   </Button>
                 )}
+                {onSwap && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => onSwap(asset)}
+                  >
+                    <ArrowLeftRight size={14} /> Swap {label}
+                  </Button>
+                )}
               </div>
             </details>
           );
@@ -787,6 +828,13 @@ function TxRow({
   const token = Object.entries(tx.assetDeltas ?? {}).find(
     ([id, d]) => id !== policyAssetHex && d !== 0,
   );
+
+  // Swap detection: one asset went out, another came in (opposite signs).
+  const isSwap =
+    token != null &&
+    tx.balanceChange !== 0 &&
+    ((tx.balanceChange > 0 && token[1] < 0) || (tx.balanceChange < 0 && token[1] > 0));
+
   const receive = token ? token[1] > 0 : tx.balanceChange >= 0;
   const pending = tx.height === null;
   const explorer = explorerTxUrl(network, tx.txid);
@@ -803,40 +851,84 @@ function TxRow({
         : formatSats(satsValue);
   const unitLabel = denom === "btc" ? "LBTC" : denom === "fiat" ? fiat : "sats";
 
-  let amountText: string;
-  if (token) {
-    const [id, delta] = token;
+  // Format a token amount with its label.
+  const tokenAmountText = (id: string, delta: number): string => {
     const info = assets[id];
     const label = KNOWN_ASSETS[id]?.label ?? info?.ticker ?? info?.name ?? shortenHex(id, 4, 4);
-    amountText = `${delta > 0 ? "+" : ""}${formatAssetAmount(delta, KNOWN_ASSETS[id]?.precision ?? info?.precision ?? null)} ${label}`;
-  } else {
+    return `${delta > 0 ? "+" : ""}${formatAssetAmount(delta, KNOWN_ASSETS[id]?.precision ?? info?.precision ?? null)} ${label}`;
+  };
+
+  // For swaps, compute both legs. "sent" is the outflow, "received" is the inflow.
+  let swapSentText: string | undefined;
+  let swapRecvText: string | undefined;
+  if (isSwap && token) {
+    const [tokenId, tokenDelta] = token;
+    if (tx.balanceChange < 0) {
+      // Sent LBTC, received token
+      swapSentText = `${lbtcAmount(tx.balanceChange)} ${unitLabel}`;
+      swapRecvText = tokenAmountText(tokenId, tokenDelta);
+    } else {
+      // Sent token, received LBTC
+      swapSentText = tokenAmountText(tokenId, tokenDelta);
+      swapRecvText = `+${lbtcAmount(tx.balanceChange)} ${unitLabel}`;
+    }
+  }
+
+  let amountText: string;
+  if (token && !isSwap) {
+    amountText = tokenAmountText(token[0], token[1]);
+  } else if (!isSwap) {
     amountText = `${receive ? "+" : ""}${lbtcAmount(tx.balanceChange)}`;
+  } else {
+    amountText = ""; // not used for swap rows
   }
   return (
     <details className="drawer">
       <summary className="flex items-center gap-2.5 px-3 py-2">
         <span
-          aria-label={receive ? "Received" : "Sent"}
+          aria-label={isSwap ? "Swap" : receive ? "Received" : "Sent"}
           className={cn(
             "flex size-8 shrink-0 items-center justify-center rounded-full",
-            receive
-              ? "bg-[color:var(--success-bg)] text-[color:var(--success-text)]"
-              : "bg-[color:var(--danger-bg)] text-[color:var(--danger-text)]",
+            isSwap
+              ? "bg-[color:var(--accent-soft)] text-[color:var(--accent-strong)]"
+              : receive
+                ? "bg-[color:var(--success-bg)] text-[color:var(--success-text)]"
+                : "bg-[color:var(--danger-bg)] text-[color:var(--danger-text)]",
           )}
         >
-          {receive ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}
+          {isSwap ? <ArrowLeftRight size={16} /> : receive ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}
         </span>
-        <span className="text-sm text-[color:var(--text-primary)]">{formatRelative(tx.timestamp)}</span>
-        <span className="ml-auto flex items-center gap-2">
-          <span className={cn("text-sm text-[color:var(--text-strong)]", pending && "animate-pulse")}>
-            {hidden ? (
-              <HiddenValue count={3} size={8} className="text-[color:var(--text-subtle)]" />
-            ) : (
-              <TelemetryNumber value={amountText} glow={false} />
-            )}
-          </span>
-          <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
-        </span>
+        {isSwap ? (
+          <>
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="text-sm text-[color:var(--text-primary)]">{formatRelative(tx.timestamp)}</span>
+            </span>
+            <span className="ml-auto flex items-center gap-2">
+              <span className={cn("text-sm", pending && "animate-pulse")}>
+                {hidden ? (
+                  <HiddenValue count={3} size={8} className="text-[color:var(--text-subtle)]" />
+                ) : (
+                  <span className="text-[color:var(--text-strong)]">{swapRecvText}</span>
+                )}
+              </span>
+              <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="text-sm text-[color:var(--text-primary)]">{formatRelative(tx.timestamp)}</span>
+            <span className="ml-auto flex items-center gap-2">
+              <span className={cn("text-sm text-[color:var(--text-strong)]", pending && "animate-pulse")}>
+                {hidden ? (
+                  <HiddenValue count={3} size={8} className="text-[color:var(--text-subtle)]" />
+                ) : (
+                  <TelemetryNumber value={amountText} glow={false} />
+                )}
+              </span>
+              <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
+            </span>
+          </>
+        )}
       </summary>
       <div className="flex flex-col gap-2 border-t border-[color:var(--border-soft)] px-3 py-2 text-xs">
         <div className="flex items-center justify-between gap-3">
@@ -864,6 +956,12 @@ function TxRow({
         </div>
         <Row label="Time" value={formatTimestamp(tx.timestamp)} />
         <Row label="Status" value={pending ? "Unconfirmed" : `Block ${tx.height}`} />
+        {isSwap && swapSentText && swapRecvText && (
+          <>
+            <Row label="Delivered" value={swapSentText.replace(/^[+-]/, "")} />
+            <Row label="Received" value={swapRecvText.replace(/^\+/, "")} />
+          </>
+        )}
         <Row
           label="Fee"
           value={denom === "fiat" ? lbtcAmount(tx.fee) : `${lbtcAmount(tx.fee)} ${unitLabel}`}

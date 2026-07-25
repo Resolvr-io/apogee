@@ -252,24 +252,26 @@ export type WalletRequest =
       label: string;
       network: LiquidNetwork;
     }
-  // Instant swap via SideSwap dealer: sells `sendAmount` base units of
-  // `sendAssetId` for `recvAssetId`. The service worker creates the SideSwap
-  // client, runs the full orchestration, and disconnects — a single round-trip.
+  // Instant swap via SideSwap dealer. Specify EITHER `sendAmount` (sell exact)
+  // OR `recvAmount` (receive exact). When `recvAmount` is set, the dealer
+  // calculates the required send amount so the user receives exactly that much.
   | {
       type: "wallet/swap";
       walletId?: string;
       sendAssetId: string;
       recvAssetId: string;
-      sendAmount: number; // base units of the send asset
+      sendAmount?: number; // base units of the send asset (sell-exact mode)
+      recvAmount?: number; // base units of the receive asset (receive-exact mode)
     }
-  // Rate preview: fetch a SideSwap quote without executing the swap.
-  // Returns SwapQuoteResultDTO with the expected receive amount.
+  // Quote preview for a swap: connects to SideSwap, runs startQuotes, and
+  // returns the expected receive amount — no signing, no broadcast.
   | {
       type: "wallet/swapQuote";
       walletId?: string;
       sendAssetId: string;
       recvAssetId: string;
-      sendAmount: number; // base units of the send asset
+      sendAmount?: number; // base units of the send asset (sell-exact mode)
+      recvAmount?: number; // base units of the receive asset (receive-exact mode)
     };
 
 /** What `wallet/create` returns: the persisted wallet + the phrase to back up. */
@@ -299,10 +301,12 @@ export interface SwapResultDTO {
   fee: string; // base-10, LBTC sats
 }
 
-/** Rate preview result (SideSwap quote without execution). */
-export interface SwapQuoteResultDTO {
-  sentAmount: number; // base units of the send asset
-  receivedAmount: number; // base units of the receive asset
+/** Preview of a swap quote — no signing or broadcast. Amounts are the dealer's
+ *  live quote estimates; the actual amounts may differ at execution (the
+ *  verification gate protects against unfavorable changes). */
+export interface SwapQuotePreview {
+  sendAmount: string; // base-10, base units of the send asset (from dealer's base_amount)
+  recvAmount: string; // base-10, base units of the receive asset (from dealer's quote_amount)
 }
 
 /** Human-readable spend details for the Jade signing tab's review summary. */

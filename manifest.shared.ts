@@ -32,6 +32,9 @@ export function hostPermissions(mode: string): string[] {
     "https://api.coingecko.com/*",
     "https://api.coinpaprika.com/*",
     "https://blockchain.info/*",
+    // SideSwap dealer (instant swaps): WebSocket (wss://) is covered by the
+    // https host permission in Chrome MV3.
+    "https://*.sideswap.io/*",
     // Dev-only: localhost contract gateway / regtest Esplora. Excluded from
     // production builds so the shipped extension can't reach loopback.
     ...(mode === "development" ? ["http://localhost/*", "http://127.0.0.1/*"] : []),

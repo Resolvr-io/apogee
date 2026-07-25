@@ -43,6 +43,11 @@ export default defineConfig({
   ],
   build: {
     target: "esnext",
+    // Vite's module-preload polyfill injects a helper that references `window`
+    // and `document` — globals that don't exist in the MV3 service worker.
+    // Module preloading is pointless in an extension (all assets are bundled
+    // locally), so disable it entirely.
+    modulePreload: false,
     rollupOptions: {
       // HTML pages not referenced by the manifest (offscreen is created
       // at runtime via chrome.offscreen; prompt is opened as a popup window).

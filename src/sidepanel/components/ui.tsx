@@ -19,9 +19,9 @@ type Variant = "primary" | "secondary" | "ghost" | "danger";
 // translucent console cell.
 const VARIANTS: Record<Variant, string> = {
   primary:
-    "border border-[color:var(--accent)] bg-[linear-gradient(180deg,var(--accent-strong)_0%,var(--accent)_100%)] text-[color:var(--text-on-accent)] shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_8px_20px_var(--shadow-soft),0_0_14px_color-mix(in_srgb,var(--accent)_28%,transparent)] hover:brightness-110",
+    "border border-[color:var(--accent)] bg-[linear-gradient(180deg,var(--accent-strong)_0%,var(--accent)_100%)] text-[color:var(--text-on-accent)] shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_8px_20px_var(--shadow-soft),0_0_14px_color-mix(in_srgb,var(--accent)_28%,transparent)] transition-shadow duration-300 hover:brightness-110 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_8px_20px_var(--shadow-soft),0_0_22px_color-mix(in_srgb,var(--accent-bright)_50%,transparent),0_0_40px_color-mix(in_srgb,var(--accent-bright)_20%,transparent)]",
   secondary:
-    "border border-[color:var(--border-default)] bg-[color:color-mix(in_srgb,var(--surface-soft)_66%,transparent)] text-[color:var(--text-soft)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--accent-strong)_10%,transparent)] hover:border-[color:var(--border-hover)] hover:text-[color:var(--text-strong)]",
+    "border border-[color:var(--border-default)] bg-[color:color-mix(in_srgb,var(--surface-soft)_66%,transparent)] text-[color:var(--text-soft)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--accent-strong)_10%,transparent)] transition-shadow duration-300 hover:border-[color:var(--border-hover)] hover:text-[color:var(--text-strong)] hover:shadow-[inset_0_1px_0_color-mix(in_srgb,var(--accent-strong)_10%,transparent),0_0_18px_color-mix(in_srgb,var(--accent-bright)_35%,transparent),0_0_36px_color-mix(in_srgb,var(--accent-bright)_14%,transparent)]",
   ghost: "text-[color:var(--text-secondary)] hover:text-[color:var(--text-strong)]",
   danger:
     "border border-[color:var(--danger-border)] bg-[color:var(--danger-bg)] text-[color:var(--danger-text)] hover:brightness-110",
