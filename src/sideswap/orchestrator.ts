@@ -47,8 +47,17 @@ export interface SwapParams {
   maxFee: bigint;
   /** Minimum acceptable receive amount, in base units. Applied as slippage
    *  protection: the verification gate rejects any PSET that delivers less.
-   *  If omitted, the accepted quote amount is used (no slippage tolerance). */
+   *  If omitted, defaults to the user-reviewed amount minus 3% tolerance. */
   minRecvAmount?: bigint;
+  /** User-reviewed send amount from the preview quote (base units). In
+   *  receive-exact mode the dealer determines the send amount, so this
+   *  independent cap — from the amount the user saw and approved — prevents
+   *  a malicious dealer from inflating the charge at execution time. */
+  reviewedSendAmount?: bigint;
+  /** User-reviewed receive amount from the preview quote (base units). In
+   *  sell-exact mode, this binds the slippage floor to what the user actually
+   *  approved rather than re-deriving it from the execution-time dealer quote. */
+  reviewedRecvAmount?: bigint;
 }
 
 /** Dependencies the service worker injects. */
@@ -248,19 +257,39 @@ export async function executeInstantSwap(
   const effectiveSendAmount = receiveExact
     ? quotedSendAmt
     : BigInt(params.sendAmount!);
-  // Default slippage tolerance: 3%. The dealer may re-price between the quote
-  // notification and the PSET construction, so the exact quote amount is too
-  // tight. Callers can override with an explicit minRecvAmount.
+
+  // Slippage / send-cap logic. The user-reviewed amounts from the preview
+  // quote (SwapQuotePreview) are the authoritative bounds — they reflect
+  // what the user saw on the review screen before tapping Confirm. The
+  // execution-time dealer quote may differ; these caps catch that drift.
+  //
+  // minRecvAmount: prefer the user-reviewed receive estimate minus 3%
+  // tolerance over the execution-time quote. In receive-exact mode the user
+  // typed an exact receive amount — use that directly (no tolerance).
   const defaultMinRecv = receiveExact
     ? BigInt(params.recvAmount!)
-    : quotedRecvAmt * 97n / 100n;
+    : params.reviewedRecvAmount != null
+      ? params.reviewedRecvAmount * 97n / 100n
+      : quotedRecvAmt * 97n / 100n;
   const minRecv = params.minRecvAmount ?? defaultMinRecv;
+
+  // maxSendAmount: in receive-exact mode, the dealer chooses how much to
+  // charge. Cap it at the user-reviewed send estimate + 5% so a re-quoted
+  // rate can't drain more than the user approved. In sell-exact mode the
+  // user specified the exact send amount — no extra cap needed.
+  let maxSendAmount: string | undefined;
+  if (receiveExact && params.reviewedSendAmount != null) {
+    const cap = params.reviewedSendAmount * 105n / 100n;
+    maxSendAmount = cap.toString();
+  }
+
   const terms: VerifyDealerPsetTermsDTO = {
     sendAssetId,
     sendAmount: effectiveSendAmount.toString(),
     recvAssetId,
     minRecvAmount: minRecv.toString(),
     maxFee: maxFee.toString(),
+    maxSendAmount,
   };
 
   const signResult = await engineCall<SignSwapPsetWireResult>({

@@ -344,9 +344,18 @@ export function Swap({
     setError("");
     setStep("swapping");
     try {
-      const opts = isReceiveExact
+      const opts: Parameters<typeof wallet.swap>[2] = isReceiveExact
         ? { recvAmount: recvUnits }
         : { sendAmount: enteredUnits };
+      // Thread the user-reviewed quote amounts into the swap call so the
+      // verification gate can enforce them independently of the dealer's
+      // execution-time quote. Without this, a malicious dealer could
+      // inflate the send amount (receive-exact) or degrade the receive
+      // amount (sell-exact) between review and execution.
+      if (quote) {
+        opts.reviewedSendAmount = quote.sendAmount;
+        opts.reviewedRecvAmount = quote.recvAmount;
+      }
       const res = await wallet.swap(sendId, recvId, opts);
       setResult(res);
       setStep("done");

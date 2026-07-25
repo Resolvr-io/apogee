@@ -45,6 +45,13 @@ export interface VerifyDealerPsetTerms {
    *  direction — but it stays REQUIRED so no caller can leave the L-BTC-send fee
    *  unbounded, which a hostile dealer could exploit to burn the wallet's L-BTC. */
   maxFee: bigint;
+  /** Independent upper bound on the send-asset principal (excluding fee). When
+   *  set, the gate rejects any PSET where sent > maxSendAmount + fee + TOL. This
+   *  is critical in receive-exact mode: without it, the dealer's quoted send
+   *  amount is the only bound, and a malicious dealer can quote arbitrarily
+   *  high. The caller should derive this from the user-reviewed estimate plus
+   *  a tolerance, never from the execution-time dealer quote. */
+  maxSendAmount?: bigint;
 }
 
 export type VerifyDealerPsetResult =
@@ -85,6 +92,14 @@ export function verifyDealerPset(
   // 2. No drain on the send asset — outflow must not exceed offered + fee.
   if (sent > terms.sendAmount + fee + TOL) {
     return { ok: false, reason: `spend ${sent} exceeds offered ${terms.sendAmount} + fee ${fee}` };
+  }
+
+  // 2a. Independent send-amount cap (receive-exact mode). The dealer chooses
+  //     the send amount in receive-exact, so `sendAmount` above is dealer-
+  //     derived. This independent cap — set from the user-reviewed estimate
+  //     plus a tolerance — is the real protection against a runaway quote.
+  if (terms.maxSendAmount != null && sent > terms.maxSendAmount + fee + TOL) {
+    return { ok: false, reason: `spend ${sent} exceeds user-approved cap ${terms.maxSendAmount} + fee ${fee}` };
   }
 
   // 2b. No drain on any OTHER asset. Signer.sign signs every matching input

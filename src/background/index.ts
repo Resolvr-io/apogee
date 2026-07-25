@@ -558,6 +558,8 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
             sendAmount: msg.sendAmount,
             recvAmount: msg.recvAmount,
             maxFee: MAX_FEE_SATS,
+            reviewedSendAmount: msg.reviewedSendAmount != null ? BigInt(msg.reviewedSendAmount) : undefined,
+            reviewedRecvAmount: msg.reviewedRecvAmount != null ? BigInt(msg.reviewedRecvAmount) : undefined,
           },
           {
             client,

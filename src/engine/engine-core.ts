@@ -768,6 +768,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         recvAssetId: t.recvAssetId,
         minRecvAmount: BigInt(t.minRecvAmount),
         maxFee: BigInt(t.maxFee),
+        maxSendAmount: t.maxSendAmount != null ? BigInt(t.maxSendAmount) : undefined,
       });
       return result.ok
         ? {
@@ -794,6 +795,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         recvAssetId: t.recvAssetId,
         minRecvAmount: BigInt(t.minRecvAmount),
         maxFee: BigInt(t.maxFee),
+        maxSendAmount: t.maxSendAmount != null ? BigInt(t.maxSendAmount) : undefined,
       });
       if (!verifyResult.ok) {
         const result: SignSwapPsetWireResult = { ok: false, reason: verifyResult.reason };

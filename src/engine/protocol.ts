@@ -92,6 +92,10 @@ export interface VerifyDealerPsetTermsDTO {
    *  and is a harmless no-op for a USDt send. Required so the fee is never left
    *  unbounded. See `verify-dealer-pset.ts`. */
   maxFee: string;
+  /** Independent upper bound on the send-asset principal. Critical in
+   *  receive-exact mode where the dealer determines the send amount. Derived
+   *  from the user-reviewed estimate, not the execution-time quote. */
+  maxSendAmount?: string;
 }
 
 /** Wire result of `verifyDealerPset`: ok plus the PSET-derived amounts (as
@@ -262,6 +266,12 @@ export type WalletRequest =
       recvAssetId: string;
       sendAmount?: number; // base units of the send asset (sell-exact mode)
       recvAmount?: number; // base units of the receive asset (receive-exact mode)
+      /** User-reviewed send amount from the preview quote (base-10 string).
+       *  Caps the send principal in receive-exact mode. */
+      reviewedSendAmount?: string;
+      /** User-reviewed receive amount from the preview quote (base-10 string).
+       *  Binds the slippage floor in sell-exact mode. */
+      reviewedRecvAmount?: string;
     }
   // Quote preview for a swap: connects to SideSwap, runs startQuotes, and
   // returns the expected receive amount — no signing, no broadcast.

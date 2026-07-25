@@ -332,6 +332,71 @@ describe("verifyDealerPset — check 3: fee cap", () => {
   });
 });
 
+// ---- Check 2a: maxSendAmount cap (receive-exact) ----------------------------
+
+describe("verifyDealerPset — check 2a: maxSendAmount cap", () => {
+  it("rejects when send exceeds maxSendAmount + fee + tolerance", () => {
+    // Dealer quoted an inflated send amount that passes check 2 (matches its own
+    // sendAmount) but exceeds the user-reviewed cap.
+    const terms = baseTerms({
+      sendAmount: 200_000n, // dealer's quote — high
+      maxSendAmount: 100_000n, // user-reviewed cap — normal
+    });
+    const { pset, wollet } = mockPsetWollet(
+      { [LBTC]: -200_000n, [USDT]: 5_000_000_000n },
+      { [LBTC]: 300n },
+    );
+
+    const result = verifyDealerPset(pset, wollet, terms);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("user-approved cap");
+    }
+  });
+
+  it("accepts when send is within maxSendAmount + fee + tolerance", () => {
+    const terms = baseTerms({
+      sendAmount: 100_000n,
+      maxSendAmount: 105_000n, // 5% headroom
+    });
+    const { pset, wollet } = mockPsetWollet(
+      { [LBTC]: -100_000n, [USDT]: 5_000_000_000n },
+      { [LBTC]: 300n },
+    );
+
+    const result = verifyDealerPset(pset, wollet, terms);
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts when send equals maxSendAmount + fee + TOL exactly", () => {
+    const terms = baseTerms({
+      sendAmount: 105_301n,
+      maxSendAmount: 105_000n,
+      maxFee: 500n,
+    });
+    // sent = 105_301 = maxSendAmount(105_000) + fee(300) + TOL(1)
+    const { pset, wollet } = mockPsetWollet(
+      { [LBTC]: -105_301n, [USDT]: 5_000_000_000n },
+      { [LBTC]: 300n },
+    );
+
+    const result = verifyDealerPset(pset, wollet, terms);
+    expect(result.ok).toBe(true);
+  });
+
+  it("is a no-op when maxSendAmount is not set", () => {
+    // Without maxSendAmount, only check 2 (sendAmount) applies.
+    const terms = baseTerms({ sendAmount: 200_000n });
+    const { pset, wollet } = mockPsetWollet(
+      { [LBTC]: -200_000n, [USDT]: 5_000_000_000n },
+      { [LBTC]: 300n },
+    );
+
+    const result = verifyDealerPset(pset, wollet, terms);
+    expect(result.ok).toBe(true);
+  });
+});
+
 // ---- Combined attack scenarios ----------------------------------------------
 
 describe("verifyDealerPset — combined attack scenarios", () => {
