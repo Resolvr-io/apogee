@@ -7,11 +7,24 @@
 //
 // Auto-lock alarms and provider/prompt orchestration land in later tasks.
 
+// Vite's dynamic-import preload helper references `window.dispatchEvent()` in
+// its error path. The MV3 service worker has no `window` global — only `self` —
+// so a failed dynamic import crashes with "window is not defined" before the
+// real error surfaces. Alias `window` to `self` to let the helper run (the
+// preloadError event is a no-op here; the throw still propagates).
+if (typeof window === "undefined") {
+  (self as unknown as { window: typeof self }).window = self;
+}
+
 import type { LiquidNetwork } from "@/keystore/keystore";
 import * as keystore from "@/keystore/keystore";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "@/lib/debug";
 import { SCAN_STATE_DB } from "@/engine/protocol";
 import { browser } from "@/lib/ext";
+// Static imports — dynamic import() is disallowed in the MV3 service worker
+// global scope per the HTML spec (Chrome blocks it at runtime).
+import { SideSwapClient } from "@/sideswap/client";
+import { executeInstantSwap, previewSwapQuote, SwapError } from "@/sideswap/orchestrator";
 import type {
   AddressDTO,
   ApprovalRequest,
@@ -27,6 +40,8 @@ import type {
   ProviderBalance,
   ProviderRequest,
   ProviderStatus,
+  SwapResultDTO,
+  SwapQuotePreview,
   SendResult,
   SendReview,
   SyncResult,
@@ -110,6 +125,8 @@ const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
   "wallet/addWatchOnlyWallet",
   "wallet/prepareSend",
   "wallet/send",
+  "wallet/swap",
+  "wallet/swapQuote",
   "wallet/revealMnemonic",
   "wallet/verifyPassword",
   "wallet/setAutoLock",
@@ -516,6 +533,90 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       // waiting for the periodic auto-sync.
       browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
       return sent;
+    }
+
+    case "wallet/swap": {
+      const info = await walletInfo(msg.walletId);
+      if (info.signer === "watch") {
+        throw new Error("Watch-only wallets can't sign or swap.");
+      }
+      const mnemonic = keystore.getMnemonic(info.id);
+      // The SideSwap client lives only for this swap call — connect, execute,
+      // disconnect. A WebSocket in the service worker is fine (MV3 background).
+      const client = new SideSwapClient(info.network);
+      await client.connect();
+      try {
+        // Fixed sane fee ceiling: 1000 sats covers any reasonable Liquid swap
+        // (typical swap PSET is ~200-300 vbytes at 0.1-1 sat/vbyte). This is
+        // the independent estimate the verification gate requires — never
+        // derived from dealer data. TODO: replace with a live fee estimate.
+        const MAX_FEE_SATS = 1000n;
+        const result = await executeInstantSwap(
+          {
+            sendAssetId: msg.sendAssetId,
+            recvAssetId: msg.recvAssetId,
+            sendAmount: msg.sendAmount,
+            recvAmount: msg.recvAmount,
+            maxFee: MAX_FEE_SATS,
+            reviewedSendAmount: msg.reviewedSendAmount != null ? BigInt(msg.reviewedSendAmount) : undefined,
+            reviewedRecvAmount: msg.reviewedRecvAmount != null ? BigInt(msg.reviewedRecvAmount) : undefined,
+          },
+          {
+            client,
+            engineCall: engine,
+            descriptor: info.descriptor,
+            network: info.network,
+            mnemonic,
+          },
+        );
+        browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
+        const dto: SwapResultDTO = {
+          txid: result.txid,
+          sent: result.sent.toString(),
+          received: result.received.toString(),
+          fee: result.fee.toString(),
+        };
+        return dto;
+      } catch (e) {
+        if (e instanceof SwapError) throw e;
+        throw e instanceof Error ? e : new Error(String(e));
+      } finally {
+        client.disconnect();
+      }
+    }
+
+    case "wallet/swapQuote": {
+      const info = await walletInfo(msg.walletId);
+      if (info.signer === "watch") {
+        throw new Error("Watch-only wallets can't swap.");
+      }
+      const client = new SideSwapClient(info.network);
+      await client.connect();
+      try {
+        const preview = await previewSwapQuote(
+          {
+            sendAssetId: msg.sendAssetId,
+            recvAssetId: msg.recvAssetId,
+            sendAmount: msg.sendAmount,
+            recvAmount: msg.recvAmount,
+          },
+          {
+            client,
+            engineCall: engine,
+            descriptor: info.descriptor,
+            network: info.network,
+          },
+        );
+        return {
+          sendAmount: preview.sendAmount.toString(),
+          recvAmount: preview.recvAmount.toString(),
+        } satisfies SwapQuotePreview;
+      } catch (e) {
+        if (e instanceof SwapError) throw e;
+        throw e instanceof Error ? e : new Error(String(e));
+      } finally {
+        client.disconnect();
+      }
     }
 
     case "wallet/addHardwareWallet": {

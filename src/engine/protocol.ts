@@ -92,6 +92,10 @@ export interface VerifyDealerPsetTermsDTO {
    *  and is a harmless no-op for a USDt send. Required so the fee is never left
    *  unbounded. See `verify-dealer-pset.ts`. */
   maxFee: string;
+  /** Independent upper bound on the send-asset principal. Critical in
+   *  receive-exact mode where the dealer determines the send amount. Derived
+   *  from the user-reviewed estimate, not the execution-time quote. */
+  maxSendAmount?: string;
 }
 
 /** Wire result of `verifyDealerPset`: ok plus the PSET-derived amounts (as
@@ -251,6 +255,33 @@ export type WalletRequest =
       descriptor: string;
       label: string;
       network: LiquidNetwork;
+    }
+  // Instant swap via SideSwap dealer. Specify EITHER `sendAmount` (sell exact)
+  // OR `recvAmount` (receive exact). When `recvAmount` is set, the dealer
+  // calculates the required send amount so the user receives exactly that much.
+  | {
+      type: "wallet/swap";
+      walletId?: string;
+      sendAssetId: string;
+      recvAssetId: string;
+      sendAmount?: number; // base units of the send asset (sell-exact mode)
+      recvAmount?: number; // base units of the receive asset (receive-exact mode)
+      /** User-reviewed send amount from the preview quote (base-10 string).
+       *  Caps the send principal in receive-exact mode. */
+      reviewedSendAmount?: string;
+      /** User-reviewed receive amount from the preview quote (base-10 string).
+       *  Binds the slippage floor in sell-exact mode. */
+      reviewedRecvAmount?: string;
+    }
+  // Quote preview for a swap: connects to SideSwap, runs startQuotes, and
+  // returns the expected receive amount — no signing, no broadcast.
+  | {
+      type: "wallet/swapQuote";
+      walletId?: string;
+      sendAssetId: string;
+      recvAssetId: string;
+      sendAmount?: number; // base units of the send asset (sell-exact mode)
+      recvAmount?: number; // base units of the receive asset (receive-exact mode)
     };
 
 /** What `wallet/create` returns: the persisted wallet + the phrase to back up. */
@@ -269,6 +300,23 @@ export interface PrepareSendResult {
 
 export interface SendResult {
   txid: string;
+}
+
+/** Result of an instant swap (SideSwap). Amounts are base-10 strings for
+ *  BigInt-safe transport across chrome.runtime. */
+export interface SwapResultDTO {
+  txid: string;
+  sent: string; // base-10, base units of the send asset
+  received: string; // base-10, base units of the receive asset
+  fee: string; // base-10, LBTC sats
+}
+
+/** Preview of a swap quote — no signing or broadcast. Amounts are the dealer's
+ *  live quote estimates; the actual amounts may differ at execution (the
+ *  verification gate protects against unfavorable changes). */
+export interface SwapQuotePreview {
+  sendAmount: string; // base-10, base units of the send asset (from dealer's base_amount)
+  recvAmount: string; // base-10, base units of the receive asset (from dealer's quote_amount)
 }
 
 /** Human-readable spend details for the Jade signing tab's review summary. */

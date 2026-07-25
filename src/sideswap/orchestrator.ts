@@ -17,25 +17,47 @@
 //      an independent estimate (feerate × vsize, or a fixed sane ceiling) —
 //      never from the dealer's quote or PSET.
 
-import type { SideSwapClient, SideSwapUtxo, SideSwapQuoteNotification } from "./client";
+import type { SideSwapClient, SideSwapUtxo, SideSwapQuoteSuccess, SideSwapAssetType, SideSwapTradeDir } from "./client";
 import type { EngineRequest, UtxoDTO, VerifyDealerPsetTermsDTO, SignSwapPsetWireResult } from "@/engine/protocol";
 import type { LiquidNetwork } from "@/keystore/keystore";
+import { LBTC_MAINNET_ASSET_ID, LBTC_TESTNET_ASSET_ID } from "@/lib/asset-registry";
 
 // ---- public types --------------------------------------------------------
 
 /** Independent fee cap + swap parameters. The caller is responsible for
- *  ensuring `maxFee` is NOT derived from dealer data. */
+ *  ensuring `maxFee` is NOT derived from dealer data.
+ *
+ *  Two quoting modes:
+ *  - **Sell-exact** (`sendAmount` set): "I want to sell exactly X base units."
+ *    The dealer determines how much quote asset you receive.
+ *  - **Receive-exact** (`recvAmount` set): "I want to receive exactly Y quote
+ *    units." The dealer determines how much base asset you must send. This is
+ *    what SideSwap's own app uses — the user types $1 USDT and receives $1. */
 export interface SwapParams {
   sendAssetId: string;
   recvAssetId: string;
-  sendAmount: number;
+  /** Sell-exact: base units of the send asset to sell. Mutually exclusive
+   *  with `recvAmount` — exactly one must be set. */
+  sendAmount?: number;
+  /** Receive-exact: base units of the receive asset the user wants. The dealer
+   *  calculates the required send amount. */
+  recvAmount?: number;
   /** Required cap on the send-asset (L-BTC) network fee, in base units.
    *  MUST be an independent estimate — see module docs. */
   maxFee: bigint;
   /** Minimum acceptable receive amount, in base units. Applied as slippage
    *  protection: the verification gate rejects any PSET that delivers less.
-   *  If omitted, the accepted quote amount is used (no slippage tolerance). */
+   *  If omitted, defaults to the user-reviewed amount minus 3% tolerance. */
   minRecvAmount?: bigint;
+  /** User-reviewed send amount from the preview quote (base units). In
+   *  receive-exact mode the dealer determines the send amount, so this
+   *  independent cap — from the amount the user saw and approved — prevents
+   *  a malicious dealer from inflating the charge at execution time. */
+  reviewedSendAmount?: bigint;
+  /** User-reviewed receive amount from the preview quote (base units). In
+   *  sell-exact mode, this binds the slippage floor to what the user actually
+   *  approved rather than re-deriving it from the execution-time dealer quote. */
+  reviewedRecvAmount?: bigint;
 }
 
 /** Dependencies the service worker injects. */
@@ -57,6 +79,11 @@ export interface SwapResult {
 
 export class SwapError extends Error {}
 
+export interface SwapQuotePreviewResult {
+  sendAmount: bigint;
+  recvAmount: bigint;
+}
+
 // ---- result of the atomic signSwapPset engine call -----------------------
 //
 // The `signSwapPset` engine handler is being implemented on Angel's
@@ -70,7 +97,7 @@ export class SwapError extends Error {}
 
 /** Filter wallet UTXOs to the send-asset only and map to SideSwap wire format.
  *  Apogee wallets are P2WPKH — no redeem script, so `redeem_script` is null. */
-function filterSendAssetUtxos(utxos: UtxoDTO[], sendAssetId: string): SideSwapUtxo[] {
+export function filterSendAssetUtxos(utxos: UtxoDTO[], sendAssetId: string): SideSwapUtxo[] {
   return utxos
     .filter((u) => u.asset === sendAssetId)
     .map((u) => ({
@@ -82,6 +109,62 @@ function filterSendAssetUtxos(utxos: UtxoDTO[], sendAssetId: string): SideSwapUt
       value_bf: u.valueBf,
       redeem_script: null,
     }));
+}
+
+// ---- SideSwap pair orientation -------------------------------------------
+
+/** Policy asset hex for a given network. */
+export function policyAssetId(network: LiquidNetwork): string {
+  return network === "liquid" ? LBTC_MAINNET_ASSET_ID : LBTC_TESTNET_ASSET_ID;
+}
+
+/** Build a correctly-oriented SideSwap asset pair and trade direction.
+ *
+ *  SideSwap requires `base` to always be the policy asset (LBTC). The `quote`
+ *  is the other asset.
+ *
+ *  `trade_dir` is relative to `asset_type` (NOT to the LBTC direction):
+ *  - "Sell" = "I am selling the `asset_type` asset" (sell-exact mode)
+ *  - "Buy"  = "I am buying the `asset_type` asset" (receive-exact mode)
+ *
+ *  `asset_type` indicates which side the `amount` in `start_quotes` refers to.
+ *  In sell-exact mode it's the send side; in receive-exact mode it's the
+ *  receive side. The value is "Base" when that side is LBTC, "Quote" otherwise. */
+export function orientPair(
+  sendAssetId: string,
+  recvAssetId: string,
+  network: LiquidNetwork,
+  receiveExact: boolean = false,
+): {
+  asset_pair: { base: string; quote: string };
+  trade_dir: SideSwapTradeDir;
+  asset_type: SideSwapAssetType;
+} {
+  const policy = policyAssetId(network);
+  const sellingLbtc = sendAssetId === policy;
+
+  // base is always LBTC, quote is the other asset.
+  const asset_pair = sellingLbtc
+    ? { base: sendAssetId, quote: recvAssetId }
+    : { base: recvAssetId, quote: sendAssetId };
+  // trade_dir is relative to asset_type: "Sell" = selling the asset_type
+  // asset, "Buy" = buying it. In sell-exact mode the user is always selling;
+  // in receive-exact mode, always buying.
+  const trade_dir: SideSwapTradeDir = receiveExact ? "Buy" : "Sell";
+
+  // asset_type tells SideSwap which side the `amount` field refers to.
+  // In sell-exact mode, the amount is the send side.
+  // In receive-exact mode, the amount is the receive side.
+  let asset_type: SideSwapAssetType;
+  if (receiveExact) {
+    // Amount is the receive side. Is the receive asset base (LBTC) or quote?
+    asset_type = recvAssetId === policy ? "Base" : "Quote";
+  } else {
+    // Amount is the send side. Is the send asset base (LBTC) or quote?
+    asset_type = sendAssetId === policy ? "Base" : "Quote";
+  }
+
+  return { asset_pair, trade_dir, asset_type };
 }
 
 // ---- orchestration -------------------------------------------------------
@@ -96,7 +179,23 @@ export async function executeInstantSwap(
   deps: SwapDeps,
 ): Promise<SwapResult> {
   const { client, engineCall, descriptor, network, mnemonic } = deps;
-  const { sendAssetId, recvAssetId, sendAmount, maxFee } = params;
+  const { sendAssetId, recvAssetId, maxFee } = params;
+
+  // Determine quoting mode: receive-exact or sell-exact.
+  const receiveExact = params.recvAmount != null;
+  if (!receiveExact && params.sendAmount == null) {
+    throw new SwapError("either sendAmount or recvAmount must be specified");
+  }
+
+  // Fail-closed: in receive-exact mode the dealer determines the send amount,
+  // so the user-reviewed send cap is the only independent upper bound. If the
+  // preview quote was never obtained (e.g. dealer was down), reject rather
+  // than falling back to uncapped dealer-derived amounts.
+  if (receiveExact && params.reviewedSendAmount == null) {
+    throw new SwapError(
+      "receive-exact swap requires a reviewed send amount from the preview quote"
+    );
+  }
 
   // 1. Get UTXOs and filter to send-asset only (prerequisite 2).
   const allUtxos = await engineCall<UtxoDTO[]>({
@@ -125,13 +224,17 @@ export async function executeInstantSwap(
     index: receiveResult.index + 1,
   });
 
-  // 3. Start quotes with filtered UTXOs.
-  const assetPair = { base: sendAssetId, quote: recvAssetId };
+  // 3. Start quotes with filtered UTXOs. orientPair ensures the asset pair
+  //    has LBTC as base (SideSwap convention) and sets trade_dir/asset_type
+  //    based on the swap direction and quoting mode.
+  const { asset_pair, trade_dir, asset_type } = orientPair(
+    sendAssetId, recvAssetId, network, receiveExact,
+  );
   const startResult = await client.startQuotes({
-    asset_pair: assetPair,
-    asset_type: "Base",
-    amount: sendAmount,
-    trade_dir: "Sell",
+    asset_pair,
+    asset_type,
+    amount: receiveExact ? params.recvAmount! : params.sendAmount!,
+    trade_dir,
     utxos: swapUtxos,
     receive_address: receiveResult.address,
     change_address: changeResult.address,
@@ -140,21 +243,63 @@ export async function executeInstantSwap(
   // 4. Wait for the first viable quote notification. waitForQuote only
   //    resolves on Success — it rejects on Error/LowBalance, so no
   //    non-Success branch is needed here.
-  const quote = await waitForQuote(client, startResult.quote_sub_id);
-  const success = quote.status.Success;
+  const success = await waitForQuote(client, startResult.quote_sub_id);
 
   // 5. Get the dealer-built unsigned PSET.
   const quoteResult = await client.getQuote(success.quote_id);
 
   // 6. Atomic verify + sign + finalize in one engine call (prerequisite 1).
   //    The maxFee cap is the caller's independent estimate (prerequisite 3).
-  const minRecv = params.minRecvAmount ?? BigInt(success.quote_amount);
+  //
+  //    SideSwap's base_amount/quote_amount always refer to the pair's base
+  //    (LBTC) and quote respectively. Map to send/recv based on which asset
+  //    the user is sending: if sending base (LBTC), send=base, recv=quote;
+  //    if sending quote (e.g. USDt), send=quote, recv=base.
+  const sendIsBase = sendAssetId === policyAssetId(network);
+  const quotedSendAmt = BigInt(Math.round(
+    sendIsBase ? success.base_amount : success.quote_amount,
+  ));
+  const quotedRecvAmt = BigInt(Math.round(
+    sendIsBase ? success.quote_amount : success.base_amount,
+  ));
+  // Use the original sendAmount (what the user offered) for sell-exact, or
+  // the dealer's quoted send amount for receive-exact (user didn't specify).
+  const effectiveSendAmount = receiveExact
+    ? quotedSendAmt
+    : BigInt(params.sendAmount!);
+
+  // Slippage / send-cap logic. The user-reviewed amounts from the preview
+  // quote (SwapQuotePreview) are the authoritative bounds — they reflect
+  // what the user saw on the review screen before tapping Confirm. The
+  // execution-time dealer quote may differ; these caps catch that drift.
+  //
+  // minRecvAmount: prefer the user-reviewed receive estimate minus 3%
+  // tolerance over the execution-time quote. In receive-exact mode the user
+  // typed an exact receive amount — use that directly (no tolerance).
+  const defaultMinRecv = receiveExact
+    ? BigInt(params.recvAmount!)
+    : params.reviewedRecvAmount != null
+      ? params.reviewedRecvAmount * 97n / 100n
+      : quotedRecvAmt * 97n / 100n;
+  const minRecv = params.minRecvAmount ?? defaultMinRecv;
+
+  // maxSendAmount: in receive-exact mode, the dealer chooses how much to
+  // charge. Cap it at the user-reviewed send estimate + 5% so a re-quoted
+  // rate can't drain more than the user approved. In sell-exact mode the
+  // user specified the exact send amount — no extra cap needed.
+  let maxSendAmount: string | undefined;
+  if (receiveExact && params.reviewedSendAmount != null) {
+    const cap = params.reviewedSendAmount * 105n / 100n;
+    maxSendAmount = cap.toString();
+  }
+
   const terms: VerifyDealerPsetTermsDTO = {
     sendAssetId,
-    sendAmount: BigInt(sendAmount).toString(),
+    sendAmount: effectiveSendAmount.toString(),
     recvAssetId,
     minRecvAmount: minRecv.toString(),
     maxFee: maxFee.toString(),
+    maxSendAmount,
   };
 
   const signResult = await engineCall<SignSwapPsetWireResult>({
@@ -181,14 +326,77 @@ export async function executeInstantSwap(
   };
 }
 
+/** Fetch a dealer quote preview — steps 1-4 only (UTXOs → startQuotes →
+ *  waitForQuote). No PSET fetch, no signing, no broadcast. Returns the
+ *  estimated receive amount from the dealer's live quote. */
+export async function previewSwapQuote(
+  params: Omit<SwapParams, "maxFee" | "minRecvAmount">,
+  deps: Pick<SwapDeps, "client" | "engineCall" | "descriptor" | "network">,
+): Promise<SwapQuotePreviewResult> {
+  const { client, engineCall, descriptor, network } = deps;
+  const { sendAssetId, recvAssetId } = params;
+  const receiveExact = params.recvAmount != null;
+
+  // 1. Get UTXOs and filter to send-asset only.
+  const allUtxos = await engineCall<UtxoDTO[]>({
+    kind: "getUtxos",
+    descriptor,
+    network,
+  });
+
+  const swapUtxos = filterSendAssetUtxos(allUtxos, sendAssetId);
+  if (swapUtxos.length === 0) {
+    throw new SwapError(`no UTXOs found for send asset ${sendAssetId}`);
+  }
+
+  // 2. Get receive and change addresses.
+  const receiveResult = await engineCall<{ address: string; index: number }>({
+    kind: "getAddress",
+    descriptor,
+    network,
+  });
+  const changeResult = await engineCall<{ address: string }>({
+    kind: "getAddress",
+    descriptor,
+    network,
+    index: receiveResult.index + 1,
+  });
+
+  // 3. Start quotes — same pair orientation as executeInstantSwap.
+  const { asset_pair, trade_dir, asset_type } = orientPair(
+    sendAssetId, recvAssetId, network, receiveExact,
+  );
+  const startResult = await client.startQuotes({
+    asset_pair,
+    asset_type,
+    amount: receiveExact ? params.recvAmount! : params.sendAmount!,
+    trade_dir,
+    utxos: swapUtxos,
+    receive_address: receiveResult.address,
+    change_address: changeResult.address,
+  });
+
+  // 4. Wait for the first quote.
+  const success = await waitForQuote(client, startResult.quote_sub_id);
+
+  // Map base_amount/quote_amount to send/recv based on which asset the
+  // user is sending: base (LBTC) or quote (e.g. USDt).
+  const sendIsBase = sendAssetId === policyAssetId(network);
+  return {
+    sendAmount: BigInt(Math.round(sendIsBase ? success.base_amount : success.quote_amount)),
+    recvAmount: BigInt(Math.round(sendIsBase ? success.quote_amount : success.base_amount)),
+  };
+}
+
 // ---- helpers -------------------------------------------------------------
 
 /** Await the first `Success` quote for a given `quote_sub_id`. Rejects on
- *  `Error` status, or after a 20 s timeout. */
+ *  `Error` or `LowBalance` status, or after a 20 s timeout. Returns the
+ *  Success payload directly so callers don't need to narrow the union. */
 function waitForQuote(
   client: SideSwapClient,
   quoteSubId: number,
-): Promise<SideSwapQuoteNotification> {
+): Promise<SideSwapQuoteSuccess> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new SwapError("timed out waiting for dealer quote")),
@@ -200,7 +408,7 @@ function waitForQuote(
       clearTimeout(timer);
 
       if ("Success" in q.status) {
-        resolve(q);
+        resolve(q.status.Success);
       } else if ("Error" in q.status) {
         reject(new SwapError(`dealer error: ${q.status.Error.error_msg}`));
       } else {

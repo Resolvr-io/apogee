@@ -7,6 +7,8 @@ export const LBTC_TESTNET_ASSET_ID =
   "144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49";
 export const USDT_LIQUID_ASSET_ID =
   "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2";
+export const USDT_TESTNET_ASSET_ID =
+  "b612eb46313a2cd6ebabd8b7a8eed5696e29898b87a43bff41c94f51acef9d73";
 
 /** Locally-known asset metadata. `precision` is the issued asset's decimal
  *  places (from its issuance contract) — kept here so known assets display
@@ -25,4 +27,5 @@ export const KNOWN_ASSETS: Record<string, KnownAsset> = {
   [LBTC_TESTNET_ASSET_ID]: { label: "LBTC (testnet)", precision: 8 },
   [LBTC_MAINNET_ASSET_ID]: { label: "LBTC", precision: 8 },
   [USDT_LIQUID_ASSET_ID]: { label: "USDt", precision: 8, pegUsd: true },
+  [USDT_TESTNET_ASSET_ID]: { label: "USDt (testnet)", precision: 8, pegUsd: true },
 };

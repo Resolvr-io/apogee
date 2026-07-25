@@ -11,6 +11,8 @@ import type {
   Reply,
   SendResult,
   SendReview,
+  SwapQuotePreview,
+  SwapResultDTO,
   SyncResult,
   WalletRequest,
   WalletTxDTO,
@@ -71,6 +73,10 @@ export const wallet = {
     call<PrepareSendResult>({ type: "wallet/prepareSend", address, sats, drain, asset }),
   send: (pset: string, review?: SendReview, password?: string) =>
     call<SendResult>({ type: "wallet/send", pset, review, password }),
+  swap: (sendAssetId: string, recvAssetId: string, opts: { sendAmount?: number; recvAmount?: number; reviewedSendAmount?: string; reviewedRecvAmount?: string }) =>
+    call<SwapResultDTO>({ type: "wallet/swap", sendAssetId, recvAssetId, ...opts }),
+  swapQuote: (sendAssetId: string, recvAssetId: string, opts: { sendAmount?: number; recvAmount?: number }) =>
+    call<SwapQuotePreview>({ type: "wallet/swapQuote", sendAssetId, recvAssetId, ...opts }),
   addHardwareWallet: (params: {
     password?: string;
     signer: WalletSigner;
