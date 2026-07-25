@@ -21,12 +21,15 @@ import {
 import { explorerTxUrl } from "@/lib/explorer";
 import { Button, Card, CopyButton, ErrorText, Field, Input, Spinner } from "@/sidepanel/components/ui";
 import { AssetSelect } from "@/sidepanel/components/AssetSelect";
-import { errMessage, wallet } from "@/sidepanel/wallet-client";
+import {
+  lowBalanceAvailable,
+  swapErrorKind,
+  swapErrorMessage,
+  wallet,
+} from "@/sidepanel/wallet-client";
+import { SWAP_MAX_FEE_SATS } from "@/sideswap/constants";
 
 type Step = "form" | "review" | "swapping" | "done";
-
-/** Max fee in sats — must match the service worker's MAX_FEE_SATS cap. */
-const MAX_FEE_SATS = 1000;
 
 export function Swap({
   onDone,
@@ -55,6 +58,19 @@ export function Swap({
   const [recvInput, setRecvInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Never-auto-lock step-up — swap signs a transaction, so a never-auto-locking
+  // wallet re-confirms the password (same gate as the Send screen).
+  const [autoLock, setAutoLock] = useState(15);
+  const [password, setPassword] = useState("");
+  const needsPassword = autoLock === 0;
+  // True when the review-screen quote preview failed — surfaced with a Retry
+  // instead of leaving the user on a disabled "Waiting for quote…" button.
+  const [quoteError, setQuoteError] = useState(false);
+  // The dealer's fillable amount when it refuses for LowBalance, so the error can
+  // tell the user what size WOULD work rather than just "too big".
+  const [availableUnits, setAvailableUnits] = useState<bigint | null>(null);
+  // Ticks once a second while a quote is live so the expiry countdown re-renders.
+  const [now, setNow] = useState(() => Date.now());
 
   // Local denomination toggle — initialized from the parent's global setting,
   // but tappable inline so the user can switch without leaving the swap form.
@@ -66,8 +82,30 @@ export function Swap({
   useEffect(() => {
     let alive = true;
     wallet.getRate("USD").then((r) => alive && setBtcRate(r)).catch(() => {});
+    wallet.getAutoLock().then((m) => alive && setAutoLock(m)).catch(() => {});
     return () => { alive = false; };
   }, []);
+
+  // Quote expiry. SideSwap quotes carry a ttl and `taker_sign` only accepts a
+  // live quote_id, so a stale Confirm is guaranteed to fail — after burning a
+  // password step-up round trip. Tick while a quote is live so the countdown
+  // renders and Confirm disarms the moment it lapses; the interval is torn down
+  // once expired (no point re-rendering a dead quote).
+  const quoteExpiresAt = quote?.expiresAt ?? null;
+  const quoteExpired = quoteExpiresAt != null && now >= quoteExpiresAt;
+  useEffect(() => {
+    if (quoteExpiresAt == null) return;
+    setNow(Date.now()); // resync immediately on a fresh quote
+    if (Date.now() >= quoteExpiresAt) return;
+    const id = window.setInterval(() => {
+      const t = Date.now();
+      setNow(t);
+      if (t >= quoteExpiresAt) window.clearInterval(id);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [quoteExpiresAt]);
+  const secsLeft =
+    quoteExpiresAt == null ? null : Math.max(0, Math.ceil((quoteExpiresAt - now) / 1000));
 
   // ---- asset resolution -----------------------------------------------------
   const policyHex = sync?.policyAssetHex ?? "";
@@ -314,6 +352,28 @@ export function Swap({
     return "";
   })();
 
+  /** Fetch the dealer quote preview for the current form values. Surfaces a
+   *  retryable failure on the review screen rather than stranding the user on
+   *  a disabled "Waiting for quote…" button when the dealer is unreachable. */
+  async function fetchQuote() {
+    setBusy(true);
+    setQuoteError(false);
+    setError(""); // clear any prior execution error so the re-quote branch unlatches
+    setAvailableUnits(null);
+    setQuote(null);
+    try {
+      const opts = isReceiveExact
+        ? { recvAmount: recvUnits }
+        : { sendAmount: enteredUnits };
+      const q = await wallet.swapQuote(sendId, recvId, opts);
+      setQuote(q);
+    } catch {
+      setQuoteError(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function review() {
     setError("");
     if (!recvId) return setError("Select an asset to receive.");
@@ -324,24 +384,17 @@ export function Swap({
       if (enteredUnits <= 0) return setError(`Enter an amount in ${sendUnitLabel}.`);
       if (enteredUnits > sendBalance) return setError("Amount exceeds your available balance.");
     }
-    setBusy(true);
-    setQuote(null);
     setStep("review");
-    try {
-      const opts = isReceiveExact
-        ? { recvAmount: recvUnits }
-        : { sendAmount: enteredUnits };
-      const q = await wallet.swapQuote(sendId, recvId, opts);
-      setQuote(q);
-    } catch {
-      // Non-fatal: the review screen falls back to asset-only display.
-    }
-    setBusy(false);
+    await fetchQuote();
   }
 
   async function executeSwap() {
-    setBusy(true);
     setError("");
+    if (needsPassword && !password) return setError("Enter your password to swap.");
+    // Never submit against a lapsed quote — taker_sign would reject the dead
+    // quote_id anyway, and the attempt would consume a password step-up.
+    if (quoteExpired) return setError("This quote expired. Get a fresh quote to continue.");
+    setBusy(true);
     setStep("swapping");
     try {
       const opts: Parameters<typeof wallet.swap>[2] = isReceiveExact
@@ -356,12 +409,26 @@ export function Swap({
         opts.reviewedSendAmount = quote.sendAmount;
         opts.reviewedRecvAmount = quote.recvAmount;
       }
+      if (needsPassword) opts.password = password;
       const res = await wallet.swap(sendId, recvId, opts);
       setResult(res);
       setStep("done");
     } catch (e) {
-      setError(errMessage(e));
-      setStep("form");
+      setError(swapErrorMessage(e));
+      setStep("review");
+      // Only an auth failure leaves the reviewed quote trustworthy — the swap
+      // terms never changed, the user just needs to re-enter their password. For
+      // anything else (gate rejection, dealer re-quote, unknown) the amounts the
+      // user approved may no longer hold, so DROP the quote: `reviewedSendAmount`
+      // / `reviewedRecvAmount` are the independent caps the gate enforces, and
+      // re-sending stale ones would re-arm Confirm against terms the dealer has
+      // already moved away from. Clearing forces a fresh quote first.
+      if (swapErrorKind(e) !== "auth") {
+        setQuote(null);
+        setPassword("");
+      }
+      // Dealer told us how much it can actually fill — keep it for the hint.
+      setAvailableUnits(lowBalanceAvailable(e));
     } finally {
       setBusy(false);
     }
@@ -497,22 +564,87 @@ export function Swap({
           {/* Fee */}
           <div className="flex items-center justify-between gap-3 border-b border-[color:var(--border-soft)] px-1 py-2">
             <dt className="text-[color:var(--text-subtle)]">Network fee</dt>
-            <dd className="text-[color:var(--text-secondary)]">Up to {formatSats(MAX_FEE_SATS)} sats</dd>
+            <dd className="text-[color:var(--text-secondary)]">Up to {formatSats(SWAP_MAX_FEE_SATS)} sats</dd>
           </div>
+          {/* Quote expiry — the dealer only honors a live quote_id. */}
+          {quote && secsLeft !== null && (
+            <div className="flex items-center justify-between gap-3 border-b border-[color:var(--border-soft)] px-1 py-2">
+              <dt className="text-[color:var(--text-subtle)]">Quote expires</dt>
+              <dd
+                className={
+                  quoteExpired
+                    ? "text-[color:var(--danger-text,var(--text-primary))]"
+                    : "console-value text-[color:var(--text-secondary)]"
+                }
+              >
+                {quoteExpired
+                  ? "Expired"
+                  : `in ${Math.floor(secsLeft / 60)}:${String(secsLeft % 60).padStart(2, "0")}`}
+              </dd>
+            </div>
+          )}
         </dl>
         <p className="mt-3 text-xs text-[color:var(--text-subtle)]">
           The swap is verified independently before signing. If the rate moved
           unfavorably, it will not sign.
         </p>
-        <ErrorText>{error}</ErrorText>
-        <div className="mt-3 flex flex-col gap-2">
-          <Button onClick={executeSwap} disabled={busy || !quote}>
-            {busy ? <Spinner /> : quote ? "Confirm swap" : "Waiting for quote\u2026"}
-          </Button>
-          <Button variant="secondary" onClick={() => setStep("form")} disabled={busy}>
-            Back
-          </Button>
-        </div>
+        {/* Re-quote path: either the preview failed outright (quoteError), or a
+            failed execution dropped a no-longer-trustworthy quote. Both need a
+            fresh quote before Confirm can arm again \u2014 never a stale one. */}
+        {quoteError || (!quote && !busy && error) ? (
+          <div className="mt-3 flex flex-col gap-2">
+            <ErrorText>
+              {error || "Couldn't get a quote \u2014 the dealer may be unavailable. Try again."}
+            </ErrorText>
+            {/* The dealer's own fillable figure, so "too big" becomes actionable. */}
+            {availableUnits !== null && availableUnits > 0n && (
+              <p className="text-xs text-[color:var(--text-subtle)]">
+                The dealer can currently fill up to{" "}
+                {sendId === policyHex
+                  ? `${fmtLbtc(Number(availableUnits))} ${isBtc ? "LBTC" : "sats"}`
+                  : `${formatAssetAmount(Number(availableUnits), sendPrecision)} ${sendLabel}`}
+                .
+              </p>
+            )}
+            <Button variant="secondary" onClick={fetchQuote} disabled={busy}>
+              {busy ? <Spinner /> : "Get a fresh quote"}
+            </Button>
+            <Button variant="secondary" onClick={() => setStep("form")} disabled={busy}>
+              Back
+            </Button>
+          </div>
+        ) : (
+          <>
+            {needsPassword && (
+              <Field label="Password">
+                <Input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Re-enter to confirm"
+                />
+              </Field>
+            )}
+            <ErrorText>{error}</ErrorText>
+            <div className="mt-3 flex flex-col gap-2">
+              {quoteExpired ? (
+                <Button variant="secondary" onClick={fetchQuote} disabled={busy}>
+                  {busy ? <Spinner /> : "Get a fresh quote"}
+                </Button>
+              ) : (
+                <Button
+                  onClick={executeSwap}
+                  disabled={busy || !quote || (needsPassword && !password)}
+                >
+                  {busy ? <Spinner /> : quote ? "Confirm swap" : "Waiting for quote\u2026"}
+                </Button>
+              )}
+              <Button variant="secondary" onClick={() => setStep("form")} disabled={busy}>
+                Back
+              </Button>
+            </div>
+          </>
+        )}
       </Card>
     );
   }

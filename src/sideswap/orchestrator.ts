@@ -79,9 +79,24 @@ export interface SwapResult {
 
 export class SwapError extends Error {}
 
+/** Dealer couldn't fill the requested size. Carries the dealer's own numbers so
+ *  the UI can tell the user how much IS fillable instead of a bare "not enough" —
+ *  `available` is the dealer's fillable amount in the `asset_type` side's units. */
+export class SwapLowBalanceError extends SwapError {
+  constructor(
+    message: string,
+    readonly available: bigint,
+  ) {
+    super(message);
+  }
+}
+
 export interface SwapQuotePreviewResult {
   sendAmount: bigint;
   recvAmount: bigint;
+  /** Epoch ms when this quote expires (from the dealer's `ttl`, in ms). The UI
+   *  counts down to it and re-quotes rather than submitting a dead quote_id. */
+  expiresAt: number;
 }
 
 // ---- result of the atomic signSwapPset engine call -----------------------
@@ -385,6 +400,9 @@ export async function previewSwapQuote(
   return {
     sendAmount: BigInt(Math.round(sendIsBase ? success.base_amount : success.quote_amount)),
     recvAmount: BigInt(Math.round(sendIsBase ? success.quote_amount : success.base_amount)),
+    // Absolute expiry, so the UI doesn't have to track when the quote arrived.
+    // The dealer's ttl is in ms and is what bounds `taker_sign` acceptance.
+    expiresAt: Date.now() + success.ttl,
   };
 }
 
@@ -412,8 +430,17 @@ function waitForQuote(
       } else if ("Error" in q.status) {
         reject(new SwapError(`dealer error: ${q.status.Error.error_msg}`));
       } else {
-        // LowBalance — reject; the wallet doesn't have enough for this quote.
-        reject(new SwapError("dealer returned LowBalance"));
+        // LowBalance — the dealer can't fill this size. Keep its `available`
+        // figure so the UI can say how much IS fillable rather than a bare
+        // "not enough balance", which leaves the user guessing whether to retry
+        // smaller. Float → BigInt via round: wire amounts are JS numbers.
+        const low = q.status.LowBalance;
+        reject(
+          new SwapLowBalanceError(
+            "dealer returned LowBalance",
+            BigInt(Math.round(low.available)),
+          ),
+        );
       }
     });
   });
