@@ -614,8 +614,8 @@ async function fullScanResilient(
  * Fallback BTC price for currencies lwk's PricesFetcher refuses — its
  * hardcoded supported list omits e.g. JPY, which every source below quotes.
  * Same philosophy as lwk: hit several public tickers in parallel and take the
- * median of whoever answers (≥2 required). The hosts are already in
- * host_permissions — they're a subset of the sources lwk itself uses.
+ * median of whoever answers (≥2 required). Every host is in host_permissions —
+ * all but mempool.space are a subset of the sources lwk itself uses.
  * (Coinbase is deliberately absent: it delisted JPY, and its BTC-JPY spot
  * endpoint still answers — with a stale quote ~3.4× off consensus.)
  */
@@ -653,6 +653,13 @@ async function fallbackRate(currency: string): Promise<number> {
       ),
     async () =>
       Number(((await json("https://blockchain.info/ticker")) as Record<string, { last: number }>)[c].last),
+    // mempool.space quotes every FIAT_OPTIONS currency (USD EUR GBP CAD CHF AUD
+    // JPY) in one keyless call with no practical rate limit. It's here for margin:
+    // the median needs 2 of N, and CoinGecko's free tier intermittently 429s, so
+    // with only 3 sources a single bad day drops us to 1 and the rate fails. Any
+    // currency it doesn't quote yields NaN, which the isFinite filter below drops.
+    async () =>
+      Number(((await json("https://mempool.space/api/v1/prices")) as Record<string, number>)[c]),
   ];
   const settled = await Promise.allSettled(sources.map((s) => s()));
   const rates = settled
