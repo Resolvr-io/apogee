@@ -161,9 +161,17 @@ describe("tracePaths — uneven time spacing", () => {
     expect(xs(line)).toEqual([0, 150, 300]);
   });
 
-  it("produces no NaN for a mismatched/short times array", () => {
-    // Defensive: a times array shorter than points would read undefined mid-series.
-    const { line } = tracePaths([1, 2, 3], [0, 100, 200]);
-    expect((line.match(/-?\d+(\.\d+)?/g) ?? []).map(Number).every(Number.isFinite)).toBe(true);
+  it("falls back to index spacing when times is shorter than points", () => {
+    // A short `times` would read undefined past its end — `times[2]` here — and emit
+    // NaN coordinates, rendering an empty path with no error anywhere. Unreachable
+    // from the engine (it builds both arrays from one map), so this pins the
+    // defensive guard rather than a live bug. Note the array is genuinely SHORT: an
+    // equal-length one silently tests nothing.
+    const { line, area } = tracePaths([1, 2, 3], [0, 100]);
+    const nums = (s: string) => (s.match(/-?\d+(\.\d+)?/g) ?? []).map(Number);
+    expect(nums(line).every(Number.isFinite)).toBe(true);
+    expect(nums(area).every(Number.isFinite)).toBe(true);
+    // Fell back to index spacing rather than partially applying the timestamps.
+    expect(xs(line)).toEqual([0, 150, 300]);
   });
 });

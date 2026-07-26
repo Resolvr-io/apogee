@@ -59,13 +59,16 @@ export function tracePaths(
   const span = max - min || 1;
 
   // Time-proportional x when timestamps are supplied and actually span a range;
-  // otherwise fall back to index spacing.
-  const t0 = times?.[0];
-  const tN = times?.[times.length - 1];
+  // otherwise fall back to index spacing. The length check matters: a `times` array
+  // shorter than `points` would read `undefined` past its end and emit NaN
+  // coordinates, which render as an empty path with no error anywhere.
+  const usable = times != null && times.length === points.length;
+  const t0 = usable ? times[0] : undefined;
+  const tN = usable ? times[times.length - 1] : undefined;
   const tSpan = t0 != null && tN != null ? tN - t0 : 0;
   const x = (i: number) => {
     if (points.length === 1) return W / 2;
-    if (times && tSpan > 0) return ((times[i] - t0!) / tSpan) * W;
+    if (usable && tSpan > 0) return ((times[i] - t0!) / tSpan) * W;
     return (i / (points.length - 1)) * W;
   };
   const y = (v: number) => PAD_T + (1 - (v - min) / span) * (H - PAD_T - PAD_B);

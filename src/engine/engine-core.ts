@@ -725,7 +725,9 @@ async function fetchPriceHistoryRaw(): Promise<NonNullable<typeof priceHistoryCa
   // non-finite or non-positive rather than letting it distort the min/max scale.
   const usd = j.prices
     .map((p) => ({ time: Number(p.time), usd: Number(p.USD) }))
-    .filter((p) => Number.isFinite(p.time) && Number.isFinite(p.usd) && p.usd > 0)
+    // `time > 0` alongside the finite check: a hostile non-positive or absurd
+    // timestamp can't crash anything, but it would distort the time axis.
+    .filter((p) => Number.isFinite(p.time) && p.time > 0 && Number.isFinite(p.usd) && p.usd > 0)
     .sort((a, b) => a.time - b.time);
   if (usd.length < 2) throw new Error("price history too short");
   priceHistoryCache = { ts: Date.now(), usd, rates: j.exchangeRates ?? {} };
