@@ -31,7 +31,7 @@ the action named in `params`. Four actions exist, plus an async `quote` notifica
 | `quote_id` | ✅ | Threaded to `get_quote` / `taker_sign` |
 | `ttl` | ✅ | Converted to an absolute `expiresAt`; drives the review-screen countdown and disarms Confirm on expiry |
 | `LowBalance.available` | ✅ | Surfaced as "the dealer can currently fill up to X" |
-| `fixed_fee` / `server_fee` | ❌ | **Deferred** — see below |
+| `fixed_fee` / `server_fee` | ⏳ | Wired up in the cost-disclosure change (`feat/swap-cost-disclosure`) — see below |
 
 `get_quote` returns its own, shorter `ttl` alongside the PSET; that one is unused. The countdown
 is driven by the quote notification's `Success.ttl`, which is the window the user is actually
@@ -39,17 +39,19 @@ deciding within on the review screen.
 
 ## Deferred, with rationale
 
-### 1. Dealer fee disclosure (`fixed_fee` / `server_fee`) — deferred, pending copy
+### 1. Dealer fee disclosure (`fixed_fee` / `server_fee`) — no longer deferred
 
-The review screen shows only the *network* fee ("Up to 1000 sats"). The dealer's own
-fee/spread is never displayed, so the user can only infer it by comparing send vs receive
-against the market rate.
+Superseded: these are surfaced by the cost-disclosure change on
+`feat/swap-cost-disclosure`, together with the trust disclosure the plan's constraint #4
+requires (naming SideSwap as the dealer, stating that it broadcasts, and that the swap is
+atomic so no one holds the funds).
 
-This is deliberately held together with the **trust-disclosure** gap: the plan's constraint
-#4 requires that a swap surface explain who holds funds and when, and the UI currently
-names neither SideSwap nor the atomic/no-custody model. Both are copy decisions, so they
-should land as one considered change rather than two ad-hoc strings. Nothing blocks it
-technically — the fields are already parsed into `SideSwapQuoteSuccess`.
+What prompted it: a real $1 swap delivered **0.943 USDt** for 1,550 sats offered. The form's
+estimate said "1.00" because it was a naive market-rate figure — `sats × rate`, rounded to
+2dp — that excluded both the ~26-sat dealer fee and the 60-sat network fee. SideSwap's own
+app avoids this by quoting **all-in** (asking ~1,638 sats to deliver $1 where the naive rate
+says ~1,552); the 86-sat premium matches our measured 60 + 26 exactly. Same economics,
+different presentation — so the fix was disclosure, not arithmetic.
 
 ### 2. `list_markets` — deferred until a second pair exists
 
@@ -98,5 +100,33 @@ this isn't available to any client.
   ambiguity is inherent to a server-broadcasts protocol. A "check your balance or the
   explorer before retrying" affordance would help.
 - **Fixed 1000-sat fee cap.** `SWAP_MAX_FEE_SATS` (`src/sideswap/constants.ts`) is a fixed
-  independent ceiling — correct in kind (never dealer-derived) but should become a real
-  feerate × vsize estimate before mainnet.
+  independent ceiling — correct in kind (never dealer-derived). Two mainnet swaps measured
+  **53 sats / 6,149 vsize** and **60 sats / 6,258 vsize**, so 1000 gives ~17× headroom;
+  replacing it with a live feerate × vsize estimate is a refinement, not a blocker. If that
+  happens, size it off the real CT figure — range proofs make a swap PSET ~6,200 vbytes, so a
+  few-hundred-vbyte assumption would set the cap far too low and reject valid swaps.
+
+## Settled by mainnet validation
+
+**The dealer pays the network fee when the wallet sends a non-policy asset.** Open question
+until 2026-07-25: `filterSendAssetUtxos` forwards only *send-asset* UTXOs, so a USDt→L-BTC swap
+contributes no L-BTC input for the Liquid fee — which is always denominated in L-BTC. It wasn't
+clear from the API whether the dealer would cover it or the swap would simply fail to build.
+
+Confirmed by a real mainnet swap (2 USDt → L-BTC, txid
+`fb083646a417205fd0aed12b1a872ca5142997f3639c5ee4e727c36a7264867e`, block 3,989,114): it
+settled with a 53-sat L-BTC fee, 2 inputs → 6 outputs, every amount blinded except the fee.
+The dealer covered the fee.
+
+This also confirms the gate's fee reasoning in that direction: the send-asset (USDt) fee is `0`,
+so `maxFee` is a no-op and the real L-BTC cost surfaces as a reduced receive amount — bounded by
+`minRecvAmount`, exactly as `verify-dealer-pset.ts` documents. It follows that PayJoin is a
+convenience for USDt-only wallets rather than a prerequisite for this direction working.
+
+**Both fee regimes are now exercised.** The reverse direction (1550 sats L-BTC → USDt, txid
+`84c5bc080631e0c11bd71157a91eb48138c5c0ba19a12cd10db7e3b9f27edb3f`, block 3,989,117) settled at
+60 sats, 3 inputs → 6 outputs. Because the fee is denominated in the *send* asset there, the
+fee-related checks were genuinely load-bearing on that swap rather than inert: the `maxFee` cap
+applied (60 ≤ 1000), and check 2's `sent ≤ sendAmount + fee + TOL` bound (1,611 sats) had to hold
+against the wallet's total L-BTC outflow. So dealer-paid and wallet-paid fees have both been
+validated end-to-end on mainnet.
