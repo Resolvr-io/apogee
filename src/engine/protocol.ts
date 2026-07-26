@@ -272,6 +272,10 @@ export type WalletRequest =
       /** User-reviewed receive amount from the preview quote (base-10 string).
        *  Binds the slippage floor in sell-exact mode. */
       reviewedRecvAmount?: string;
+      /** Step-up password for never-auto-lock wallets — mirrors `wallet/send`.
+       *  Required when auto-lock is "never" (the wallet stays unlocked, so a
+       *  fund-moving op re-confirms the password). Ignored otherwise. */
+      password?: string;
     }
   // Quote preview for a swap: connects to SideSwap, runs startQuotes, and
   // returns the expected receive amount — no signing, no broadcast.
@@ -317,6 +321,10 @@ export interface SwapResultDTO {
 export interface SwapQuotePreview {
   sendAmount: string; // base-10, base units of the send asset (from dealer's base_amount)
   recvAmount: string; // base-10, base units of the receive asset (from dealer's quote_amount)
+  /** Epoch ms when the dealer's quote expires (derived from its `ttl`). The UI
+   *  counts down to this and re-quotes instead of submitting a dead quote_id,
+   *  which would fail only after burning a password step-up round trip. */
+  expiresAt: number;
 }
 
 /** Human-readable spend details for the Jade signing tab's review summary. */

@@ -73,7 +73,7 @@ export const wallet = {
     call<PrepareSendResult>({ type: "wallet/prepareSend", address, sats, drain, asset }),
   send: (pset: string, review?: SendReview, password?: string) =>
     call<SendResult>({ type: "wallet/send", pset, review, password }),
-  swap: (sendAssetId: string, recvAssetId: string, opts: { sendAmount?: number; recvAmount?: number; reviewedSendAmount?: string; reviewedRecvAmount?: string }) =>
+  swap: (sendAssetId: string, recvAssetId: string, opts: { sendAmount?: number; recvAmount?: number; reviewedSendAmount?: string; reviewedRecvAmount?: string; password?: string }) =>
     call<SwapResultDTO>({ type: "wallet/swap", sendAssetId, recvAssetId, ...opts }),
   swapQuote: (sendAssetId: string, recvAssetId: string, opts: { sendAmount?: number; recvAmount?: number }) =>
     call<SwapQuotePreview>({ type: "wallet/swapQuote", sendAssetId, recvAssetId, ...opts }),
@@ -95,45 +95,18 @@ export const wallet = {
   disconnectSite: (origin: string) => call<void>({ type: "wallet/disconnectSite", origin }),
 };
 
-/** Surface an unknown thrown value as a message string. */
-export function errMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-// ---- unlock-throttle error translation ----
-//
-// The keystore refuses guarded password attempts with machine-readable codes
-// (UNLOCK_THROTTLED:<epochMs> / UNLOCK_BLOCKED) so every surface with a password
-// field — unlock screen, approval overlay, reveal-seed form — renders the same
-// friendly text instead of a raw code.
-
-/** Epoch ms when the next attempt is allowed, if `err` is a cooldown refusal. */
-export function throttledUntil(err: unknown): number | null {
-  const m = /^UNLOCK_THROTTLED:(\d+)$/.exec(errMessage(err));
-  return m ? Number(m[1]) : null;
-}
-
-/** True when `err` is the hard lock (only recovery/reset can proceed). */
-export function isUnlockBlocked(err: unknown): boolean {
-  return errMessage(err) === "UNLOCK_BLOCKED";
-}
-
-export const UNLOCK_BLOCKED_TEXT =
-  "Too many failed attempts. Restore from your recovery phrase or reset Apogee to continue.";
-
-/** Render "wait" durations as e.g. "45s" or "2m 30s". */
-export function formatCooldown(msLeft: number): string {
-  const s = Math.max(1, Math.ceil(msLeft / 1000));
-  const m = Math.floor(s / 60);
-  return m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
-}
-
-/** Friendly text for any password-attempt error (throttle-aware). */
-export function unlockErrMessage(err: unknown): string {
-  if (isUnlockBlocked(err)) return UNLOCK_BLOCKED_TEXT;
-  const until = throttledUntil(err);
-  if (until !== null) {
-    return `Too many failed attempts. Try again in ${formatCooldown(until - Date.now())}.`;
-  }
-  return errMessage(err);
-}
+// Error translation lives in ./errors (pure — no @/lib/ext, so it's unit-testable
+// in plain Node). Re-exported here so existing call sites keep importing from
+// "@/sidepanel/wallet-client" unchanged.
+export {
+  errMessage,
+  throttledUntil,
+  isUnlockBlocked,
+  UNLOCK_BLOCKED_TEXT,
+  formatCooldown,
+  unlockErrMessage,
+  swapErrorKind,
+  swapErrorMessage,
+  lowBalanceAvailable,
+  type SwapErrorKind,
+} from "./errors";

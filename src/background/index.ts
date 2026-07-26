@@ -24,7 +24,13 @@ import { browser } from "@/lib/ext";
 // Static imports — dynamic import() is disallowed in the MV3 service worker
 // global scope per the HTML spec (Chrome blocks it at runtime).
 import { SideSwapClient } from "@/sideswap/client";
-import { executeInstantSwap, previewSwapQuote, SwapError } from "@/sideswap/orchestrator";
+import {
+  executeInstantSwap,
+  previewSwapQuote,
+  SwapError,
+  SwapLowBalanceError,
+} from "@/sideswap/orchestrator";
+import { LOW_BALANCE_PREFIX, SWAP_MAX_FEE_SATS } from "@/sideswap/constants";
 import type {
   AddressDTO,
   ApprovalRequest,
@@ -255,6 +261,25 @@ async function engine<T>(req: EngineRequest): Promise<T> {
 // ---- wallet operations (keystore + engine) ---------------------------------
 
 /** Resolve a wallet record (defaults to the active wallet). */
+/** Re-throw a swap failure across the SW→UI boundary.
+ *
+ *  Only `err.message` survives that hop (the router serializes with `errMsg`),
+ *  so a `SwapLowBalanceError`'s `available` field would be lost. Fold it into the
+ *  message behind `LOW_BALANCE_PREFIX` (see sideswap/constants.ts), which the side
+ *  panel parses back out — that's what lets the UI say how much the dealer CAN
+ *  fill instead of a bare "not enough balance". The marker is emitted ONLY here,
+ *  so the panel's anchored parse can't be spoofed by dealer-supplied text. */
+function rethrowSwapError(e: unknown): never {
+  if (e instanceof SwapLowBalanceError) {
+    // Marker-prefixed and nothing else, so the panel's anchored parse can trust
+    // it. A dealer's own text always arrives as `dealer error: <error_msg>`, so
+    // it can never occupy position 0 and fake a LowBalance refusal.
+    throw new SwapError(`${LOW_BALANCE_PREFIX}${e.available.toString()}`);
+  }
+  if (e instanceof SwapError) throw e;
+  throw e instanceof Error ? e : new Error(String(e));
+}
+
 async function walletInfo(walletId?: string) {
   const id = walletId || (await keystore.getActiveWalletId());
   if (!id) throw new Error("no active wallet");
@@ -540,24 +565,28 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       if (info.signer === "watch") {
         throw new Error("Watch-only wallets can't sign or swap.");
       }
+      // A never-auto-locking wallet stays unlocked indefinitely, so step up auth
+      // before signing — same gate as `wallet/send`. Swap moves funds (it signs
+      // a transaction), so it must not bypass the password re-confirm that send
+      // requires. See src/sideswap/constants.ts for the fee ceiling.
+      if ((await autoLockMinutes()) === 0) {
+        if (!msg.password || !(await keystore.verifyPassword(msg.password))) {
+          throw new Error("Enter your password to swap.");
+        }
+      }
       const mnemonic = keystore.getMnemonic(info.id);
       // The SideSwap client lives only for this swap call — connect, execute,
       // disconnect. A WebSocket in the service worker is fine (MV3 background).
       const client = new SideSwapClient(info.network);
       await client.connect();
       try {
-        // Fixed sane fee ceiling: 1000 sats covers any reasonable Liquid swap
-        // (typical swap PSET is ~200-300 vbytes at 0.1-1 sat/vbyte). This is
-        // the independent estimate the verification gate requires — never
-        // derived from dealer data. TODO: replace with a live fee estimate.
-        const MAX_FEE_SATS = 1000n;
         const result = await executeInstantSwap(
           {
             sendAssetId: msg.sendAssetId,
             recvAssetId: msg.recvAssetId,
             sendAmount: msg.sendAmount,
             recvAmount: msg.recvAmount,
-            maxFee: MAX_FEE_SATS,
+            maxFee: BigInt(SWAP_MAX_FEE_SATS),
             reviewedSendAmount: msg.reviewedSendAmount != null ? BigInt(msg.reviewedSendAmount) : undefined,
             reviewedRecvAmount: msg.reviewedRecvAmount != null ? BigInt(msg.reviewedRecvAmount) : undefined,
           },
@@ -578,8 +607,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
         };
         return dto;
       } catch (e) {
-        if (e instanceof SwapError) throw e;
-        throw e instanceof Error ? e : new Error(String(e));
+        rethrowSwapError(e);
       } finally {
         client.disconnect();
       }
@@ -610,10 +638,10 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
         return {
           sendAmount: preview.sendAmount.toString(),
           recvAmount: preview.recvAmount.toString(),
+          expiresAt: preview.expiresAt,
         } satisfies SwapQuotePreview;
       } catch (e) {
-        if (e instanceof SwapError) throw e;
-        throw e instanceof Error ? e : new Error(String(e));
+        rethrowSwapError(e);
       } finally {
         client.disconnect();
       }

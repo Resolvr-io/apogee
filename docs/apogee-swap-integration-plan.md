@@ -56,6 +56,8 @@ The docs reference GDK's `GA_psbt_get_details` / `GA_psbt_sign`; LWK's `psetDeta
 5. Dealer downtime — fail closed, clear error, no quote-spam retry loops.
 6. PayJoin sibling — same cooperative-PSET shape; lets a USDt-only wallet pay fees in USDt. Ship after the core swap.
 
+**API coverage:** which parts of the SideSwap API the implementation actually consumes — and which are deliberately deferred (dealer fee disclosure, `list_markets`, live quote streaming, PayJoin) — is tracked in `docs/sideswap-api-coverage.md`.
+
 ### Verification gate — hardening and wiring prerequisites
 
 The gate (`engine/verify-dealer-pset.ts`) and its engine handlers (`verifyDealerPset`, `getUtxos`) are foundation only — nothing dispatches them yet. Two fixes landed after the security review: check 3 was removed (`PsetBalance.recipients()` lists only outputs that don't belong to the wallet, so scanning it for our own receive output failed the happy path — check 1's net-from-wallet-POV inflow is the real guarantee), and `maxFee` was made required (so the L-BTC-send fee is never left unbounded for a hostile dealer to inflate). Three items depend on the swap flow and MUST be honored when it is wired:
