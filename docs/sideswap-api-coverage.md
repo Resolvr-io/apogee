@@ -31,7 +31,7 @@ the action named in `params`. Four actions exist, plus an async `quote` notifica
 | `quote_id` | ✅ | Threaded to `get_quote` / `taker_sign` |
 | `ttl` | ✅ | Converted to an absolute `expiresAt`; drives the review-screen countdown and disarms Confirm on expiry |
 | `LowBalance.available` | ✅ | Surfaced as "the dealer can currently fill up to X" |
-| `fixed_fee` / `server_fee` | ❌ | **Deferred** — see below |
+| `fixed_fee` / `server_fee` | ⏳ | Wired up in the cost-disclosure change (`feat/swap-cost-disclosure`) — see below |
 
 `get_quote` returns its own, shorter `ttl` alongside the PSET; that one is unused. The countdown
 is driven by the quote notification's `Success.ttl`, which is the window the user is actually
@@ -39,17 +39,19 @@ deciding within on the review screen.
 
 ## Deferred, with rationale
 
-### 1. Dealer fee disclosure (`fixed_fee` / `server_fee`) — deferred, pending copy
+### 1. Dealer fee disclosure (`fixed_fee` / `server_fee`) — no longer deferred
 
-The review screen shows only the *network* fee ("Up to 1000 sats"). The dealer's own
-fee/spread is never displayed, so the user can only infer it by comparing send vs receive
-against the market rate.
+Superseded: these are surfaced by the cost-disclosure change on
+`feat/swap-cost-disclosure`, together with the trust disclosure the plan's constraint #4
+requires (naming SideSwap as the dealer, stating that it broadcasts, and that the swap is
+atomic so no one holds the funds).
 
-This is deliberately held together with the **trust-disclosure** gap: the plan's constraint
-#4 requires that a swap surface explain who holds funds and when, and the UI currently
-names neither SideSwap nor the atomic/no-custody model. Both are copy decisions, so they
-should land as one considered change rather than two ad-hoc strings. Nothing blocks it
-technically — the fields are already parsed into `SideSwapQuoteSuccess`.
+What prompted it: a real $1 swap delivered **0.943 USDt** for 1,550 sats offered. The form's
+estimate said "1.00" because it was a naive market-rate figure — `sats × rate`, rounded to
+2dp — that excluded both the ~26-sat dealer fee and the 60-sat network fee. SideSwap's own
+app avoids this by quoting **all-in** (asking ~1,638 sats to deliver $1 where the naive rate
+says ~1,552); the 86-sat premium matches our measured 60 + 26 exactly. Same economics,
+different presentation — so the fix was disclosure, not arithmetic.
 
 ### 2. `list_markets` — deferred until a second pair exists
 
