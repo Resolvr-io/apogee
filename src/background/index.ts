@@ -43,6 +43,7 @@ import type {
   DescriptorInfo,
   EngineRequest,
   PrepareSendResult,
+  PriceHistory,
   ProviderAccount,
   ProviderBalance,
   ProviderRequest,
@@ -512,6 +513,19 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
 
     case "wallet/getRate":
       return engineDirect<number>({ kind: "getRate", currency: msg.currency });
+
+    case "wallet/getPrice24hAgo":
+      return engineDirect<number>({ kind: "getPrice24hAgo", currency: msg.currency });
+
+    // engineDirect, like getRate: touches no Wollet, so it can't hit the
+    // re-entrancy panic, and keeping it off the serial queue means a slow price
+    // host can't stall a sync behind it.
+    case "wallet/getPriceHistory":
+      return engineDirect<PriceHistory>({
+        kind: "getPriceHistory",
+        currency: msg.currency,
+        range: msg.range,
+      });
 
     // Open the guide, reusing the tab we already opened rather than stacking
     // duplicates. Handled HERE, not in the panel: `tabs.query({url})` silently

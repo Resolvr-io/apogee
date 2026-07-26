@@ -26,6 +26,13 @@ export type EngineRequest =
   | { kind: "getTransactions"; descriptor: string; network: LiquidNetwork }
   | { kind: "signPset"; mnemonic: string; network: LiquidNetwork; pset: string }
   | { kind: "getRate"; currency: string } // BTC price in `currency` (median of sources)
+  // Hourly BTC price history for the price chart, newest-last, in `currency`.
+  // `range` selects the window; see `PriceRange` and `engine-core.ts` getPriceHistory.
+  | { kind: "getPriceHistory"; currency: string; range: PriceRange }
+  // BTC price 24h ago in `currency` — a single point (~148 bytes), for the rate
+  // bar's delta. Deliberately separate from getPriceHistory, whose full series is
+  // ~147 KB and only worth fetching when the chart is expanded.
+  | { kind: "getPrice24hAgo"; currency: string }
   | { kind: "qr"; text: string } // monochrome QR bitmap as a data-URI
   | { kind: "getAsset"; assetId: string; network: LiquidNetwork } // registry metadata
   // Validate a pasted watch-only descriptor and read its fingerprint + network
@@ -130,6 +137,29 @@ export interface DescriptorInfo {
   mainnet: boolean;
 }
 
+/** Windows the price chart can show. The upstream series is hourly, so the short
+ *  ranges are the sparse ones: 24h is ~25 points, 1y is ~8,760. */
+export type PriceRange = "24h" | "7d" | "30d" | "1y" | "all";
+
+/** Hourly BTC price history for one range, oldest-first — the shape the chart
+ *  draws. `points` are already converted to the requested currency. */
+export interface PriceHistory {
+  currency: string;
+  range: PriceRange;
+  /** Close price per point, oldest-first. At least 2 entries, or the engine throws
+   *  (a single point can't be drawn and a flat pair can't be scaled). */
+  points: number[];
+  /** Unix seconds for each entry in `points`, same length and order. Required
+   *  because the upstream series is NOT evenly spaced — weekly before 2013, daily
+   *  until late 2023, hourly after — so the chart must position by time. Plotting by
+   *  array index crushes 2010-2023 into the leftmost few percent of the width. */
+  times: number[];
+  /** Unix seconds of the first and last point, so the UI can label the window
+   *  without recomputing it from the range. */
+  fromTime: number;
+  toTime: number;
+}
+
 /** Chain-server health probe result. `status` is the headline; in automatic
  *  mode `providers` breaks it down per endpoint so the UI can show a primary
  *  outage alongside a working fallback. */
@@ -218,6 +248,8 @@ export type WalletRequest =
   | { type: "wallet/getTransactions"; walletId?: string }
   | { type: "wallet/revealMnemonic"; walletId: string; password: string }
   | { type: "wallet/getRate"; currency: string }
+  | { type: "wallet/getPriceHistory"; currency: string; range: PriceRange }
+  | { type: "wallet/getPrice24hAgo"; currency: string }
   // Open the guide page, focusing the already-open tab if there is one. Lives in
   // the SW because it remembers the tab id it created — `tabs.query({url})` needs
   // the broad "tabs" permission, which this doesn't warrant.
