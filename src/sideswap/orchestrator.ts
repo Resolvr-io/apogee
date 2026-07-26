@@ -276,14 +276,30 @@ export async function executeInstantSwap(
   //    the user is sending: if sending base (LBTC), send=base, recv=quote;
   //    if sending quote (e.g. USDt), send=quote, recv=base.
   const sendIsBase = sendAssetId === policyAssetId(network);
-  const quotedSendAmt = BigInt(Math.round(
-    sendIsBase ? success.base_amount : success.quote_amount,
-  ));
+  // `base_amount`/`quote_amount` EXCLUDE the dealer's fee, which is always
+  // L-BTC-denominated. The gate measures the wallet's NET policy-asset outflow,
+  // which includes that fee — so on an L-BTC send the quoted figure has to be made
+  // fee-inclusive before it becomes `sendAmount`, or check 2
+  // (`sent <= sendAmount + fee + TOL`) rejects the real outflow.
+  //
+  // Measured on mainnet: base 1556 + 83 dealer fee + 60 network fee = 1699 sent,
+  // against a fee-exclusive bound of 1556 + 60 + 1 = 1617. Every receive-exact
+  // L-BTC swap would be refused with "the rate moved unfavorably" — nothing to do
+  // with `maxSendAmount`, which check 2 never even reaches.
+  const dealerFee =
+    BigInt(Math.round(success.fixed_fee)) + BigInt(Math.round(success.server_fee));
+  const quotedSendAmt =
+    BigInt(Math.round(sendIsBase ? success.base_amount : success.quote_amount)) +
+    (sendIsBase ? dealerFee : 0n);
   const quotedRecvAmt = BigInt(Math.round(
     sendIsBase ? success.quote_amount : success.base_amount,
   ));
   // Use the original sendAmount (what the user offered) for sell-exact, or
   // the dealer's quoted send amount for receive-exact (user didn't specify).
+  //
+  // Sell-exact keeps the user's own figure: the dealer takes its fee out of what
+  // was offered rather than charging on top, so the outflow is bounded by
+  // `sendAmount + fee` already.
   const effectiveSendAmount = receiveExact
     ? quotedSendAmt
     : BigInt(params.sendAmount!);

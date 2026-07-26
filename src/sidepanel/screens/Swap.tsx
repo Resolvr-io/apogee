@@ -402,12 +402,17 @@ export function Swap({
       const usd = recvUnits / 10 ** (recvPrecision ?? 8);
       return Math.round((usd / btcRate) * 100_000_000) + feeAllowanceSats;
     }
-    // Receiving L-BTC, sending USDt: the dealer covers the L-BTC fee, so the send
-    // side carries no fee allowance — just the principal.
+    // Receiving L-BTC, sending USDt. The fee allowance still applies, converted to
+    // USDt. On a SELL-exact USDt swap the dealer absorbs the L-BTC fee by delivering
+    // less L-BTC — but here the receive amount is fixed by the user, so it can't
+    // absorb anything: the dealer has to charge more USDt instead. Omitting the
+    // margin let a USDt balance just above market value pass this check and then hit
+    // the dealer refusal, which is the exact error the guard exists to prevent.
     if (recvId === policyHex && sendIsUsd) {
       const usd = lbtcToUsd(recvUnits);
-      if (usd == null) return null;
-      return Math.round(usd * 10 ** (sendPrecision ?? 8));
+      const feeUsd = lbtcToUsd(feeAllowanceSats);
+      if (usd == null || feeUsd == null) return null;
+      return Math.round((usd + feeUsd) * 10 ** (sendPrecision ?? 8));
     }
     return null;
   })();
