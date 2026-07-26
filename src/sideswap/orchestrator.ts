@@ -97,6 +97,11 @@ export interface SwapQuotePreviewResult {
   /** Epoch ms when this quote expires (from the dealer's `ttl`, in ms). The UI
    *  counts down to it and re-quotes rather than submitting a dead quote_id. */
   expiresAt: number;
+  /** The dealer's own fee components, in sats (they're L-BTC-denominated). Shown
+   *  in the review breakdown so the cost of a swap is disclosed rather than
+   *  buried in the rate — on a small swap these dominate. */
+  fixedFee: bigint;
+  serverFee: bigint;
 }
 
 // ---- result of the atomic signSwapPset engine call -----------------------
@@ -403,6 +408,8 @@ export async function previewSwapQuote(
     // Absolute expiry, so the UI doesn't have to track when the quote arrived.
     // The dealer's ttl is in ms and is what bounds `taker_sign` acceptance.
     expiresAt: Date.now() + success.ttl,
+    fixedFee: BigInt(Math.round(success.fixed_fee)),
+    serverFee: BigInt(Math.round(success.server_fee)),
   };
 }
 

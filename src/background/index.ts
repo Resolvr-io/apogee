@@ -639,6 +639,8 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
           sendAmount: preview.sendAmount.toString(),
           recvAmount: preview.recvAmount.toString(),
           expiresAt: preview.expiresAt,
+          fixedFee: preview.fixedFee.toString(),
+          serverFee: preview.serverFee.toString(),
         } satisfies SwapQuotePreview;
       } catch (e) {
         rethrowSwapError(e);
