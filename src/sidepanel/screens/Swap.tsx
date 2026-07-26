@@ -230,19 +230,27 @@ export function Swap({
   // economics, so the fix is disclosure, not arithmetic.
   const dealerFeeSats =
     quote == null ? null : Number(BigInt(quote.fixedFee) + BigInt(quote.serverFee));
+  /** Dealer + network, the single figure the user cares about. */
+  const totalCostSats =
+    dealerFeeSats == null ? null : dealerFeeSats + SWAP_TYPICAL_FEE_SATS;
   /** Total cost (dealer + network) as a percentage of the L-BTC side of the swap.
    *  Both fees are L-BTC-denominated, so the L-BTC leg is the honest denominator
    *  whichever direction the swap runs. */
   const costPct = (() => {
-    if (dealerFeeSats == null || quote == null) return null;
-    const lbtcLeg =
-      sendId === policyHex ? Number(quote.sendAmount) : Number(quote.recvAmount);
-    if (!Number.isFinite(lbtcLeg) || lbtcLeg <= 0) return null;
+    if (dealerFeeSats == null || totalCostSats == null || quote == null) return null;
+    // Denominator is the swap's PRINCIPAL, excluding fees. `quote.sendAmount` is
+    // now fee-inclusive (see previewSwapQuote), so net the dealer fee back out on
+    // an L-BTC send; the receive leg never included it.
+    const principal =
+      sendId === policyHex
+        ? Number(quote.sendAmount) - dealerFeeSats
+        : Number(quote.recvAmount);
+    if (!Number.isFinite(principal) || principal <= 0) return null;
     // Use the TYPICAL fee, not the cap: the exact fee isn't known until the
     // dealer builds the PSET, but two mainnet swaps measured 53-60 sats. Using
     // the 1000-sat ceiling here would report ~66% on a $1 swap whose real cost
     // was ~9% — alarming and wrong. The cap still governs verification.
-    return ((dealerFeeSats + SWAP_TYPICAL_FEE_SATS) / lbtcLeg) * 100;
+    return (totalCostSats / principal) * 100;
   })();
 
   /** USD equivalent of the entered send amount, or null. */
@@ -619,56 +627,25 @@ export function Swap({
               {recvDisplay ?? (busy ? "Fetching..." : "\u2014")}
             </dd>
           </div>
-          {/* The floor the verification gate actually enforces. Previously invisible:
-              in sell-exact the gate accepts the dealer's quote minus 3% slippage, so
-              the user could receive less than the figure above without being told a
-              range existed. Receive-exact has no tolerance (the typed amount IS the
-              minimum), so there's nothing extra to disclose there. */}
-          {!isReceiveExact && minRecvDisplay && (
+          {/* Fees: one calm line, with the split available on demand via the
+              existing `.drawer` <details> pattern. Previously this was three rows
+              plus a red percentage and a red warning paragraph, which read as an
+              error state for what is a normal, correctly-quoted swap. */}
+          {totalCostSats !== null && (
             <div className="flex items-center justify-between gap-3 border-b border-[color:var(--border-soft)] px-1 py-2">
-              <dt className="text-[color:var(--text-subtle)]">Minimum received</dt>
-              <dd className="console-value text-[color:var(--text-secondary)]">
-                {minRecvDisplay}
-              </dd>
-            </div>
-          )}
-          {/* Cost breakdown. Disclosed rather than buried in the rate: these are
-              FLAT, so on a small swap they dominate — a real $1 swap lost ~9%
-              (60-sat network fee + ~26-sat dealer fee), while the same absolute
-              cost is ~0.1% of a $100 swap. */}
-          {dealerFeeSats !== null && dealerFeeSats > 0 && (
-            <div className="flex items-center justify-between gap-3 border-b border-[color:var(--border-soft)] px-1 py-2">
-              <dt className="text-[color:var(--text-subtle)]">Dealer fee</dt>
+              <dt className="text-[color:var(--text-subtle)]">Fees</dt>
               <dd className="text-[color:var(--text-secondary)]">
-                {formatSats(dealerFeeSats)} sats
+                ≈ {formatSats(totalCostSats)} sats
                 {(() => {
-                  const usd = lbtcToUsd(dealerFeeSats);
-                  return usd != null ? ` (≈ ${fmtUsd(usd)})` : "";
+                  const usd = lbtcToUsd(totalCostSats);
+                  return usd != null ? ` (${fmtUsd(usd)})` : "";
                 })()}
-              </dd>
-            </div>
-          )}
-          <div className="flex items-center justify-between gap-3 border-b border-[color:var(--border-soft)] px-1 py-2">
-            <dt className="text-[color:var(--text-subtle)]">Network fee</dt>
-            <dd className="text-[color:var(--text-secondary)]">
-              {/* Typical, with the enforced ceiling named. Showing only the cap read
-                  as though every swap costs 1000 sats; real ones measured 53–60. */}
-              ≈ {formatSats(SWAP_TYPICAL_FEE_SATS)} sats (max {formatSats(SWAP_MAX_FEE_SATS)})
-            </dd>
-          </div>
-          {/* Total cost as a share of the swap. The honest headline on a small
-              swap, and the number that explains an unexpectedly low receive. */}
-          {costPct !== null && (
-            <div className="flex items-center justify-between gap-3 border-b border-[color:var(--border-soft)] px-1 py-2">
-              <dt className="text-[color:var(--text-subtle)]">Total cost</dt>
-              <dd
-                className={
-                  costPct >= 5
-                    ? "console-value text-[color:var(--danger-text,var(--text-primary))]"
-                    : "console-value text-[color:var(--text-secondary)]"
-                }
-              >
-                ≈ {costPct < 0.1 ? "<0.1" : costPct.toFixed(1)}% of this swap
+                {costPct !== null && (
+                  <span className="text-[color:var(--text-subtle)]">
+                    {" · "}
+                    {costPct < 0.1 ? "<0.1" : costPct.toFixed(1)}%
+                  </span>
+                )}
               </dd>
             </div>
           )}
@@ -690,24 +667,32 @@ export function Swap({
             </div>
           )}
         </dl>
-        {/* Fixed costs dominate a small swap. Worth saying plainly rather than
-            letting the user discover it from a low receive amount. */}
-        {costPct !== null && costPct >= 5 && (
-          <p className="mt-3 text-xs text-[color:var(--danger-text,var(--text-primary))]">
-            Fees are a large share of a swap this small — they're mostly flat, so a
-            bigger swap costs proportionally much less.
-          </p>
-        )}
-        {/* Trust disclosure (plan constraint #4): name the counterparty and say
-            who holds the funds. This swap is atomic — one Liquid transaction, so
-            there is no moment where SideSwap holds the user's money — but the
-            price is the dealer's, and SideSwap broadcasts. */}
-        <p className="mt-3 text-xs text-[color:var(--text-subtle)]">
-          Price quoted by the SideSwap dealer; SideSwap broadcasts the transaction.
-          The swap is atomic — both sides move in one Liquid transaction, so your
-          funds are never held by anyone. Apogee verifies the amounts independently
-          before signing and will not sign if they moved unfavorably.
-        </p>
+        {/* One muted line, expandable. Constraint #4 wants the trust model
+            surfaced, not a paragraph on the confirm screen — the summary names the
+            counterparty, the body carries the detail for whoever wants it. Fee
+            arithmetic lives here too, so a small swap's percentage is explained on
+            demand rather than shouted in red. */}
+        <details className="drawer mt-3">
+          <summary className="cursor-pointer px-1 py-1.5 text-xs text-[color:var(--text-subtle)]">
+            Quoted by SideSwap · atomic swap, funds never held
+          </summary>
+          <div className="flex flex-col gap-1.5 px-1 pb-1.5 text-xs text-[color:var(--text-subtle)]">
+            {dealerFeeSats !== null && dealerFeeSats > 0 && (
+              <p>
+                Fees: {formatSats(dealerFeeSats)} sats to the dealer, ≈{" "}
+                {formatSats(SWAP_TYPICAL_FEE_SATS)} sats network (max{" "}
+                {formatSats(SWAP_MAX_FEE_SATS)}). These are mostly flat, so they're a
+                bigger share of a small swap.
+              </p>
+            )}
+            {minRecvDisplay && <p>You'll receive at least {minRecvDisplay}.</p>}
+            <p>
+              SideSwap quotes the price and broadcasts. Both sides move in one Liquid
+              transaction, so your funds are never held by anyone. Apogee checks the
+              amounts before signing and won't sign if they moved against you.
+            </p>
+          </div>
+        </details>
         {/* Re-quote path: either the preview failed outright (quoteError), or a
             failed execution dropped a no-longer-trustworthy quote. Both need a
             fresh quote before Confirm can arm again \u2014 never a stale one. */}

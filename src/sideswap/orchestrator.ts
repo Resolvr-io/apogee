@@ -402,8 +402,28 @@ export async function previewSwapQuote(
   // Map base_amount/quote_amount to send/recv based on which asset the
   // user is sending: base (LBTC) or quote (e.g. USDt).
   const sendIsBase = sendAssetId === policyAssetId(network);
+  const dealerFee = BigInt(Math.round(success.fixed_fee)) + BigInt(Math.round(success.server_fee));
+  // `base_amount` EXCLUDES the dealer's fee, which is L-BTC-denominated. Measured
+  // on a real $1 receive-exact quote: base 1556 sats + 83 sats fee = 1639, matching
+  // both SideSwap's own 1638-sat ask and the ~1643 implied by a live sell-exact
+  // swap. So the fee-exclusive figure is NOT what the wallet pays.
+  //
+  // Returning it fee-inclusive fixes three things at once:
+  //   - "You pay" shows the real charge instead of understating it;
+  //   - `reviewedSendAmount` (and so the receive-exact `maxSendAmount` cap) is
+  //     measured on the same basis as the outflow the gate checks — otherwise an
+  //     83-sat fee eats the entire 5% headroom (5.3% of 1556) and the gate rejects
+  //     a swap where nothing actually drifted;
+  //   - the cost percentage stops dividing by a base that excludes the fee.
+  //
+  // Only when SENDING L-BTC: the fee is always in L-BTC, so adding it to a USDt
+  // `sendAmount` would mix assets. On a USDt send the dealer covers the fee and it
+  // surfaces as a reduced receive instead (bounded by `minRecvAmount`).
+  const sendAmount =
+    BigInt(Math.round(sendIsBase ? success.base_amount : success.quote_amount)) +
+    (sendIsBase ? dealerFee : 0n);
   return {
-    sendAmount: BigInt(Math.round(sendIsBase ? success.base_amount : success.quote_amount)),
+    sendAmount,
     recvAmount: BigInt(Math.round(sendIsBase ? success.quote_amount : success.base_amount)),
     // Absolute expiry, so the UI doesn't have to track when the quote arrived.
     // The dealer's ttl is in ms and is what bounds `taker_sign` acceptance.
