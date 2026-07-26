@@ -136,15 +136,15 @@ export function App() {
             </span>
           )}
           <div className="ml-auto flex items-center gap-1">
-            <IconButton
-              label="Guide"
-              onClick={() =>
-                void browser.tabs.create({ url: browser.runtime.getURL("src/guide/guide.html") })
-              }
-            >
+            <IconButton label="Guide" onClick={() => void wallet.openGuide()}>
               <Compass size={16} />
             </IconButton>
-            <IconButton label="Settings" onClick={() => setView("settings")}>
+            {/* Toggle: pressing Settings while it's open goes back rather than being
+                inert, which is what the icon staying highlighted implies. */}
+            <IconButton
+              label={view === "settings" ? "Close settings" : "Settings"}
+              onClick={() => setView(view === "settings" ? "home" : "settings")}
+            >
               <Settings size={16} />
             </IconButton>
             <IconButton label="Lock" onClick={lock}>
