@@ -67,11 +67,20 @@ export type SwapErrorKind =
   | "stale-quote" // gate rejected or dealer re-quoted — the reviewed quote is no longer trustworthy
   | "unknown"; // anything else — treat conservatively, like stale-quote
 
+/** Compiled once, and with the prefix escaped rather than interpolated raw: the
+ *  constant is metacharacter-free today, but building the pattern from it per call
+ *  means a future prefix containing e.g. `.` or `|` would silently loosen this
+ *  anchored match — the one thing standing between a dealer and a fabricated
+ *  amount. Escaping keeps it literal regardless of what the constant becomes. */
+const LOW_BALANCE_RE = new RegExp(
+  `^${LOW_BALANCE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\d+)$`,
+);
+
 /** The dealer's fillable amount (base units) from a genuine LowBalance refusal,
- *  or null. Anchored (`^`) on `LOW_BALANCE_PREFIX`, so a dealer `error_msg`
+ *  or null. Anchored (`^...$`) on `LOW_BALANCE_PREFIX`, so a dealer `error_msg`
  *  echoing the marker mid-string can't inject a fabricated amount. */
 export function lowBalanceAvailable(err: unknown): bigint | null {
-  const m = new RegExp(`^${LOW_BALANCE_PREFIX}(\\d+)$`).exec(errMessage(err));
+  const m = LOW_BALANCE_RE.exec(errMessage(err));
   return m ? BigInt(m[1]) : null;
 }
 
