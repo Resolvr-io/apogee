@@ -6,9 +6,12 @@
  *  the independent estimate the verification gate requires — never derived from
  *  dealer data.
  *
- *  Measured against a real mainnet swap (2 USDt → L-BTC, txid `fb083646…`,
- *  block 3,989,114): **6,149 vsize, 53 sats** — 2 inputs, 6 outputs. So 1000 sats
- *  is ~19× headroom, comfortable rather than tight.
+ *  Measured against two real mainnet swaps, one per direction:
+ *    - 2 USDt → L-BTC (`fb083646…`, block 3,989,114): 6,149 vsize, **53 sats**
+ *    - 1550 sats L-BTC → USDt (`84c5bc08…`, block 3,989,117): 6,258 vsize, **60 sats**
+ *  Both ~6,200 vsize at ~0.01 sat/vbyte, so 1000 sats is ~17× headroom — comfortable
+ *  rather than tight. The cap only binds on an L-BTC send (fee is in the send asset);
+ *  on a USDt send the dealer covers the fee and this is a no-op.
  *
  *  If this ever becomes a live feerate × vsize calculation, size it off that real
  *  figure: confidential-transaction range proofs make a swap PSET **thousands** of

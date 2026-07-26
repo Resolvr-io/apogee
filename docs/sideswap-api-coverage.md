@@ -98,11 +98,11 @@ this isn't available to any client.
   ambiguity is inherent to a server-broadcasts protocol. A "check your balance or the
   explorer before retrying" affordance would help.
 - **Fixed 1000-sat fee cap.** `SWAP_MAX_FEE_SATS` (`src/sideswap/constants.ts`) is a fixed
-  independent ceiling — correct in kind (never dealer-derived). A real mainnet swap measured
-  **53 sats at 6,149 vsize**, so 1000 gives ~19× headroom; replacing it with a live
-  feerate × vsize estimate is a refinement, not a blocker. If that happens, size it off the
-  real CT figure — range proofs make a swap PSET thousands of vbytes, so a few-hundred-vbyte
-  assumption would set the cap far too low and reject valid swaps.
+  independent ceiling — correct in kind (never dealer-derived). Two mainnet swaps measured
+  **53 sats / 6,149 vsize** and **60 sats / 6,258 vsize**, so 1000 gives ~17× headroom;
+  replacing it with a live feerate × vsize estimate is a refinement, not a blocker. If that
+  happens, size it off the real CT figure — range proofs make a swap PSET ~6,200 vbytes, so a
+  few-hundred-vbyte assumption would set the cap far too low and reject valid swaps.
 
 ## Settled by mainnet validation
 
@@ -120,3 +120,11 @@ This also confirms the gate's fee reasoning in that direction: the send-asset (U
 so `maxFee` is a no-op and the real L-BTC cost surfaces as a reduced receive amount — bounded by
 `minRecvAmount`, exactly as `verify-dealer-pset.ts` documents. It follows that PayJoin is a
 convenience for USDt-only wallets rather than a prerequisite for this direction working.
+
+**Both fee regimes are now exercised.** The reverse direction (1550 sats L-BTC → USDt, txid
+`84c5bc080631e0c11bd71157a91eb48138c5c0ba19a12cd10db7e3b9f27edb3f`, block 3,989,117) settled at
+60 sats, 3 inputs → 6 outputs. Because the fee is denominated in the *send* asset there, the
+fee-related checks were genuinely load-bearing on that swap rather than inert: the `maxFee` cap
+applied (60 ≤ 1000), and check 2's `sent ≤ sendAmount + fee + TOL` bound (1,611 sats) had to hold
+against the wallet's total L-BTC outflow. So dealer-paid and wallet-paid fees have both been
+validated end-to-end on mainnet.
