@@ -66,6 +66,8 @@ export const wallet = {
    *  the panel never polls this. */
   getPriceHistory: (currency: string, range: PriceRange) =>
     call<PriceHistory>({ type: "wallet/getPriceHistory", currency, range }),
+  /** Open the guide, focusing an existing tab rather than opening a duplicate. */
+  openGuide: () => call<void>({ type: "wallet/openGuide" }),
   qr: (text: string) => call<string>({ type: "wallet/qr", text }),
   getAsset: (assetId: string, network: LiquidNetwork) =>
     call<AssetInfo>({ type: "wallet/getAsset", assetId, network }),

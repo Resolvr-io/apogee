@@ -250,6 +250,10 @@ export type WalletRequest =
   | { type: "wallet/getRate"; currency: string }
   | { type: "wallet/getPriceHistory"; currency: string; range: PriceRange }
   | { type: "wallet/getPrice24hAgo"; currency: string }
+  // Open the guide page, focusing the already-open tab if there is one. Lives in
+  // the SW because it remembers the tab id it created — `tabs.query({url})` needs
+  // the broad "tabs" permission, which this doesn't warrant.
+  | { type: "wallet/openGuide" }
   | { type: "wallet/qr"; text: string }
   | { type: "wallet/getAsset"; assetId: string; network: LiquidNetwork }
   | { type: "wallet/getChainServer"; network: LiquidNetwork } // per-network Esplora override ("" = automatic)

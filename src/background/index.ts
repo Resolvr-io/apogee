@@ -149,6 +149,7 @@ const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
   "wallet/setChainServer",
   "wallet/getAddress",
   "wallet/disconnectSite",
+  "wallet/openGuide",
   "wallet/touch",
 ]);
 
@@ -167,6 +168,12 @@ browser.alarms.onAlarm.addListener(async (alarm) => {
     browser.runtime.sendMessage({ type: "apogee/locked" }).catch(() => {});
   });
 });
+
+// The guide tab we opened, so re-clicking Help focuses it instead of opening a
+// second copy. Lost on service-worker eviction, which just means the next click
+// opens a fresh tab — acceptable, and cheaper than holding the `tabs` permission.
+const GUIDE_URL = "src/guide/guide.html";
+let guideTabId: number | null = null;
 
 // ---- chain-server override ---------------------------------------------------
 
@@ -519,6 +526,31 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
         currency: msg.currency,
         range: msg.range,
       });
+
+    // Open the guide, reusing the tab we already opened rather than stacking
+    // duplicates. Handled HERE, not in the panel: `tabs.query({url})` silently
+    // returns [] without the "tabs" permission (the url field is redacted, so the
+    // filter matches nothing), and declaring `tabs` — read access to every tab's
+    // URL — is far too broad a grant for this. Remembering the id we created needs
+    // no permission at all.
+    case "wallet/openGuide": {
+      const url = browser.runtime.getURL(GUIDE_URL);
+      if (guideTabId != null) {
+        try {
+          // Throws if the tab is gone (onRemoved usually clears it first, but the
+          // user may have closed it while the SW was evicted).
+          await browser.tabs.update(guideTabId, { active: true });
+          const t = await browser.tabs.get(guideTabId);
+          if (t.windowId != null) await browser.windows.update(t.windowId, { focused: true });
+          return;
+        } catch {
+          guideTabId = null;
+        }
+      }
+      const created = await browser.tabs.create({ url });
+      guideTabId = created.id ?? null;
+      return;
+    }
 
     case "wallet/qr":
       return engine<string>({ kind: "qr", text: msg.text });
@@ -1307,6 +1339,7 @@ async function signWithJade(
 
 // Closing the signing tab before it returns a signature cancels the send.
 browser.tabs.onRemoved.addListener((tabId) => {
+  if (tabId === guideTabId) guideTabId = null;
   for (const [id, p] of pendingJadeSigns) {
     if (p.tabId === tabId) {
       takeJadeSign(id);
