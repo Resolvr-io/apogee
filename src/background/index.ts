@@ -20,6 +20,7 @@ import type { LiquidNetwork } from "@/keystore/keystore";
 import * as keystore from "@/keystore/keystore";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "@/lib/debug";
 import { SCAN_STATE_DB } from "@/engine/protocol";
+import { isNoReceiverError, shouldRetryEngineSend } from "@/lib/engine-retry";
 import { browser } from "@/lib/ext";
 // Static imports — dynamic import() is disallowed in the MV3 service worker
 // global scope per the HTML spec (Chrome blocks it at runtime).
@@ -63,12 +64,20 @@ import type {
 // from getURL so the scheme matches the running browser.
 const EXT_ORIGIN = new URL(browser.runtime.getURL("/")).origin;
 
+// Install/update teardown of the stale offscreen document. Tracked as a promise so
+// `ensureOffscreen` can await it: fire-and-forget raced the side panel's startup
+// sync — `ensureOffscreen` saw the OLD document as alive and returned early, then
+// this teardown closed it out from under the in-flight message, surfacing as
+// "engine error" on the first load after an install or update.
+let teardown: Promise<void> | null = null;
 browser.runtime.onInstalled.addListener(() => {
   console.log("[apogee] installed");
   // On reload/update, drop any persisted offscreen document so the next engine
   // call rebuilds it from the new code. Without this, a surviving offscreen keeps
   // running stale engine logic after a reload (a known MV3 quirk).
-  void closeOffscreen();
+  teardown = closeOffscreen().finally(() => {
+    teardown = null;
+  });
 });
 
 // Open the side panel when the toolbar icon is clicked (Chrome only; Firefox uses
@@ -183,8 +192,19 @@ async function chainServer(network: LiquidNetwork): Promise<string | undefined> 
 const OFFSCREEN_URL = "src/offscreen/offscreen.html";
 let creating: Promise<void> | null = null;
 
+// Bounded wait for the offscreen listener to register (see runEngine). Generous
+// enough to cover module evaluation on a cold, throttled profile, short enough that
+// a genuinely dead document surfaces an error instead of hanging the UI:
+// 8 × 150ms ≈ 1.2s worst case. wasm loads lazily inside `handle`, so this waits only
+// on the listener, not on lwk itself.
+const ENGINE_READY_RETRIES = 8;
+const ENGINE_READY_RETRY_MS = 150;
+
 async function ensureOffscreen(): Promise<void> {
   if (__FIREFOX__) return; // Firefox has no offscreen API; the engine runs in-process
+  // Let an install/update teardown finish first, so we don't observe the doomed
+  // document as "existing" and hand a message to something about to close.
+  if (teardown) await teardown.catch(() => {});
   const existing = await chrome.runtime.getContexts({
     contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
     documentUrls: [browser.runtime.getURL(OFFSCREEN_URL)],
@@ -234,9 +254,39 @@ async function runEngine<T>(req: EngineRequest): Promise<T> {
     return (await ffEngine(req)) as T;
   }
   await ensureOffscreen();
-  const reply = await browser.runtime.sendMessage({ target: "offscreen", req });
-  if (!reply?.ok) throw new Error(reply?.error ?? "engine error");
-  return reply.value as T;
+  // `createDocument` resolves once the document EXISTS, which is earlier than when
+  // offscreen.ts has evaluated its module and registered its onMessage listener. A
+  // request sent inside that gap reaches no receiver: sendMessage resolves
+  // `undefined` (or throws "Receiving end does not exist"), which used to surface
+  // as a bare "engine error" on the very first load — the first thing a new user
+  // sees. Not install-only either: MV3 evicts the service worker routinely, so the
+  // same window reopens whenever a call rebuilds the document.
+  //
+  // Retry on that specific "nobody was listening" shape only. A reply carrying
+  // `ok: false` is a real engine failure and is NOT retried — re-running a
+  // genuine error would just double the work and hide the cause.
+  for (let attempt = 0; ; attempt++) {
+    let reply: { ok?: boolean; value?: unknown; error?: string } | undefined;
+    let noReceiver = false;
+    try {
+      reply = await browser.runtime.sendMessage({ target: "offscreen", req });
+      noReceiver = shouldRetryEngineSend(reply);
+    } catch (e) {
+      // Chrome rejects with "Could not establish connection. Receiving end does
+      // not exist." when the listener isn't registered yet.
+      if (!isNoReceiverError(e)) throw e;
+      noReceiver = true;
+    }
+    if (!noReceiver) {
+      if (!reply?.ok) throw new Error(reply?.error ?? "engine error");
+      return reply.value as T;
+    }
+    if (attempt >= ENGINE_READY_RETRIES) {
+      throw new Error("The wallet engine did not start. Reopen Apogee to try again.");
+    }
+    await new Promise((r) => setTimeout(r, ENGINE_READY_RETRY_MS));
+    await ensureOffscreen(); // recreate if the document died rather than lagged
+  }
 }
 
 /** One engine round-trip, outside the serial queue. Only for ops that touch no
