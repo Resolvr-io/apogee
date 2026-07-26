@@ -66,13 +66,33 @@ The gate (`engine/verify-dealer-pset.ts`) and its engine handlers (`verifyDealer
 - **`start_quotes` forwards only send-asset UTXOs.** `getUtxos` returns unblinding data (both blinding factors) for the whole wallet; forwarding all of it would let SideSwap unblind UTXOs unrelated to the swap. The flow MUST filter to the send-asset UTXOs the dealer needs for coin selection before building the request.
 - **`maxFee` is an independent estimate, never dealer-derived.** The required fee cap is the sole bound on the send-asset fee — the fee cancels out of check 2, so without an independent cap a hostile dealer can fold in extra L-BTC inputs and set an arbitrarily large fee (burned to miners). The flow MUST source `maxFee` from an independent L-BTC fee estimate (feerate × vsize, or a fixed sane ceiling), never from anything in the dealer's quote or PSET; otherwise the dealer sets its own cap and the gate's fee protection is decorative.
 
-### Spike
+### Spike — superseded by mainnet validation
 
-Throwaway Node script (not the extension): one testnet L-BTC→USDt instant swap via `lwk_wasm` + SideSwap, exercising the verification gate (task 4) with both a positive case (an honest dealer PSET passes — this also proves check 3's removal was correct) and tampered-PSET negative cases: an inflated send amount, a third-asset drain, and a redirected receive output. Also confirms the wallet-provided blinding factors yield a PSET that `Signer.sign` accepts (`fingerprintsMissing()` empty post-sign). Success criterion: the swap settles, and verification rejects every tampered PSET while accepting the honest one.
+**The planned testnet spike was never viable and is dropped: there is no accessible testnet
+USDt**, so a testnet L-BTC→USDt swap can't be executed at all. Validation happened on
+**mainnet instead** (2026-07-25): the full flow was run successfully with real funds from the
+loaded extension. That is stronger evidence than a testnet dry run — real dealer, real PSETs,
+real settlement.
+
+The gate's negative cases (inflated send, third-asset drain, redirected receive) are covered
+by unit tests over the real `verifyDealerPset` (`src/engine/verify-dealer-pset.test.ts`),
+including the `addDetails` ordering assertion — without `addDetails`, `psetDetails` returns
+empty balances and every check passes trivially on zeroes. Live wire-parameter acceptance is
+covered by `src/sideswap/integration.test.ts` against the SideSwap testnet endpoint (which
+works for `list_markets`/quoting even though no testnet USDt is spendable).
+
+Do not re-plan a testnet spike for this track; there is nothing to fund it with.
 
 ### Decision gate
 
-Met in principle for SideSwap instant — browser-feasible, LWK-capable, near-instant (low MV3 risk), verification tractable. Closes formally when the spike passes. ADR-1 records the choice plus the trust-model disclosure: dealer-quoted, server broadcasts, client verifies its own outputs before signing.
+**Met (2026-07-25).** Browser-feasible, LWK-capable, near-instant (low MV3 risk), verification
+tractable — and validated end-to-end on mainnet. Remaining: ADR-1 to record the choice plus the
+trust-model disclosure (dealer-quoted, server broadcasts, client verifies its own outputs
+before signing).
+
+Note the UX/safety work in PR #41 (never-auto-lock password step-up, quote TTL expiry,
+LowBalance fillable-amount hint) merged *after* that mainnet run, so those three paths are
+unit-tested but not yet exercised against a live dealer.
 
 
 ## Track 2: USDt \<\> external chains (Ethereum, Solana, Tron, BNB)
