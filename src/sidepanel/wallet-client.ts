@@ -8,6 +8,8 @@ import type {
   ChainServerHealth,
   CreatedWallet,
   PrepareSendResult,
+  PriceHistory,
+  PriceRange,
   Reply,
   SendResult,
   SendReview,
@@ -57,6 +59,13 @@ export const wallet = {
   revealMnemonic: (walletId: string, password: string) =>
     call<string>({ type: "wallet/revealMnemonic", walletId, password }),
   getRate: (currency: string) => call<number>({ type: "wallet/getRate", currency }),
+  /** BTC price 24h ago — one point, for the rate bar's delta. */
+  getPrice24hAgo: (currency: string) =>
+    call<number>({ type: "wallet/getPrice24hAgo", currency }),
+  /** Hourly BTC price history for the chart. Only called when the chart is opened —
+   *  the panel never polls this. */
+  getPriceHistory: (currency: string, range: PriceRange) =>
+    call<PriceHistory>({ type: "wallet/getPriceHistory", currency, range }),
   qr: (text: string) => call<string>({ type: "wallet/qr", text }),
   getAsset: (assetId: string, network: LiquidNetwork) =>
     call<AssetInfo>({ type: "wallet/getAsset", assetId, network }),
