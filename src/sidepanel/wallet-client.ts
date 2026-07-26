@@ -57,6 +57,8 @@ export const wallet = {
   revealMnemonic: (walletId: string, password: string) =>
     call<string>({ type: "wallet/revealMnemonic", walletId, password }),
   getRate: (currency: string) => call<number>({ type: "wallet/getRate", currency }),
+  /** Open the guide, focusing an existing tab rather than opening a duplicate. */
+  openGuide: () => call<void>({ type: "wallet/openGuide" }),
   qr: (text: string) => call<string>({ type: "wallet/qr", text }),
   getAsset: (assetId: string, network: LiquidNetwork) =>
     call<AssetInfo>({ type: "wallet/getAsset", assetId, network }),
