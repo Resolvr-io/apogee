@@ -1,8 +1,9 @@
 # Apogee — Firefox Add-ons (AMO) listing
 
-Version-controlled copy of the AMO submission text. This is the first Firefox
-release, so it states features rather than a "what's new." Keep in sync with
-`package.json` and the Firefox manifest in `manifest.shared.ts` (`firefoxManifest`).
+Version-controlled copy of the AMO submission text. Keep in sync with
+`package.json` and the Firefox manifest in `manifest.shared.ts` (`firefoxManifest`) —
+in particular the host-permission list below, which AMO reviewers check against the
+manifest.
 
 Listing URL: https://addons.mozilla.org/firefox/addon/apogee-wallet/ — the slug is
 `apogee-wallet` because `apogee` is taken on AMO by an unrelated 2019 theme.
@@ -49,7 +50,19 @@ Apogee never asks for your recovery phrase outside of setup. Keep your phrase an
 
 Apogee is a self-custodial wallet, not a custodian, exchange, or financial service.
 
-## Release notes (first release)
+## Release notes — 0.6.0
+
+Paste into AMO's "Release Notes" field for this version. Plain text, no markdown.
+
+Swap LBTC and USDt without leaving the wallet. Apogee gets a quote from the SideSwap dealer and settles it as a single atomic Liquid transaction, so both sides move at once and your funds are never held by anyone. Swap in either direction, and name either the amount you want to spend or the amount you want to receive.
+
+Before signing, Apogee checks the dealer's proposed transaction against the quote you approved: that you receive at least the agreed amount, that nothing beyond what you offered leaves the wallet (including any other asset you hold), and that the network fee is within an independent cap. If anything moved unfavorably, it is not signed.
+
+The review screen names the dealer and states the fees, what share of the swap they represent, and the minimum you will receive. Fees are mostly flat, so a very small swap costs proportionally much more — the screen says so rather than leaving you to work it out.
+
+Also new: a Bitcoin price chart under the balance, covering 24 hours through all time, with hover to read the price at a point in time. Import a wallet by scanning its seed-phrase QR, the counterpart to the QR Apogee already exports. A fourth price source keeps fiat values steady when one provider rate-limits. Fixed an "engine error" that could appear briefly on first open after installing or updating.
+
+## Release notes (0.5.0 — first Firefox release, for reference)
 
 First Firefox release. Apogee brings the Liquid Network wallet to Firefox: create, restore, or import watch-only wallets; hold, send, and receive LBTC and Liquid assets like USDt with confidential transactions and approximate fiat values for USD-pegged tokens; and connect to Liquid web apps with per-action approval — all with keys stored locally and encrypted.
 
@@ -65,8 +78,9 @@ None. Apogee collects and transmits no personal data: keys and wallet state are 
   - `waterfalls.liquidwebwallet.org` — default wallet-sync scan server (one encrypted-descriptor request per sync).
   - `blockstream.info` / `*.blockstream.info` — Esplora REST for sync fallback, transaction broadcast, and the asset registry.
   - `liquid.network` — public Esplora endpoint: sync/broadcast fallback and token icons from the public Liquid asset registry.
-  - `api.coinbase.com`, `api.kraken.com`, `api.coingecko.com`, `api.coinpaprika.com`, `blockchain.info` — public price sources; Apogee uses the median of those reachable to show a fiat value.
-  - All are read-only chain/price requests; the only user-derived data sent is an encrypted wallet descriptor (sync) or a user-approved signed transaction (broadcast).
+  - `api.coinbase.com`, `api.kraken.com`, `api.coingecko.com`, `api.coinpaprika.com`, `blockchain.info`, `mempool.space` — public price sources; Apogee uses the median of those reachable to show a fiat value. `mempool.space` also serves the price history behind the optional price chart, which is fetched only when the user opens the chart.
+  - `*.sideswap.io` — the SideSwap dealer, for the optional LBTC/USDt swap feature: requesting a quote and submitting the transaction the user approved. Contacted only when the user opens the Swap screen.
+  - All are read-only chain/price requests; the only user-derived data sent is an encrypted wallet descriptor (sync), a user-approved signed transaction (broadcast), or — for a swap the user initiates — the amount and the unspent outputs needed to build it.
 - **content scripts on `<all_urls>`** — Injects a small `window.liquid` provider into pages so Liquid web apps can request a wallet connection (the same pattern as `window.ethereum`). The provider only exposes a connect/request interface and does not read page content; every connection and transaction needs explicit in-add-on approval.
 - Apogee uses a **sidebar** (not a Chrome side panel) and runs its wallet engine in the extension's background page, so it needs no `sidePanel` or `offscreen` permission.
 - **Remote code: No** — All executable code, including the lwk_wasm WebAssembly module, is bundled in the package. Apogee fetches only data (chain state, prices), never code.
@@ -76,6 +90,8 @@ None. Apogee collects and transmits no personal data: keys and wallet state are 
 Plain text — the AMO reviewer-notes field renders literally, so no markdown below.
 
 No account or login required. Choose Create wallet, set a password, and you're in; keys are generated and stored locally, with no backend.
+
+About the swap feature: swaps go to the SideSwap dealer over its public JSON-RPC WebSocket. Apogee never sends a key or a seed. It receives an unsigned transaction, verifies the amounts against the quote the user approved, signs locally, and returns it; SideSwap broadcasts. Both sides settle in one Liquid transaction, so there is no point at which a third party holds the user's funds. Swaps run on mainnet only.
 
 Testing tip: switch the network toggle to Testnet on the create screen. Then fund it from a Liquid testnet faucet to exercise receive/send without real funds.
 https://liquidtestnet.com/faucet
