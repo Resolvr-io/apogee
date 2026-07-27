@@ -89,8 +89,18 @@ enters the same path as typing.
 
 The panel polls `claimScannedSeed()` every 500 ms for ~90 s rather than listening for an
 event. The scanner window closes itself, so the panel never owns the window id that
-`windows.onRemoved` would need. A poll that stops on the first non-null claim leaves no
-listener behind and cannot fire after the form unmounts.
+`windows.onRemoved` would need.
+
+The interval id is held in a **ref**, not the calling closure, and cleared in three places:
+on the first non-null claim, on hitting the try ceiling, and in a `useEffect` unmount
+cleanup. Opening the scanner again also stops any prior poll first, so repeated clicks
+replace the interval instead of running several concurrently.
+
+The unmount case is the one that actually needed the ref — leaving the screen mid-scan (for
+example backing out of recovery) would otherwise leave the poll running for up to 90 s
+against an unmounted component, and a late claim would consume the one-shot secret with
+nowhere to put it. `SEED_POLL_MS × SEED_POLL_MAX_TRIES` is kept at or under
+`QR_SECRET_TTL_MS`, so the poll never outlives the value it waits for.
 
 ## Residual risks (accepted, not mitigated)
 

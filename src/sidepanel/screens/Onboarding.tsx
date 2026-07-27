@@ -3,7 +3,7 @@
 // keystore (see the SW's wallet/create|restore handlers).
 
 import { Check, QrCode, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { LiquidNetwork } from "@/keystore/keystore";
 import { Button, Card, CopyButton, ErrorText, Field, Input, Modal, Spinner, Textarea, WelcomeShell } from "@/sidepanel/components/ui";
 import { errMessage, wallet } from "@/sidepanel/wallet-client";
@@ -119,6 +119,21 @@ export function Onboarding({
     }
   }
 
+  // Seed-scan poll handle. `SEED_POLL_MS * SEED_POLL_MAX_TRIES` must not exceed the
+  // service worker's QR_SECRET_TTL_MS (90s), or the poll outlives the value it waits for.
+  const SEED_POLL_MS = 500;
+  const SEED_POLL_MAX_TRIES = 180;
+  const seedPoll = useRef<number | null>(null);
+  const stopSeedPoll = useCallback(() => {
+    if (seedPoll.current != null) {
+      window.clearInterval(seedPoll.current);
+      seedPoll.current = null;
+    }
+  }, []);
+  // Unmount is the case the closure-scoped id missed: leaving this screen mid-scan
+  // must stop the poll, not leave it running against an unmounted component.
+  useEffect(() => stopSeedPoll, [stopSeedPoll]);
+
   // Open the QR scanner in seed mode and poll for the result.
   //
   // The phrase is NOT delivered by broadcast. `runtime.sendMessage` with no target
@@ -128,10 +143,17 @@ export function Onboarding({
   // which parks it for a single, time-boxed claim (see `apogee/qr-secret`).
   //
   // Polling rather than an event: `windows.onRemoved` needs the window id, and the
-  // panel doesn't own the window (the scanner closes itself). A short poll that
-  // stops on the first non-null claim is simpler and can't leave a listener behind.
+  // panel doesn't own the window (the scanner closes itself). A short poll that stops
+  // on the first non-null claim is simpler than tracking the window.
+  //
+  // The interval id is held in a ref, NOT the closure, for two reasons: an unmount
+  // (e.g. Back out of recovery mid-scan) must stop it — otherwise it keeps polling
+  // and calling setState for up to 90s against a dead component, and a late claim
+  // would consume the one-shot secret with nowhere to put it — and a second click
+  // must replace the first interval instead of running two in parallel.
   function openSeedScanner(): void {
     setError("");
+    stopSeedPoll(); // a re-click replaces the previous poll rather than racing it
     void browser.windows.create({
       url: browser.runtime.getURL("src/scanner/scanner.html?secret=1"),
       type: "popup",
@@ -139,10 +161,10 @@ export function Onboarding({
       height: 560,
     });
     let tries = 0;
-    const id = window.setInterval(async () => {
+    seedPoll.current = window.setInterval(async () => {
       // ~90s ceiling, matching the SW's parked-value TTL.
-      if (++tries > 180) {
-        window.clearInterval(id);
+      if (++tries > SEED_POLL_MAX_TRIES) {
+        stopSeedPoll();
         return;
       }
       let scanned: string | null = null;
@@ -152,7 +174,7 @@ export function Onboarding({
         return; // SW momentarily unavailable; keep polling
       }
       if (scanned == null) return;
-      window.clearInterval(id);
+      stopSeedPoll();
       // Normalize whitespace/case the way a BIP-39 phrase is written. The real
       // validation is still the engine's `deriveWallet`, which runs on submit
       // before the keystore is touched — a scanned string gets no more trust than
@@ -166,7 +188,7 @@ export function Onboarding({
         return;
       }
       setPhrase(normalized);
-    }, 500);
+    }, SEED_POLL_MS);
   }
 
   async function doRestore() {
