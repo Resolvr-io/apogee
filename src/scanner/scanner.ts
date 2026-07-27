@@ -18,14 +18,11 @@
 // scanner never renders the decoded text on screen in secret mode.
 
 import { browser } from "@/lib/ext";
+import { createDetector } from "./detect";
 
 /** Seed-phrase mode: deliver via the SW's one-shot channel, never broadcast, and
  *  don't echo the decoded value into the page. */
 const SECRET = new URLSearchParams(location.search).get("secret") === "1";
-
-type BarcodeDetectorCtor = new (opts: { formats: string[] }) => {
-  detect: (source: CanvasImageSource) => Promise<{ rawValue: string }[]>;
-};
 
 const video = document.getElementById("video") as HTMLVideoElement;
 const status = document.getElementById("status") as HTMLElement;
@@ -42,13 +39,7 @@ function cleanup(): void {
 cancel.addEventListener("click", () => window.close());
 window.addEventListener("pagehide", cleanup);
 
-const Detector = (window as unknown as { BarcodeDetector?: BarcodeDetectorCtor }).BarcodeDetector;
-
 async function start(): Promise<void> {
-  if (!Detector) {
-    status.textContent = "QR scanning isn't supported in this browser.";
-    return;
-  }
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
   } catch (e) {
@@ -70,12 +61,12 @@ async function start(): Promise<void> {
   status.textContent = SECRET
     ? "Point the camera at your seed-phrase QR"
     : "Point the camera at a QR code";
-  const detector = new Detector({ formats: ["qr_code"] });
+  // Native BarcodeDetector on Chromium; jsQR fallback where it's missing (Firefox).
+  const detect = createDetector();
   const tick = async () => {
     try {
-      const codes = await detector.detect(video);
-      if (codes.length > 0 && codes[0]?.rawValue) {
-        const value = codes[0].rawValue;
+      const value = await detect(video);
+      if (value) {
         // Await the secret hand-off before closing: the window tearing down mid-send
         // would drop the phrase and look like a scan that silently did nothing.
         if (SECRET) {
