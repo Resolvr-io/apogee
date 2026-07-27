@@ -10,6 +10,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite build --mode development --watch",
+    "prebuild": "if ls .env .env.local .env.production .env.production.local 2>/dev/null | grep -q .; then echo 'refusing to build: a .env file is present (credentials could ship in the bundle) — remove it or use the CI release build' >&2; exit 1; fi",
     "build": "vite build",
     "build:firefox": "node scripts/build-firefox.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
