@@ -33,6 +33,7 @@ export function ShootingStars() {
     let raf = 0;
     let meteors: Meteor[] = [];
     let nextAt = 0; // performance.now() timestamp for the next spawn
+    let lastT = 0; // performance.now() timestamp of the last tick
 
     const build = () => {
       w = parent.clientWidth;
@@ -72,19 +73,29 @@ export function ShootingStars() {
 
     const frame = () => {
       const now = performance.now();
-      if (nextAt === 0) {
-        nextAt = now + 2500 + Math.random() * 2500; // first one ~2.5–5s in
-      } else if (now >= nextAt) {
-        spawn();
-        nextAt = now + 9000 + Math.random() * 16000; // then every ~9–25s
-      }
+      if (lastT === 0) lastT = now;
+      // Equivalent frames elapsed since the last tick, at the ~60fps the speed/
+      // life constants below assume. A hidden/occluded panel can have rAF
+      // throttled or paused for a long stretch while performance.now() keeps
+      // advancing regardless — scaling movement and decay by elapsed time
+      // (instead of a fixed amount per call) keeps a meteor's real-world
+      // lifespan correct. Otherwise it barely decays while throttled, several
+      // spawn and pile up unseen (spawn timing below is wall-clock based), and
+      // they'd all render at once on the first frame after the panel is
+      // foregrounded again.
+      const steps = (now - lastT) / (1000 / 60);
+      lastT = now;
       ctx.clearRect(0, 0, w, h);
       ctx.lineCap = "round";
       for (let i = meteors.length - 1; i >= 0; i--) {
         const m = meteors[i];
-        m.x += m.vx;
-        m.y += m.vy;
-        m.life -= 1;
+        m.x += m.vx * steps;
+        m.y += m.vy * steps;
+        m.life -= steps;
+        if (m.life <= 0 || m.x < -60 || m.x > w + 60 || m.y > h + 60) {
+          meteors.splice(i, 1);
+          continue;
+        }
         const a = Math.sin((1 - m.life / m.max) * Math.PI) * m.bright; // ease in/out
         const sp = Math.hypot(m.vx, m.vy) || 1;
         const tx = m.x - (m.vx / sp) * m.len;
@@ -102,9 +113,16 @@ export function ShootingStars() {
         ctx.beginPath();
         ctx.arc(m.x, m.y, 0.6 + m.size * 0.45, 0, Math.PI * 2);
         ctx.fill();
-        if (m.life <= 0 || m.x < -60 || m.x > w + 60 || m.y > h + 60) {
-          meteors.splice(i, 1);
-        }
+      }
+      // Kept wall-clock based (a throttled panel should still get roughly one
+      // meteor per real 9–25s window) — but applied after the update loop
+      // above, so a meteor spawned on a resume tick (where `steps` can be
+      // large) isn't immediately killed by that same tick's decrement.
+      if (nextAt === 0) {
+        nextAt = now + 2500 + Math.random() * 2500; // first one ~2.5–5s in
+      } else if (now >= nextAt) {
+        spawn();
+        nextAt = now + 9000 + Math.random() * 16000; // then every ~9–25s
       }
       raf = requestAnimationFrame(frame);
     };
@@ -121,6 +139,11 @@ export function ShootingStars() {
         raf = 0;
       }
       meteors = [];
+      // Reset so a restart behaves like a fresh mount: otherwise nextAt is
+      // already in the past (an immediate meteor instead of the usual 2.5–5s
+      // lead-in) and lastT is stale (one large, harmless `steps` on resume).
+      lastT = 0;
+      nextAt = 0;
       if (w && h) ctx.clearRect(0, 0, w, h);
     };
     const onReduceChange = () => (reduce.matches ? stop() : start());
