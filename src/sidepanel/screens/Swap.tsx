@@ -28,6 +28,7 @@ import {
   wallet,
 } from "@/sidepanel/wallet-client";
 import { SWAP_MAX_FEE_SATS, SWAP_TYPICAL_FEE_SATS } from "@/sideswap/constants";
+import { estimateSendUnitsNeeded, FEE_ALLOWANCE_SATS } from "@/sideswap/affordability";
 
 type Step = "form" | "review" | "swapping" | "done";
 
@@ -241,8 +242,7 @@ export function Swap({
   // since a refusal surfaces as "the dealer may be unavailable" and looks broken.
   // Deliberately an over-estimate: a false "reduce the amount" is recoverable, a
   // false green light ends in a confusing dealer error.
-  const DEALER_FEE_ALLOWANCE_SATS = 100;
-  const feeAllowanceSats = DEALER_FEE_ALLOWANCE_SATS + SWAP_TYPICAL_FEE_SATS;
+  const feeAllowanceSats = FEE_ALLOWANCE_SATS;
   /** Total cost (dealer + network) as a percentage of the L-BTC side of the swap.
    *  Both fees are L-BTC-denominated, so the L-BTC leg is the honest denominator
    *  whichever direction the swap runs. */
@@ -393,29 +393,14 @@ export function Swap({
    *  can't be estimated (no rate yet, or a pair we don't have a rate for), in which
    *  case the check is skipped rather than guessing: the dealer's own refusal is
    *  still the backstop, just a worse-worded one. */
-  const estSendUnitsNeeded = (() => {
-    if (!isReceiveExact || recvUnits <= 0) return null;
-    // Receiving USDt, sending L-BTC — the case that motivated this. Fees are in
-    // L-BTC, so they add directly to the sats needed.
-    if (recvIsUsd && sendId === policyHex) {
-      if (!btcRate) return null;
-      const usd = recvUnits / 10 ** (recvPrecision ?? 8);
-      return Math.round((usd / btcRate) * 100_000_000) + feeAllowanceSats;
-    }
-    // Receiving L-BTC, sending USDt. The fee allowance still applies, converted to
-    // USDt. On a SELL-exact USDt swap the dealer absorbs the L-BTC fee by delivering
-    // less L-BTC — but here the receive amount is fixed by the user, so it can't
-    // absorb anything: the dealer has to charge more USDt instead. Omitting the
-    // margin let a USDt balance just above market value pass this check and then hit
-    // the dealer refusal, which is the exact error the guard exists to prevent.
-    if (recvId === policyHex && sendIsUsd) {
-      const usd = lbtcToUsd(recvUnits);
-      const feeUsd = lbtcToUsd(feeAllowanceSats);
-      if (usd == null || feeUsd == null) return null;
-      return Math.round((usd + feeUsd) * 10 ** (sendPrecision ?? 8));
-    }
-    return null;
-  })();
+  const estSendUnitsNeeded = estimateSendUnitsNeeded({
+    recvUnits: isReceiveExact ? recvUnits : 0,
+    recvPrecision: recvPrecision ?? 8,
+    sendPrecision: sendPrecision ?? 8,
+    recvIsUsdSendLbtc: recvIsUsd && sendId === policyHex,
+    recvIsLbtcSendUsd: recvId === policyHex && sendIsUsd,
+    btcRate,
+  });
 
   /** Estimated send amount as a display string for the send input,
    *  computed from the BTC/USD rate when the user is driving from the receive
