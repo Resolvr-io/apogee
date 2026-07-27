@@ -485,9 +485,21 @@ export function Send({
           )}
         </div>
         <ErrorText>{error}</ErrorText>
-        <Button onClick={review} disabled={busy}>
-          {busy ? <Spinner /> : "Review"}
-        </Button>
+        <div className="flex flex-col gap-2">
+          <Button onClick={review} disabled={busy}>
+            {busy ? <Spinner /> : "Review"}
+          </Button>
+          {/* Same easy exit the Receive screen's "Done" gives: the form step
+              otherwise had no way back except the small top-left arrow. The review
+              step's own "Back" returns here, so this is only on the form. */}
+          {/* `onDone` is the caller's "leave the send flow" handler — it clears the
+              pending asset and returns home, which is exactly what cancelling wants.
+              No separate onCancel prop: nothing has been sent, so there's nothing
+              extra to undo. */}
+          <Button variant="secondary" onClick={onDone} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
       </div>
     </Card>
   );

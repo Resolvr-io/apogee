@@ -29,6 +29,8 @@ import type {
   DescriptorInfo,
   EngineRequest,
   PrepareSendResult,
+  PriceHistory,
+  PriceRange,
   ProviderProbe,
   ProbeStatus,
   SendResult,
@@ -672,6 +674,133 @@ async function fallbackRate(currency: string): Promise<number> {
   return rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2;
 }
 
+// ---- BTC price history (the price chart) ------------------------------------
+//
+// mempool.space returns the WHOLE hourly series in one response — ~24k points back
+// to 2010, newest-first, plus USD→fiat rates for exactly the currencies the panel
+// offers. It takes no windowing parameters (`from`, `limit`, `interval` are all
+// ignored — verified), so it's all-or-nothing at ~147 KB gzipped.
+//
+// That shape is a good trade here rather than a cost: one fetch serves EVERY range
+// and EVERY currency, so opening the chart, switching ranges, and changing currency
+// cost zero further requests until the cache expires. The alternative — a per-range
+// endpoint elsewhere — would mean more requests to more hosts, which is worse for a
+// wallet that declares no data collection.
+//
+// mempool.space is already in host_permissions (it's a fallbackRate source), so this
+// introduces no new third party.
+const PRICE_HISTORY_TTL_MS = 10 * 60_000;
+const PRICE_HISTORY_URL = "https://mempool.space/api/v1/historical-price?currency=USD";
+
+/** Cached raw upstream response: USD points (oldest-first) + USD→fiat rates. */
+let priceHistoryCache: {
+  ts: number;
+  usd: Array<{ time: number; usd: number }>;
+  rates: Record<string, number>;
+} | null = null;
+
+/** Seconds of history per range; `all` keeps everything. */
+const RANGE_SECONDS: Record<PriceRange, number | null> = {
+  "24h": 24 * 3600,
+  "7d": 7 * 24 * 3600,
+  "30d": 30 * 24 * 3600,
+  "1y": 365 * 24 * 3600,
+  all: null,
+};
+
+async function fetchPriceHistoryRaw(): Promise<NonNullable<typeof priceHistoryCache>> {
+  if (priceHistoryCache && Date.now() - priceHistoryCache.ts < PRICE_HISTORY_TTL_MS) {
+    return priceHistoryCache;
+  }
+  // Timeboxed like fallbackRate: the payload is large, so allow more than the 6s
+  // used for spot quotes, but never hang the panel waiting on it.
+  const r = await fetch(PRICE_HISTORY_URL, { signal: AbortSignal.timeout(15_000) });
+  if (!r.ok) throw new Error(`price history unavailable (${r.status})`);
+  const j = (await r.json()) as {
+    prices?: Array<Record<string, number>>;
+    exchangeRates?: Record<string, number>;
+  };
+  if (!Array.isArray(j.prices)) throw new Error("price history malformed");
+  // Upstream is newest-first; the chart wants oldest-first. Drop anything
+  // non-finite or non-positive rather than letting it distort the min/max scale.
+  const usd = j.prices
+    .map((p) => ({ time: Number(p.time), usd: Number(p.USD) }))
+    // `time > 0` alongside the finite check: a hostile non-positive or absurd
+    // timestamp can't crash anything, but it would distort the time axis.
+    .filter((p) => Number.isFinite(p.time) && p.time > 0 && Number.isFinite(p.usd) && p.usd > 0)
+    .sort((a, b) => a.time - b.time);
+  if (usd.length < 2) throw new Error("price history too short");
+  priceHistoryCache = { ts: Date.now(), usd, rates: j.exchangeRates ?? {} };
+  return priceHistoryCache;
+}
+
+// The always-visible rate bar needs a 24h delta, but the full history is ~147 KB
+// gzipped — too much to pull on every wallet open for a one-line readout. This
+// queries the same endpoint with a `timestamp`, which returns exactly ONE point
+// (~148 bytes) plus the fiat rates. So the bar costs ~1 KB and the full series is
+// only fetched when the user actually expands the chart.
+const PRICE_24H_TTL_MS = 10 * 60_000;
+let price24hCache: { ts: number; usd: number; rates: Record<string, number> } | null = null;
+
+/** BTC price 24h ago in `currency` — one point, for the bar's delta. */
+async function getPrice24hAgo(currency: string): Promise<number> {
+  const c = currency.toUpperCase();
+  if (!/^[A-Z]{3}$/.test(c)) throw new Error(`Unsupported currency: ${currency}`);
+  if (!price24hCache || Date.now() - price24hCache.ts >= PRICE_24H_TTL_MS) {
+    const at = Math.floor(Date.now() / 1000) - 24 * 3600;
+    const r = await fetch(`${PRICE_HISTORY_URL}&timestamp=${at}`, {
+      signal: AbortSignal.timeout(6_000),
+    });
+    if (!r.ok) throw new Error(`price history unavailable (${r.status})`);
+    const j = (await r.json()) as {
+      prices?: Array<Record<string, number>>;
+      exchangeRates?: Record<string, number>;
+    };
+    const usd = Number(j.prices?.[0]?.USD);
+    if (!Number.isFinite(usd) || usd <= 0) throw new Error("no 24h price point");
+    price24hCache = { ts: Date.now(), usd, rates: j.exchangeRates ?? {} };
+  }
+  if (c === "USD") return price24hCache.usd;
+  const rate = price24hCache.rates[`USD${c}`];
+  if (!Number.isFinite(rate) || rate <= 0) throw new Error(`No ${c} rate for price history`);
+  return price24hCache.usd * rate;
+}
+
+/** Hourly BTC price history for one range, converted to `currency`. */
+async function getPriceHistory(currency: string, range: PriceRange): Promise<PriceHistory> {
+  const c = currency.toUpperCase();
+  // Same guard as fallbackRate: the value is trusted today (fixed FIAT_OPTIONS) but
+  // a strict 3-letter check keeps the rate lookup from being fed anything arbitrary.
+  if (!/^[A-Z]{3}$/.test(c)) throw new Error(`Unsupported currency: ${currency}`);
+  const raw = await fetchPriceHistoryRaw();
+
+  const secs = RANGE_SECONDS[range];
+  const latest = raw.usd[raw.usd.length - 1].time;
+  const window = secs == null ? raw.usd : raw.usd.filter((p) => p.time >= latest - secs);
+  // A range with too little data can't be drawn; fall back to the full series rather
+  // than failing, so a young range never renders as an error.
+  const series = window.length >= 2 ? window : raw.usd;
+
+  // Convert with the SAME response's USD→fiat rate, so no second request is needed
+  // and the whole series moves on one consistent rate (a per-point historical FX
+  // series isn't offered — this is a present-day conversion of a USD history, which
+  // is the honest reading of it).
+  let k = 1;
+  if (c !== "USD") {
+    const rate = raw.rates[`USD${c}`];
+    if (!Number.isFinite(rate) || rate <= 0) throw new Error(`No ${c} rate for price history`);
+    k = rate;
+  }
+  return {
+    currency: c,
+    range,
+    points: series.map((p) => p.usd * k),
+    times: series.map((p) => p.time),
+    fromTime: series[0].time,
+    toTime: series[series.length - 1].time,
+  };
+}
+
 export async function handle(req: EngineRequest): Promise<unknown> {
   const lwk = await loadLwk();
   switch (req.kind) {
@@ -872,6 +1001,18 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         console.warn(`[apogee] lwk rate fetch failed for ${req.currency}, using fallback`, e);
         return fallbackRate(req.currency);
       }
+    }
+
+    case "getPrice24hAgo": {
+      // One point for the rate bar's 24h delta — cheap enough to fetch on open.
+      return getPrice24hAgo(req.currency);
+    }
+
+    case "getPriceHistory": {
+      // Chart data. Read-only public price data, display-only — never feeds a send
+      // or swap amount. Fetched only when the user opens the chart (the panel does
+      // not poll), and cached, so an unopened chart costs nothing.
+      return getPriceHistory(req.currency, req.range);
     }
 
     case "checkEsplora": {

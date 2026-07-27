@@ -12,6 +12,7 @@ import {
   ArrowLeftRight,
   ArrowUp,
   ArrowUpRight,
+  Activity,
   ChevronDown,
   ChevronLeft,
   ExternalLink,
@@ -23,7 +24,15 @@ import {
   Unplug,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import type { AssetInfo, ChainServerHealth, SyncResult, WalletTxDTO } from "@/engine/protocol";
+import type {
+  AssetInfo,
+  ChainServerHealth,
+  PriceHistory,
+  PriceRange,
+  SyncResult,
+  WalletTxDTO,
+} from "@/engine/protocol";
+import { PriceChart } from "@/sidepanel/components/PriceChart";
 import type { KeystoreState, LiquidNetwork, WalletInfo } from "@/keystore/keystore";
 import { explorerTxUrl } from "@/lib/explorer";
 import { APP_VERSION_DISPLAY } from "@/version";
@@ -181,6 +190,13 @@ export function Wallet({
   const [fiat, setFiat] = useFiat();
   const [rate, setRate] = useState<number | null>(null);
   const [rateFailed, setRateFailed] = useState(false);
+  // Price trace. Collapsed by default; the history is fetched on first open and
+  // whenever the range or currency changes, never on a timer.
+  const [chartOpen, setChartOpen] = useState(false);
+  const [chartRange, setChartRange] = useState<PriceRange>("24h");
+  const [history, setHistory] = useState<PriceHistory | null>(null);
+  const [chartError, setChartError] = useState(false);
+  const [price24h, setPrice24h] = useState<number | null>(null);
   // BTC→USD rate, fetched only when a USD-pegged token is held and the display
   // currency isn't USD — it converts the peg into the chosen fiat
   // (peggedFiat = units × rate/rateUsd). USD display needs no conversion.
@@ -213,6 +229,54 @@ export function Wallet({
       alive = false;
     };
   }, [fiat]);
+
+  // 24h-ago price for the bar's delta — one ~148-byte point, so the always-visible
+  // bar stays honest without pulling the full series on every wallet open. Runs
+  // alongside the balance's spot-rate fetch; both are one-shot, never polled.
+  useEffect(() => {
+    let alive = true;
+    setPrice24h(null);
+    wallet
+      .getPrice24hAgo(fiat)
+      .then((p) => alive && setPrice24h(p))
+      .catch(() => {}); // no delta is fine — the bar still shows the price
+    return () => {
+      alive = false;
+    };
+  }, [fiat]);
+
+  /** 24h change for the bar. Prefers the open chart's own series when it's showing
+   *  the 24h range, so the bar and the trace can't disagree by a refresh. */
+  const barDelta = (() => {
+    if (chartOpen && history && history.range === "24h" && history.points.length >= 2) {
+      const f = history.points[0];
+      const l = history.points[history.points.length - 1];
+      return f > 0 ? ((l - f) / f) * 100 : null;
+    }
+    if (rate == null || price24h == null || price24h <= 0) return null;
+    return ((rate - price24h) / price24h) * 100;
+  })();
+
+  // Lazy price-history fetch. Gated on `chartOpen`, so a collapsed chart issues no
+  // request; the engine caches upstream, so re-opening or switching range inside the
+  // TTL costs nothing further. Clearing `history` on range/currency change is what
+  // shows the spinner instead of briefly drawing the previous window's trace.
+  useEffect(() => {
+    if (!chartOpen) return;
+    let alive = true;
+    setChartError(false);
+    // Deliberately NOT clearing `history` first. The engine caches the whole series,
+    // so a range change resolves in ~0ms — blanking to a spinner produced a visible
+    // flash of nothing on every toggle. Keeping the old trace mounted lets the chart
+    // cross-fade to the new one instead (see PriceChart's `points` transition).
+    wallet
+      .getPriceHistory(fiat, chartRange)
+      .then((h) => alive && setHistory(h))
+      .catch(() => alive && setChartError(true));
+    return () => {
+      alive = false;
+    };
+  }, [chartOpen, chartRange, fiat]);
 
   const holdsPeggedToken = Boolean(
     sync &&
@@ -540,6 +604,88 @@ export function Wallet({
             {showStars ? " " : subtitle}
           </span>
         </button>
+
+        {/* Rate bar — always visible, the whole row is the expand control. The
+            collapsed state costs no history request: the price comes from the spot
+            rate the balance already fetched, and the delta from a single ~148-byte
+            point. The full ~147 KB series is only pulled once expanded. */}
+        {/* Deliberately unboxed: no border, no fill. A framed bar reads as a widget
+            bolted into the panel, and the surrounding UI floats its readouts in space
+            (see the balance subtitle above). Wide letter-spacing and generous gaps do
+            the separating instead of a container. */}
+        <button
+          type="button"
+          onClick={() => setChartOpen((o) => !o)}
+          aria-expanded={chartOpen}
+          aria-label={chartOpen ? "Hide price chart" : "Show price chart"}
+          className="group flex w-full items-center justify-center gap-3 py-2 text-left"
+        >
+          <Activity
+            size={12}
+            className={cn(
+              "shrink-0 transition-colors",
+              chartOpen
+                ? "text-[color:var(--accent-strong)]"
+                : "text-[color:var(--text-subtle)] group-hover:text-[color:var(--text-secondary)]",
+            )}
+          />
+          {/* Name the PAIR, not just BTC: the figure beside it is a BTC/fiat rate,
+              not a property of Bitcoin. It also stops the reading depending on the
+              currency symbol — CAD renders "CA$" and AUD "A$", so a bare "BTC $…"
+              would be ambiguous between them and USD. */}
+          <span className="font-telemetry text-[11px] uppercase tracking-[0.18em] text-[color:var(--text-subtle)]">
+            BTC/{fiat}
+          </span>
+          {rate != null ? (
+            <TelemetryNumber
+              value={formatFiat(rate, fiat)}
+              glow={false}
+              className="text-xs tracking-wide text-[color:var(--text-secondary)]"
+            />
+          ) : (
+            <span className="text-xs text-[color:var(--text-subtle)]">—</span>
+          )}
+          {barDelta != null && (
+            <span
+              className={cn(
+                "text-[11px] tracking-wide",
+                barDelta >= 0
+                  ? "text-[color:var(--accent-mint)]"
+                  : "text-[color:var(--accent-amber)]",
+              )}
+            >
+              {barDelta >= 0 ? "▲" : "▼"} {Math.abs(barDelta).toFixed(2)}%
+            </span>
+          )}
+          <ChevronDown
+            size={12}
+            className={cn(
+              "shrink-0 text-[color:var(--text-subtle)] transition-transform group-hover:text-[color:var(--text-secondary)]",
+              chartOpen && "rotate-180",
+            )}
+          />
+        </button>
+        {chartOpen && (
+          <div className="pt-2">
+            {chartError ? (
+              // Say so in place rather than collapsing — a silent close looks broken.
+              <p className="py-3 text-center text-xs text-[color:var(--text-subtle)]">
+                Price history unavailable.
+              </p>
+            ) : history ? (
+              <PriceChart
+                history={history}
+                range={chartRange}
+                onRangeChange={setChartRange}
+                formatPrice={(v) => formatFiat(v, fiat)}
+              />
+            ) : (
+              <div className="flex justify-center py-6">
+                <Spinner className="size-5" />
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="mt-3 flex gap-2">
           {watchOnly ? (

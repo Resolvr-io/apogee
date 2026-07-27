@@ -975,9 +975,18 @@ export function Swap({
         )}
 
         <ErrorText>{error}</ErrorText>
-        <Button onClick={review} disabled={busy}>
-          {busy ? <Spinner /> : "Review"}
-        </Button>
+        <div className="flex flex-col gap-2">
+          <Button onClick={review} disabled={busy}>
+            {busy ? <Spinner /> : "Review"}
+          </Button>
+          {/* Matches Send and Receive: an easy exit from the form step without
+              hunting for the small top-left back arrow. `onDone` is the caller's
+              leave-the-flow handler (it clears the pending asset and returns home);
+              nothing has been swapped, so there's nothing extra to undo. */}
+          <Button variant="secondary" onClick={onDone} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
       </div>
     </Card>
   );
