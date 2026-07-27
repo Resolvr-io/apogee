@@ -10,7 +10,7 @@
 // Run via Node's native TS support: `node scripts/build-firefox.ts`
 // (pnpm build:firefox).
 import { execSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { build, type InlineConfig } from "vite";
 import react from "@vitejs/plugin-react";
@@ -116,7 +116,25 @@ async function buildBackground(): Promise<void> {
   });
 }
 
+// A present .env* would flip on the enterprise host permissions (see
+// hasEnterprise in manifest.shared.ts) and, separately, gets its VITE_ values
+// inlined verbatim into the bundle by Vite — so this build orchestrator needs
+// its own gate: the pnpm `zip` script already refuses in this case, but only
+// guards the invocations it makes itself. This script is also documented to
+// run directly via `node scripts/build-firefox.ts`, which skips that entirely.
+function assertNoEnvFile(): void {
+  const envFiles = [".env", ".env.local", ".env.production", ".env.production.local"];
+  const found = envFiles.filter((f) => existsSync(abs(f)));
+  if (found.length > 0) {
+    console.error(
+      `refusing to build: ${found.join(", ")} present (credentials could ship in the bundle) — remove it or use the CI release build`,
+    );
+    process.exit(1);
+  }
+}
+
 async function main(): Promise<void> {
+  assertNoEnvFile();
   await buildPages();
   await buildBackground();
   await buildScript("content", "src/content/content.ts");
