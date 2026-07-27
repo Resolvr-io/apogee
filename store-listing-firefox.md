@@ -60,7 +60,7 @@ Before signing, Apogee checks the dealer's proposed transaction against the quot
 
 The review screen names the dealer and states the fees, what share of the swap they represent, and the minimum you will receive. Fees are mostly flat, so a very small swap costs proportionally much more — the screen says so rather than leaving you to work it out.
 
-Also new: a Bitcoin price chart under the balance, covering 24 hours through all time, with hover to read the price at a point in time. Import a wallet by scanning its seed-phrase QR, the counterpart to the QR Apogee already exports. A fourth price source keeps fiat values steady when one provider rate-limits. Fixed an "engine error" that could appear briefly on first open after installing or updating.
+Also new: a Bitcoin price chart under the balance, covering 24 hours through all time, with hover to read the price at a point in time. Import a wallet by scanning its seed-phrase QR, the counterpart to the QR Apogee already exports. QR scanning — for a seed phrase or a payment address in Send — now works in Firefox: it bundles a fallback decoder since Firefox has no built-in one. A fourth price source keeps fiat values steady when one provider rate-limits. Fixed an "engine error" that could appear briefly on first open after installing or updating.
 
 ## Release notes (0.5.0 — first Firefox release, for reference)
 

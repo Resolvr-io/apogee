@@ -126,6 +126,10 @@ discovery); the implementation is in
   means retyping twelve or twenty-four words. The scanned phrase is handed
   straight to the wallet's own signing context rather than broadcast, and is
   readable only once.
+- **QR scanning now works in Firefox.** Firefox has no built-in QR decoder, so
+  scanning — a payment address in Send, or a seed phrase when restoring — did
+  nothing there. Apogee now bundles a fallback decoder, so both work the same
+  as on Chrome.
 - **Faster, steadier fiat prices** — a fourth price source (mempool.space) joins
   the median, so a rate-limited provider no longer leaves the display without a
   figure.
@@ -134,8 +138,12 @@ discovery); the implementation is in
   engine instead of reporting a failure.
 - **Smaller things** — the guide reuses its open tab instead of stacking new
   ones, the settings icon closes settings when it's already open, Send and Swap
-  have a Cancel button on the entry step, and the hardware-wallet option reads
-  the same on Chrome and Firefox.
+  have a Cancel button on the entry step, the hardware-wallet option reads the
+  same on Chrome and Firefox, a USDt balance shown in USD no longer repeats the
+  same figure as its own fiat equivalent (still available in the drawer), the
+  scrollbar no longer disappears into the panel's top fade, and the lock
+  screen's occasional shooting stars no longer bunch up after the panel's been
+  hidden for a while.
 
 ## 0.5.0
 
