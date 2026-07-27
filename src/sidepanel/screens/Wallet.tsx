@@ -870,13 +870,20 @@ function Tokens({
           // back to the raw integer.
           const precision = KNOWN_ASSETS[asset]?.precision ?? info?.precision ?? null;
           const amountLabel = formatAssetAmount(amt, precision);
-          // USD-pegged stablecoins show an approximate fiat value (1 unit ≈ $1,
+          // USD-pegged stablecoins have an approximate fiat value (1 unit ≈ $1,
           // converted into the display currency). Anything else has no price
           // source, so no figure is shown — honest over guessed.
           const fiatValue =
             KNOWN_ASSETS[asset]?.pegUsd && usdToFiat != null && precision != null
               ? (amt / 10 ** precision) * usdToFiat
               : null;
+          // In the row summary, only worth the line when it says something the
+          // amount above it doesn't: at the identity rate (USD-pegged token,
+          // USD display) "150.42" would sit above "≈ $150.42". Tested on the
+          // rate rather than the currency code so it stays correct if a
+          // non-USD-pegged asset is ever added. The value is still in the
+          // drawer either way.
+          const showFiatInSummary = fiatValue != null && usdToFiat !== 1;
           return (
             <details
               key={asset}
@@ -896,7 +903,7 @@ function Tokens({
                         <TelemetryNumber value={amountLabel} glow={false} />
                       )}
                     </span>
-                    {!hidden && fiatValue != null && (
+                    {!hidden && showFiatInSummary && (
                       <span className="text-[11px] text-[color:var(--text-subtle)]">
                         ≈ {formatFiat(fiatValue, fiat)}
                       </span>
@@ -917,6 +924,12 @@ function Tokens({
                     <CopyIconButton value={asset} label="Copy asset ID" />
                   </span>
                 </div>
+                {/* Kept here in every currency — including USD, where it's dropped
+                    from the summary as redundant. Hidden while the balance is
+                    hidden, so the drawer can't reveal what the row masks. */}
+                {!hidden && fiatValue != null && (
+                  <Row label={`Value (${fiat})`} value={`≈ ${formatFiat(fiatValue, fiat)}`} />
+                )}
                 {info?.name && <Row label="Name" value={info.name} />}
                 {info?.ticker && <Row label="Ticker" value={info.ticker} />}
                 {info?.precision != null && <Row label="Precision" value={String(info.precision)} />}
