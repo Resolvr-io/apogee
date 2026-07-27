@@ -2,7 +2,7 @@
 // A single create/restore call also initializes the password-protected
 // keystore (see the SW's wallet/create|restore handlers).
 
-import { Check, X } from "lucide-react";
+import { Check, QrCode, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { LiquidNetwork } from "@/keystore/keystore";
 import { Button, Card, CopyButton, ErrorText, Field, Input, Modal, Spinner, Textarea, WelcomeShell } from "@/sidepanel/components/ui";
@@ -117,6 +117,56 @@ export function Onboarding({
     } finally {
       setBusy(false);
     }
+  }
+
+  // Open the QR scanner in seed mode and poll for the result.
+  //
+  // The phrase is NOT delivered by broadcast. `runtime.sendMessage` with no target
+  // reaches every extension context, so a broadcast seed would be readable by any
+  // page that happens to be listening — only our own pages exist today, but a seed
+  // shouldn't rely on that. Instead the scanner hands it to the service worker,
+  // which parks it for a single, time-boxed claim (see `apogee/qr-secret`).
+  //
+  // Polling rather than an event: `windows.onRemoved` needs the window id, and the
+  // panel doesn't own the window (the scanner closes itself). A short poll that
+  // stops on the first non-null claim is simpler and can't leave a listener behind.
+  function openSeedScanner(): void {
+    setError("");
+    void browser.windows.create({
+      url: browser.runtime.getURL("src/scanner/scanner.html?secret=1"),
+      type: "popup",
+      width: 420,
+      height: 560,
+    });
+    let tries = 0;
+    const id = window.setInterval(async () => {
+      // ~90s ceiling, matching the SW's parked-value TTL.
+      if (++tries > 180) {
+        window.clearInterval(id);
+        return;
+      }
+      let scanned: string | null = null;
+      try {
+        scanned = await wallet.claimScannedSeed();
+      } catch {
+        return; // SW momentarily unavailable; keep polling
+      }
+      if (scanned == null) return;
+      window.clearInterval(id);
+      // Normalize whitespace/case the way a BIP-39 phrase is written. The real
+      // validation is still the engine's `deriveWallet`, which runs on submit
+      // before the keystore is touched — a scanned string gets no more trust than
+      // a typed one.
+      const normalized = scanned.trim().toLowerCase().replace(/\s+/g, " ");
+      const words = normalized.split(" ").filter(Boolean).length;
+      if (words !== 12 && words !== 24) {
+        setError(
+          `That QR held ${words} word${words === 1 ? "" : "s"}, not a 12- or 24-word seed phrase.`,
+        );
+        return;
+      }
+      setPhrase(normalized);
+    }, 500);
   }
 
   async function doRestore() {
@@ -435,6 +485,18 @@ export function Onboarding({
             autoFocus
           />
         </Field>
+        {/* Scan a seed-phrase QR — the symmetric counterpart to the seed QR the
+            wallet exports (a bare mnemonic string, which is what makes it
+            interoperable with other Liquid wallets). The phrase is NOT broadcast:
+            see openSeedScanner. */}
+        <button
+          type="button"
+          onClick={openSeedScanner}
+          className="-mt-1 flex items-center justify-center gap-1.5 self-center text-xs text-[color:var(--text-subtle)] transition-colors hover:text-[color:var(--accent-strong)]"
+        >
+          <QrCode size={13} />
+          Scan seed QR
+        </button>
         <PasswordFields
           password={password}
           confirm={confirm}

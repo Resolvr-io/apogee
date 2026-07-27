@@ -66,6 +66,15 @@ export const wallet = {
    *  the panel never polls this. */
   getPriceHistory: (currency: string, range: PriceRange) =>
     call<PriceHistory>({ type: "wallet/getPriceHistory", currency, range }),
+  /** Claim a seed phrase scanned by the QR window. One-shot: the service worker
+   *  clears it on read, so a second call always returns null. Returns null when
+   *  nothing was scanned or the parked value expired. */
+  claimScannedSeed: async (): Promise<string | null> => {
+    const reply = (await browser.runtime.sendMessage({ type: "apogee/qr-secret-claim" })) as
+      | { ok?: boolean; value?: string | null }
+      | undefined;
+    return reply?.value ?? null;
+  },
   /** Open the guide, focusing an existing tab rather than opening a duplicate. */
   openGuide: () => call<void>({ type: "wallet/openGuide" }),
   qr: (text: string) => call<string>({ type: "wallet/qr", text }),

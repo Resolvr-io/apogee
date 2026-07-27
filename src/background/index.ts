@@ -21,6 +21,7 @@ import * as keystore from "@/keystore/keystore";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "@/lib/debug";
 import { SCAN_STATE_DB } from "@/engine/protocol";
 import { isNoReceiverError, shouldRetryEngineSend } from "@/lib/engine-retry";
+import { claimSecret, type ParkedSecret } from "@/lib/qr-secret";
 import { browser } from "@/lib/ext";
 // Static imports — dynamic import() is disallowed in the MV3 service worker
 // global scope per the HTML spec (Chrome blocks it at runtime).
@@ -163,6 +164,7 @@ browser.alarms.onAlarm.addListener(async (alarm) => {
     await armAutoLock(remainingMs / 60_000);
     return;
   }
+  clearQrSecret(); // don't let a parked phrase survive an idle lock
   void keystore.lock().then(() => {
     // Drop the side panel to the lock screen (ignored if none is open).
     browser.runtime.sendMessage({ type: "apogee/locked" }).catch(() => {});
@@ -174,6 +176,30 @@ browser.alarms.onAlarm.addListener(async (alarm) => {
 // opens a fresh tab — acceptable, and cheaper than holding the `tabs` permission.
 const GUIDE_URL = "src/guide/guide.html";
 let guideTabId: number | null = null;
+
+// ---- scanned seed phrase: one-shot hand-off ---------------------------------
+//
+// A seed phrase scanned by the QR window is parked HERE rather than broadcast.
+// `runtime.sendMessage` with no target fans out to every extension context, so a
+// broadcast phrase would be readable by any page that happens to be listening —
+// today only our own, but a seed shouldn't depend on that. The panel claims it
+// exactly once with `apogee/qr-secret-claim`.
+//
+// Deliberately module-level (in memory) and never persisted: writing it to
+// storage.session/local would leave the phrase recoverable from disk or survive a
+// crash, which is precisely what we're avoiding.
+//
+// Expires quickly. If the panel never claims it (window closed, user walked away)
+// the phrase must not sit in SW memory indefinitely. The read-and-clear semantics
+// (single-use, time-boxed) live in `lib/qr-secret.ts` so they're unit-testable —
+// this module registers listeners at import and can't load under Node.
+// See docs/seed-qr-import.md for the full threat model.
+let qrSecret: ParkedSecret | null = null;
+
+/** Wipe the parked phrase. Called after a claim, on expiry, and on lock/reset. */
+function clearQrSecret(): void {
+  qrSecret = null;
+}
 
 // ---- chain-server override ---------------------------------------------------
 
@@ -359,9 +385,12 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       return keystore.unlock(msg.password);
 
     case "wallet/lock":
+      // A parked scanned phrase must not outlive the session that scanned it.
+      clearQrSecret();
       return keystore.lock();
 
     case "wallet/reset": {
+      clearQrSecret();
       // Revoke connected dapp sessions on a wipe, so any connected app
       // disconnects (its next call gets NOT_CONNECTED) instead of going stale.
       await browser.storage.session.remove(SITES_KEY);
@@ -1421,6 +1450,24 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
+  // Scanner hand-off for a seed phrase. Both sides are `apogee/*`, so the
+  // fromExtension gate above already excludes web pages.
+  if (msg.type === "apogee/qr-secret") {
+    const value = (msg as { value?: unknown }).value;
+    if (typeof value !== "string" || value.length === 0) return false;
+    qrSecret = { value, at: Date.now() };
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.type === "apogee/qr-secret-claim") {
+    // Single-use AND time-boxed: read it out, then immediately clear regardless of
+    // whether it was still fresh, so a stale value can never be claimed twice.
+    const { value, next } = claimSecret(qrSecret, Date.now());
+    qrSecret = next;
+    sendResponse({ ok: true, value });
+    return true;
+  }
+
   if (msg.type.startsWith("wallet/")) {
     const req = msg as WalletRequest;
     handleUi(req)
