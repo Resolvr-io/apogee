@@ -27,7 +27,7 @@ import {
   swapErrorMessage,
   wallet,
 } from "@/sidepanel/wallet-client";
-import { SWAP_MAX_FEE_SATS } from "@/sideswap/constants";
+import { SWAP_MAX_FEE_SATS, SWAP_TYPICAL_FEE_SATS } from "@/sideswap/constants";
 
 type Step = "form" | "review" | "swapping" | "done";
 
@@ -120,6 +120,7 @@ export function Swap({
   }, [quoteExpiresAt]);
   const secsLeft =
     quoteExpiresAt == null ? null : Math.max(0, Math.ceil((quoteExpiresAt - now) / 1000));
+
 
   // ---- asset resolution -----------------------------------------------------
   const policyHex = sync?.policyAssetHex ?? "";
@@ -219,6 +220,49 @@ export function Swap({
     return usd.toLocaleString("en-US", { style: "currency", currency: "USD" });
   }
 
+  // ---- cost disclosure -------------------------------------------------------
+  //
+  // SideSwap's own app quotes ALL-IN (it asks for ~1638 sats to deliver $1, where
+  // the naive market rate is ~1552). We quote notional and the costs land as a
+  // smaller receive, so the same swap looks like a shortfall. Measured on a real
+  // $1 swap: 1550 sats offered → 0.943 USDt, i.e. a 60-sat network fee plus a
+  // ~26-sat dealer fee — 86 sats, exactly SideSwap's 86-sat premium. Same
+  // economics, so the fix is disclosure, not arithmetic.
+  const dealerFeeSats =
+    quote == null ? null : Number(BigInt(quote.fixedFee) + BigInt(quote.serverFee));
+  /** Dealer + network, the single figure the user cares about. */
+  const totalCostSats =
+    dealerFeeSats == null ? null : dealerFeeSats + SWAP_TYPICAL_FEE_SATS;
+
+  // ---- pre-quote affordability ----------------------------------------------
+  //
+  // Both fees are L-BTC-denominated and flat. Measured live: ~83 sats dealer +
+  // ~60 sats network. Used to catch an underfunded swap BEFORE asking the dealer,
+  // since a refusal surfaces as "the dealer may be unavailable" and looks broken.
+  // Deliberately an over-estimate: a false "reduce the amount" is recoverable, a
+  // false green light ends in a confusing dealer error.
+  const DEALER_FEE_ALLOWANCE_SATS = 100;
+  const feeAllowanceSats = DEALER_FEE_ALLOWANCE_SATS + SWAP_TYPICAL_FEE_SATS;
+  /** Total cost (dealer + network) as a percentage of the L-BTC side of the swap.
+   *  Both fees are L-BTC-denominated, so the L-BTC leg is the honest denominator
+   *  whichever direction the swap runs. */
+  const costPct = (() => {
+    if (dealerFeeSats == null || totalCostSats == null || quote == null) return null;
+    // Denominator is the swap's PRINCIPAL, excluding fees. `quote.sendAmount` is
+    // now fee-inclusive (see previewSwapQuote), so net the dealer fee back out on
+    // an L-BTC send; the receive leg never included it.
+    const principal =
+      sendId === policyHex
+        ? Number(quote.sendAmount) - dealerFeeSats
+        : Number(quote.recvAmount);
+    if (!Number.isFinite(principal) || principal <= 0) return null;
+    // Use the TYPICAL fee, not the cap: the exact fee isn't known until the
+    // dealer builds the PSET, but two mainnet swaps measured 53-60 sats. Using
+    // the 1000-sat ceiling here would report ~66% on a $1 swap whose real cost
+    // was ~9% — alarming and wrong. The cap still governs verification.
+    return (totalCostSats / principal) * 100;
+  })();
+
   /** USD equivalent of the entered send amount, or null. */
   const sendUsd = (() => {
     if (enteredUnits <= 0) return null;
@@ -246,7 +290,12 @@ export function Swap({
       const usdVal = lbtcToUsd(enteredUnits);
       if (usdVal == null) return "";
       const dp = recvPrecision != null && recvPrecision <= 2 ? recvPrecision : 2;
-      return usdVal.toFixed(dp);
+      // Round DOWN, never to nearest: this is a market-rate figure that excludes
+      // the dealer spread and the network fee, so it is already optimistic.
+      // `toFixed` would round 0.9988 up to a flattering "1.00" and then the swap
+      // delivers ~0.94 — measured on a real $1 swap — which reads as a shortfall.
+      const f = 10 ** dp;
+      return (Math.floor(usdVal * f) / f).toFixed(dp);
     }
     return "";
   })();
@@ -304,14 +353,16 @@ export function Swap({
   function setMax() {
     setError("");
     if (sendId === policyHex) {
-      // No fee reserve needed — the dealer builds the PSET so the Liquid
-      // network fee comes out of the user's LBTC input. The verification
-      // gate's maxFee cap (1000 sats) bounds it. Same UX as SideSwap's app.
+      // Reserve the fees. The network fee AND the dealer's fee both come out of the
+      // user's own L-BTC on a policy-asset send, so filling the entire balance
+      // leaves nothing to pay them with — the dealer then can't build a valid PSET
+      // and refuses, which surfaced as a misleading "dealer may be unavailable".
+      const spendable = Math.max(0, sendBalance - feeAllowanceSats);
       if (isBtc) {
-        const btc = (sendBalance / 100_000_000).toFixed(8).replace(/\.?0+$/, "");
+        const btc = (spendable / 100_000_000).toFixed(8).replace(/\.?0+$/, "");
         onSendAmountChange(btc || "0");
       } else {
-        onSendAmountChange(String(sendBalance));
+        onSendAmountChange(String(spendable));
       }
     } else {
       const prec = sendPrecision ?? 0;
@@ -335,6 +386,35 @@ export function Swap({
     if (!isReceiveExact) return 0;
     const prec = recvPrecision ?? 8;
     return parseAssetAmount(recvInput, prec) ?? 0;
+  })();
+
+  /** Send-side units a receive-exact swap will roughly cost, fees included — the
+   *  affordability check `review()` runs before contacting the dealer. Null when it
+   *  can't be estimated (no rate yet, or a pair we don't have a rate for), in which
+   *  case the check is skipped rather than guessing: the dealer's own refusal is
+   *  still the backstop, just a worse-worded one. */
+  const estSendUnitsNeeded = (() => {
+    if (!isReceiveExact || recvUnits <= 0) return null;
+    // Receiving USDt, sending L-BTC — the case that motivated this. Fees are in
+    // L-BTC, so they add directly to the sats needed.
+    if (recvIsUsd && sendId === policyHex) {
+      if (!btcRate) return null;
+      const usd = recvUnits / 10 ** (recvPrecision ?? 8);
+      return Math.round((usd / btcRate) * 100_000_000) + feeAllowanceSats;
+    }
+    // Receiving L-BTC, sending USDt. The fee allowance still applies, converted to
+    // USDt. On a SELL-exact USDt swap the dealer absorbs the L-BTC fee by delivering
+    // less L-BTC — but here the receive amount is fixed by the user, so it can't
+    // absorb anything: the dealer has to charge more USDt instead. Omitting the
+    // margin let a USDt balance just above market value pass this check and then hit
+    // the dealer refusal, which is the exact error the guard exists to prevent.
+    if (recvId === policyHex && sendIsUsd) {
+      const usd = lbtcToUsd(recvUnits);
+      const feeUsd = lbtcToUsd(feeAllowanceSats);
+      if (usd == null || feeUsd == null) return null;
+      return Math.round((usd + feeUsd) * 10 ** (sendPrecision ?? 8));
+    }
+    return null;
   })();
 
   /** Estimated send amount as a display string for the send input,
@@ -394,9 +474,28 @@ export function Swap({
     if (sendId === recvId) return setError("Select two different assets to swap.");
     if (isReceiveExact) {
       if (recvUnits <= 0) return setError("Enter a receive amount.");
+      // Receive-exact had NO balance check: the user types a receive amount and the
+      // dealer derives the charge, so an underfunded wallet only found out when the
+      // dealer refused — surfacing as "the dealer may be unavailable", which blames
+      // the counterparty for the user's own shortfall and reads as a broken feature.
+      // Estimate the charge from the market rate plus fees and catch it up front.
+      if (estSendUnitsNeeded !== null && estSendUnitsNeeded > sendBalance) {
+        return setError(
+          `Not enough ${sendLabel} — about ${sendId === policyHex ? fmtLbtc(estSendUnitsNeeded) : formatAssetAmount(estSendUnitsNeeded, sendPrecision)} ${sendUnitLabel} needed, including fees.`,
+        );
+      }
     } else {
       if (enteredUnits <= 0) return setError(`Enter an amount in ${sendUnitLabel}.`);
       if (enteredUnits > sendBalance) return setError("Amount exceeds your available balance.");
+      // Sell-exact checked the principal but not the fees on top. Sending an L-BTC
+      // amount equal to the whole balance leaves nothing for the network fee, so the
+      // dealer can't build a valid PSET — same misleading error. (Max deliberately
+      // fills the full balance, so this is reachable by design.)
+      if (sendId === policyHex && enteredUnits + feeAllowanceSats > sendBalance) {
+        return setError(
+          `Leave about ${fmtLbtc(feeAllowanceSats)} ${sendUnitLabel} for fees, or reduce the amount.`,
+        );
+      }
     }
     setStep("review");
     await fetchQuote();
@@ -542,6 +641,16 @@ export function Swap({
     const payDisplay = isReceiveExact
       ? (quote ? `${sendId === policyHex ? fmtLbtc(Number(quote.sendAmount)) : formatAssetAmount(Number(quote.sendAmount), sendPrecision)} ${sendUnitLabel}` : null)
       : `${sendId === policyHex ? fmtLbtc(enteredUnits) : formatAssetAmount(enteredUnits, sendPrecision)} ${sendUnitLabel}`;
+    // Mirrors the orchestrator's sell-exact slippage floor: reviewedRecvAmount *
+    // 97/100 (see `defaultMinRecv`). Kept as integer math on the same base units
+    // so the number shown is exactly the bound the gate enforces, not an
+    // approximation of it. Only meaningful once the dealer's quote has arrived.
+    const minRecvDisplay = (() => {
+      if (isReceiveExact || !quote) return null;
+      const floor = (BigInt(quote.recvAmount) * 97n) / 100n;
+      const n = Number(floor);
+      return `${recvId === policyHex ? fmtLbtc(n) : formatAssetAmount(n, recvPrecision)} ${recvUnitLabel}`;
+    })();
     const recvDisplay = isReceiveExact
       ? `${recvId === policyHex ? fmtLbtc(recvUnits) : formatAssetAmount(recvUnits, recvPrecision)} ${recvUnitLabel}`
       : (quote ? `${recvId === policyHex ? fmtLbtc(Number(quote.recvAmount)) : formatAssetAmount(Number(quote.recvAmount), recvPrecision)} ${recvUnitLabel}` : null);
@@ -578,11 +687,28 @@ export function Swap({
               {recvDisplay ?? (busy ? "Fetching..." : "\u2014")}
             </dd>
           </div>
-          {/* Fee */}
-          <div className="flex items-center justify-between gap-3 border-b border-[color:var(--border-soft)] px-1 py-2">
-            <dt className="text-[color:var(--text-subtle)]">Network fee</dt>
-            <dd className="text-[color:var(--text-secondary)]">Up to {formatSats(SWAP_MAX_FEE_SATS)} sats</dd>
-          </div>
+          {/* Fees: one calm line, with the split available on demand via the
+              existing `.drawer` <details> pattern. Previously this was three rows
+              plus a red percentage and a red warning paragraph, which read as an
+              error state for what is a normal, correctly-quoted swap. */}
+          {totalCostSats !== null && (
+            <div className="flex items-center justify-between gap-3 border-b border-[color:var(--border-soft)] px-1 py-2">
+              <dt className="text-[color:var(--text-subtle)]">Fees</dt>
+              <dd className="text-[color:var(--text-secondary)]">
+                ≈ {formatSats(totalCostSats)} sats
+                {(() => {
+                  const usd = lbtcToUsd(totalCostSats);
+                  return usd != null ? ` (${fmtUsd(usd)})` : "";
+                })()}
+                {costPct !== null && (
+                  <span className="text-[color:var(--text-subtle)]">
+                    {" · "}
+                    {costPct < 0.1 ? "<0.1" : costPct.toFixed(1)}%
+                  </span>
+                )}
+              </dd>
+            </div>
+          )}
           {/* Quote expiry — the dealer only honors a live quote_id. */}
           {quote && secsLeft !== null && (
             <div className="flex items-center justify-between gap-3 border-b border-[color:var(--border-soft)] px-1 py-2">
@@ -601,17 +727,47 @@ export function Swap({
             </div>
           )}
         </dl>
-        <p className="mt-3 text-xs text-[color:var(--text-subtle)]">
-          The swap is verified independently before signing. If the rate moved
-          unfavorably, it will not sign.
-        </p>
+        {/* One muted line, expandable. Constraint #4 wants the trust model
+            surfaced, not a paragraph on the confirm screen — the summary names the
+            counterparty, the body carries the detail for whoever wants it. Fee
+            arithmetic lives here too, so a small swap's percentage is explained on
+            demand rather than shouted in red. */}
+        <details className="drawer mt-3">
+          <summary className="cursor-pointer px-1 py-1.5 text-xs text-[color:var(--text-subtle)]">
+            Quoted by SideSwap · atomic swap, funds never held
+          </summary>
+          <div className="flex flex-col gap-1.5 px-1 pb-1.5 text-xs text-[color:var(--text-subtle)]">
+            {dealerFeeSats !== null && dealerFeeSats > 0 && (
+              <p>
+                Fees: {formatSats(dealerFeeSats)} sats to the dealer, ≈{" "}
+                {formatSats(SWAP_TYPICAL_FEE_SATS)} sats network (max{" "}
+                {formatSats(SWAP_MAX_FEE_SATS)}). These are mostly flat, so they're a
+                bigger share of a small swap.
+              </p>
+            )}
+            {minRecvDisplay && <p>You'll receive at least {minRecvDisplay}.</p>}
+            <p>
+              SideSwap quotes the price and broadcasts. Both sides move in one Liquid
+              transaction, so your funds are never held by anyone. Apogee checks the
+              amounts before signing and won't sign if they moved against you.
+            </p>
+          </div>
+        </details>
         {/* Re-quote path: either the preview failed outright (quoteError), or a
             failed execution dropped a no-longer-trustworthy quote. Both need a
             fresh quote before Confirm can arm again \u2014 never a stale one. */}
         {quoteError || (!quote && !busy && error) ? (
           <div className="mt-3 flex flex-col gap-2">
             <ErrorText>
-              {error || "Couldn't get a quote \u2014 the dealer may be unavailable. Try again."}
+              {error ||
+                // Don't blame the dealer when the likely cause is a thin balance:
+                // a quote request for more than the wallet can cover is refused, and
+                // "the dealer may be unavailable" sends the user chasing the wrong
+                // problem. The pre-quote check catches most of these, so this is the
+                // fallback for cases it couldn't estimate.
+                (sendId === policyHex && sendBalance <= feeAllowanceSats
+                  ? `Not enough ${sendLabel} to cover a swap plus fees.`
+                  : "Couldn't get a quote. The dealer may be unavailable, or the amount may be outside what it will fill right now.")}
             </ErrorText>
             {/* The dealer's own fillable figure, so "too big" becomes actionable. */}
             {availableUnits !== null && availableUnits > 0n && (

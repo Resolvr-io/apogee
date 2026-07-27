@@ -4,7 +4,8 @@
 
 /** Independent cap on the Liquid network fee for an instant swap, in sats. This is
  *  the independent estimate the verification gate requires — never derived from
- *  dealer data.
+ *  dealer data. Deliberately generous: the gate REJECTS a swap whose fee exceeds
+ *  this, so a tight cap would refuse fair swaps.
  *
  *  Measured against two real mainnet swaps, one per direction:
  *    - 2 USDt → L-BTC (`fb083646…`, block 3,989,114): 6,149 vsize, **53 sats**
@@ -18,6 +19,16 @@
  *  vbytes, not the few hundred a bare P2WPKH intuition suggests. A 200–300 vbyte
  *  assumption would compute a cap far below the true fee and reject valid swaps. */
 export const SWAP_MAX_FEE_SATS = 1000;
+
+/** Typical actual network fee for a swap, in sats — for DISPLAY estimates only,
+ *  never for verification (the gate uses `SWAP_MAX_FEE_SATS`, which must stay a
+ *  generous ceiling so a slightly larger real fee can't reject a fair swap).
+ *
+ *  Two mainnet swaps measured 53 and 60 sats, so ~60 is representative. Using the
+ *  1000-sat cap in a cost-percentage display would overstate wildly on a small
+ *  swap — it computes ~66% for a $1 swap whose real cost was ~9% — and scare users
+ *  away from legitimate trades. */
+export const SWAP_TYPICAL_FEE_SATS = 60;
 
 /** Marker the service worker prefixes onto a `SwapLowBalanceError` so the side
  *  panel can recognize a genuine one and read the dealer's fillable amount.

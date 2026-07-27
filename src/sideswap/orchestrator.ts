@@ -97,6 +97,11 @@ export interface SwapQuotePreviewResult {
   /** Epoch ms when this quote expires (from the dealer's `ttl`, in ms). The UI
    *  counts down to it and re-quotes rather than submitting a dead quote_id. */
   expiresAt: number;
+  /** The dealer's own fee components, in sats (they're L-BTC-denominated). Shown
+   *  in the review breakdown so the cost of a swap is disclosed rather than
+   *  buried in the rate — on a small swap these dominate. */
+  fixedFee: bigint;
+  serverFee: bigint;
 }
 
 // ---- result of the atomic signSwapPset engine call -----------------------
@@ -271,14 +276,30 @@ export async function executeInstantSwap(
   //    the user is sending: if sending base (LBTC), send=base, recv=quote;
   //    if sending quote (e.g. USDt), send=quote, recv=base.
   const sendIsBase = sendAssetId === policyAssetId(network);
-  const quotedSendAmt = BigInt(Math.round(
-    sendIsBase ? success.base_amount : success.quote_amount,
-  ));
+  // `base_amount`/`quote_amount` EXCLUDE the dealer's fee, which is always
+  // L-BTC-denominated. The gate measures the wallet's NET policy-asset outflow,
+  // which includes that fee — so on an L-BTC send the quoted figure has to be made
+  // fee-inclusive before it becomes `sendAmount`, or check 2
+  // (`sent <= sendAmount + fee + TOL`) rejects the real outflow.
+  //
+  // Measured on mainnet: base 1556 + 83 dealer fee + 60 network fee = 1699 sent,
+  // against a fee-exclusive bound of 1556 + 60 + 1 = 1617. Every receive-exact
+  // L-BTC swap would be refused with "the rate moved unfavorably" — nothing to do
+  // with `maxSendAmount`, which check 2 never even reaches.
+  const dealerFee =
+    BigInt(Math.round(success.fixed_fee)) + BigInt(Math.round(success.server_fee));
+  const quotedSendAmt =
+    BigInt(Math.round(sendIsBase ? success.base_amount : success.quote_amount)) +
+    (sendIsBase ? dealerFee : 0n);
   const quotedRecvAmt = BigInt(Math.round(
     sendIsBase ? success.quote_amount : success.base_amount,
   ));
   // Use the original sendAmount (what the user offered) for sell-exact, or
   // the dealer's quoted send amount for receive-exact (user didn't specify).
+  //
+  // Sell-exact keeps the user's own figure: the dealer takes its fee out of what
+  // was offered rather than charging on top, so the outflow is bounded by
+  // `sendAmount + fee` already.
   const effectiveSendAmount = receiveExact
     ? quotedSendAmt
     : BigInt(params.sendAmount!);
@@ -397,12 +418,34 @@ export async function previewSwapQuote(
   // Map base_amount/quote_amount to send/recv based on which asset the
   // user is sending: base (LBTC) or quote (e.g. USDt).
   const sendIsBase = sendAssetId === policyAssetId(network);
+  const dealerFee = BigInt(Math.round(success.fixed_fee)) + BigInt(Math.round(success.server_fee));
+  // `base_amount` EXCLUDES the dealer's fee, which is L-BTC-denominated. Measured
+  // on a real $1 receive-exact quote: base 1556 sats + 83 sats fee = 1639, matching
+  // both SideSwap's own 1638-sat ask and the ~1643 implied by a live sell-exact
+  // swap. So the fee-exclusive figure is NOT what the wallet pays.
+  //
+  // Returning it fee-inclusive fixes three things at once:
+  //   - "You pay" shows the real charge instead of understating it;
+  //   - `reviewedSendAmount` (and so the receive-exact `maxSendAmount` cap) is
+  //     measured on the same basis as the outflow the gate checks — otherwise an
+  //     83-sat fee eats the entire 5% headroom (5.3% of 1556) and the gate rejects
+  //     a swap where nothing actually drifted;
+  //   - the cost percentage stops dividing by a base that excludes the fee.
+  //
+  // Only when SENDING L-BTC: the fee is always in L-BTC, so adding it to a USDt
+  // `sendAmount` would mix assets. On a USDt send the dealer covers the fee and it
+  // surfaces as a reduced receive instead (bounded by `minRecvAmount`).
+  const sendAmount =
+    BigInt(Math.round(sendIsBase ? success.base_amount : success.quote_amount)) +
+    (sendIsBase ? dealerFee : 0n);
   return {
-    sendAmount: BigInt(Math.round(sendIsBase ? success.base_amount : success.quote_amount)),
+    sendAmount,
     recvAmount: BigInt(Math.round(sendIsBase ? success.quote_amount : success.base_amount)),
     // Absolute expiry, so the UI doesn't have to track when the quote arrived.
     // The dealer's ttl is in ms and is what bounds `taker_sign` acceptance.
     expiresAt: Date.now() + success.ttl,
+    fixedFee: BigInt(Math.round(success.fixed_fee)),
+    serverFee: BigInt(Math.round(success.server_fee)),
   };
 }
 
