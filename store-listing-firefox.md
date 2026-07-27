@@ -81,6 +81,7 @@ None. Apogee collects and transmits no personal data: keys and wallet state are 
   - `api.coinbase.com`, `api.kraken.com`, `api.coingecko.com`, `api.coinpaprika.com`, `blockchain.info`, `mempool.space` — public price sources; Apogee uses the median of those reachable to show a fiat value. `mempool.space` also serves the price history behind the optional price chart, which is fetched only when the user opens the chart.
   - `*.sideswap.io` — the SideSwap dealer, for the optional LBTC/USDt swap feature: requesting a quote and submitting the transaction the user approved. Contacted only when the user opens the Swap screen.
   - All are read-only chain/price requests; the only user-derived data sent is an encrypted wallet descriptor (sync), a user-approved signed transaction (broadcast), or — for a swap the user initiates — the amount and the unspent outputs needed to build it.
+- **camera (no manifest permission)** — Optional QR scanning: reading a payment address in Send, or a seed phrase when restoring a wallet. Apogee requests no camera permission in the manifest; the browser's own prompt appears only when the user presses Scan, in a separate extension window (a sidebar cannot surface that prompt). Frames are decoded locally and never stored or transmitted — the camera stream's tracks are stopped as soon as the window closes. A scanned seed phrase is passed inside the add-on to the wallet's own signing context, is readable only once, and is never written to storage.
 - **content scripts on `<all_urls>`** — Injects a small `window.liquid` provider into pages so Liquid web apps can request a wallet connection (the same pattern as `window.ethereum`). The provider only exposes a connect/request interface and does not read page content; every connection and transaction needs explicit in-add-on approval.
 - Apogee uses a **sidebar** (not a Chrome side panel) and runs its wallet engine in the extension's background page, so it needs no `sidePanel` or `offscreen` permission.
 - **Remote code: No** — All executable code, including the lwk_wasm WebAssembly module, is bundled in the package. Apogee fetches only data (chain state, prices), never code.
@@ -90,6 +91,8 @@ None. Apogee collects and transmits no personal data: keys and wallet state are 
 Plain text — the AMO reviewer-notes field renders literally, so no markdown below.
 
 No account or login required. Choose Create wallet, set a password, and you're in; keys are generated and stored locally, with no backend.
+
+About QR scanning: it is entirely optional and only starts when the user presses Scan. On Chromium the browser's built-in BarcodeDetector decodes the frame; Firefox does not implement that API, so the add-on bundles jsQR (pure JavaScript, MIT) and decodes locally instead. No frame or decoded value leaves the device. All executable code is bundled — nothing is fetched at runtime.
 
 About the swap feature: swaps go to the SideSwap dealer over its public JSON-RPC WebSocket. Apogee never sends a key or a seed. It receives an unsigned transaction, verifies the amounts against the quote the user approved, signs locally, and returns it; SideSwap broadcasts. Both sides settle in one Liquid transaction, so there is no point at which a third party holds the user's funds. Swaps run on mainnet only.
 
