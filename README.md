@@ -98,6 +98,45 @@ Any web app can integrate this provider. The extension exposes the standard
 discovery); the implementation is in
 [`src/provider/liquid-provider.ts`](src/provider/liquid-provider.ts).
 
+## 0.6.0
+
+- **Swap L-BTC and USDt in the wallet.** A new Swap screen quotes an instant swap
+  through the SideSwap dealer and settles it as a single atomic Liquid
+  transaction — both sides move at once, so your funds are never held by anyone.
+  Swap in either direction, and either name the amount you want to spend or the
+  amount you want to receive.
+- **Every swap is verified before it's signed.** Apogee reads the dealer's
+  proposed transaction and checks it against the quote you approved: that you
+  receive at least the agreed amount, that nothing beyond the amount you offered
+  leaves the wallet — including any *other* asset you hold — and that the network
+  fee is within an independent cap. If anything moved unfavorably, it isn't
+  signed. Swapping on a wallet set to never auto-lock asks for your password
+  first, the same as sending.
+- **Swap costs are shown, not buried in the rate.** The review screen names the
+  dealer, states the fees, and shows what share of the swap they represent, with
+  the guaranteed minimum you'll receive. Fees are mostly flat, so a very small
+  swap costs proportionally much more — the screen says so rather than leaving
+  you to work it out from a lower-than-expected result.
+- **Bitcoin price chart.** A rate readout sits under the balance and expands into
+  a price trace over 24 hours, 7 or 30 days, a year, or all time. Hovering scrubs
+  the trace for the price at a point in time. Collapsed, it costs no extra
+  network request.
+- **Import a wallet by scanning its seed-phrase QR** — the counterpart to the QR
+  Apogee already exports, so moving a wallet between Liquid wallets no longer
+  means retyping twelve or twenty-four words. The scanned phrase is handed
+  straight to the wallet's own signing context rather than broadcast, and is
+  readable only once.
+- **Faster, steadier fiat prices** — a fourth price source (mempool.space) joins
+  the median, so a rate-limited provider no longer leaves the display without a
+  figure.
+- **No more "engine error" on first open.** Installing or updating could briefly
+  show an error before the wallet engine finished starting; it now waits for the
+  engine instead of reporting a failure.
+- **Smaller things** — the guide reuses its open tab instead of stacking new
+  ones, the settings icon closes settings when it's already open, Send and Swap
+  have a Cancel button on the entry step, and the hardware-wallet option reads
+  the same on Chrome and Firefox.
+
 ## 0.5.0
 
 - **Firefox support.** Apogee now runs on Firefox, built from the same codebase
