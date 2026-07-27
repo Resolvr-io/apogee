@@ -42,11 +42,12 @@ Apogee never asks for your recovery phrase outside of setup. Keep your phrase an
 
 Apogee is a self-custodial wallet, not a custodian, exchange, or financial service.
 
-WHAT'S NEW IN 0.5.0
-• Send any Liquid asset — USDt and other issued assets are now first-class in Send, with an asset picker, correct decimal precision, and a Max option; the network fee is always paid in LBTC.
-• Fiat values for USD-pegged tokens — an approximate fiat value now appears beneath a USDt balance.
-• Token icons in the Send asset picker, matching the balance list.
-• Chain-server health badge in Settings > Advanced — see at a glance whether your Liquid chain server is reachable.
+WHAT'S NEW IN 0.6.0
+• Swap LBTC and USDt without leaving the wallet — get a quote from the SideSwap dealer and settle it as a single atomic Liquid transaction, so both sides move at once and your funds are never held by anyone. Swap in either direction, naming either the amount you want to spend or the amount you want to receive.
+• Every swap is verified before it's signed — Apogee checks the dealer's proposed transaction against the quote you approved before signing it, and states the fees and guaranteed minimum you'll receive up front.
+• Bitcoin price chart under the balance, covering 24 hours through all time, with hover to read the price at a point in time.
+• Import a wallet by scanning its seed-phrase QR — the counterpart to the QR Apogee already exports.
+• Faster, steadier fiat prices with a fourth price source.
 
 ## Single purpose
 
@@ -62,8 +63,10 @@ A self-custodial wallet for the Liquid Network: hold, receive, and send Liquid a
   - `waterfalls.liquidwebwallet.org` — default wallet-sync scan server (one encrypted-descriptor request per sync).
   - `blockstream.info` / `*.blockstream.info` — Esplora REST for sync fallback, transaction broadcast, and the asset registry.
   - `liquid.network` — public Esplora endpoint: sync/broadcast fallback and token icons from the public Liquid asset registry.
-  - `api.coinbase.com`, `api.kraken.com`, `api.coingecko.com`, `api.coinpaprika.com`, `blockchain.info` — public price sources; Apogee uses the median of those reachable to show a fiat value.
-  - All are read-only chain/price requests; the only user-derived data sent is an encrypted wallet descriptor (sync) or a user-approved signed transaction (broadcast).
+  - `api.coinbase.com`, `api.kraken.com`, `api.coingecko.com`, `api.coinpaprika.com`, `blockchain.info`, `mempool.space` — public price sources; Apogee uses the median of those reachable to show a fiat value. `mempool.space` also serves the price history behind the optional price chart, fetched only when the user opens the chart.
+  - `*.sideswap.io` — the SideSwap dealer, for the optional LBTC/USDt swap feature: requesting a quote and submitting the transaction the user approved. Contacted only when the user opens the Swap screen.
+  - All are read-only chain/price requests; the only user-derived data sent is an encrypted wallet descriptor (sync), a user-approved signed transaction (broadcast), or — for a swap the user initiates — the amount and the unspent outputs needed to build it.
+- **camera (no manifest permission)** — Optional QR scanning: reading a payment address in Send, or a seed phrase when restoring a wallet. Apogee requests no camera permission in the manifest; the browser's own prompt appears only when the user presses Scan, in a separate window (MV3 side panels can't surface that prompt). Frames are decoded locally and never stored or transmitted — the camera stream's tracks are stopped as soon as the window closes. A scanned seed phrase is passed inside the extension to the wallet's own signing context, is readable only once, and is never written to storage.
 - **content scripts on `<all_urls>`** — Injects a small `window.liquid` provider into pages so Liquid web apps can request a wallet connection (the same pattern as `window.ethereum`). It must be available on whatever site hosts a Liquid app. The provider only exposes a connect/request interface and does not read page content; every connection and transaction needs explicit in-wallet approval.
 - **Remote code: No** — All executable code, including the lwk_wasm WebAssembly module, is bundled in the package. Apogee fetches only data (chain state, prices), never code.
 - **Data collection: none** — Keys/seed are generated and stored locally (encrypted), never transmitted; no analytics or tracking.
@@ -71,7 +74,8 @@ A self-custodial wallet for the Liquid Network: hold, receive, and send Liquid a
 ## Reviewer notes / test instructions
 
 - No account or login required. Choose **Create wallet**, set a password, and you're in; keys are generated and stored locally, with no backend.
-- To exercise send/receive without real funds, switch the network toggle to **Testnet** on the create screen (the extension defaults to Mainnet), then fund the wallet from a Liquid testnet faucet.
+- To exercise send/receive without real funds, switch the network toggle to **Testnet** on the create screen (the extension defaults to Mainnet), then fund the wallet from a Liquid testnet faucet: https://liquidtestnet.com/faucet
 - The dApp connection flow can be seen by visiting a Liquid web app that requests a connection; Apogee shows an approval prompt.
 - Hardware (Jade) pairing needs a physical Blockstream Jade and is optional.
+- About the swap feature: swaps go to the SideSwap dealer over its public JSON-RPC WebSocket. Apogee never sends a key or a seed — it receives an unsigned transaction, verifies the amounts against the quote the user approved, signs locally, and returns it; SideSwap broadcasts. Swaps run on mainnet only, so the Testnet toggle above won't exercise this screen.
 - Homepage / support: https://apogee.resolvr.io
