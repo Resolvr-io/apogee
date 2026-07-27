@@ -472,3 +472,75 @@ describe("verifyDealerPset — edge cases", () => {
     }
   });
 });
+
+// ---- receive-exact cap and the gate measure the SAME basis -------------------
+//
+// The soundness of check 2a rests on an invariant no other test covers:
+// `maxSendAmount` (derived from the user-approved "You pay" figure) and the `sent`
+// the gate measures from the PSET must be on the same *fee-inclusive* basis.
+//
+// It was broken. `previewSwapQuote` returned the dealer's `base_amount`, which
+// EXCLUDES its L-BTC-denominated fee, so the cap was computed from a smaller number
+// than the outflow the gate measures. Measured on mainnet: base 1556 + 83 dealer fee
+// = 1639 actually paid, but the cap was 1556 * 105/100 = 1633 — BELOW the real
+// charge, so the gate rejected a swap where nothing had drifted, reporting "the rate
+// moved unfavorably". Numbers below are that real quote.
+describe("verifyDealerPset — receive-exact cap on a fee-inclusive basis", () => {
+  const BASE = 1556n; // dealer's base_amount (fee-exclusive)
+  const DEALER_FEE = 83n; // fixed_fee + server_fee
+  const NETWORK_FEE = 60n; // measured on-chain
+  const PAY = BASE + DEALER_FEE; // 1639 — what the user reviewed and approved
+  /** What the wallet's policy-asset net outflow actually is: the dealer's take plus
+   *  the network fee (which lwk includes in the policy-asset net). */
+  const SENT = PAY + NETWORK_FEE;
+
+  function receiveExactTerms(maxSendAmount: bigint): VerifyDealerPsetTerms {
+    return baseTerms({
+      // Fee-inclusive, matching what executeInstantSwap now passes: the gate
+      // measures the wallet's net policy-asset outflow, which includes the dealer
+      // fee, so a fee-exclusive sendAmount trips check 2 before 2a is reached.
+      sendAmount: PAY,
+      minRecvAmount: 100_000_000n, // 1.00 USDt
+      maxFee: 1000n,
+      maxSendAmount,
+    });
+  }
+
+  it("accepts the real charge when the cap is fee-INCLUSIVE (1639 * 105/100)", () => {
+    const terms = receiveExactTerms((PAY * 105n) / 100n); // 1720
+    const { pset, wollet } = mockPsetWollet(
+      { [LBTC]: -SENT, [USDT]: 100_000_000n },
+      { [LBTC]: NETWORK_FEE },
+    );
+    const res = verifyDealerPset(pset, wollet, terms);
+    expect(res.ok).toBe(true);
+  });
+
+  it("REGRESSION: the old fee-exclusive cap (1556 * 105/100) rejects that same swap", () => {
+    // This is the bug, pinned. If the preview ever reverts to a fee-exclusive
+    // sendAmount, receive-exact swaps break again with a misleading rate error.
+    const staleCap = (BASE * 105n) / 100n; // 1633
+    expect(staleCap).toBeLessThan(PAY); // the cap sits below the real charge
+    const terms = { ...receiveExactTerms(staleCap), maxSendAmount: staleCap };
+    const { pset, wollet } = mockPsetWollet(
+      { [LBTC]: -SENT, [USDT]: 100_000_000n },
+      { [LBTC]: NETWORK_FEE },
+    );
+    const res = verifyDealerPset(pset, wollet, terms);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toMatch(/user-approved cap/);
+  });
+
+  it("still rejects an outflow above the fee-inclusive cap", () => {
+    // The cap must remain a real bound, not merely loosened enough to pass.
+    const cap = (PAY * 105n) / 100n; // 1720
+    const overCap = cap + NETWORK_FEE + 2n; // just past cap + fee + TOL
+    const terms = receiveExactTerms(cap);
+    const { pset, wollet } = mockPsetWollet(
+      { [LBTC]: -overCap, [USDT]: 100_000_000n },
+      { [LBTC]: NETWORK_FEE },
+    );
+    const res = verifyDealerPset(pset, wollet, terms);
+    expect(res.ok).toBe(false);
+  });
+});

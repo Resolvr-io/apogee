@@ -20,6 +20,7 @@ import {
   policyAssetId,
   filterSendAssetUtxos,
   executeInstantSwap,
+  previewSwapQuote,
 } from "./orchestrator";
 import {
   LBTC_MAINNET_ASSET_ID,
@@ -403,5 +404,86 @@ describe("executeInstantSwap — fail-closed on missing reviewedSendAmount", () 
     // Should fail on "no UTXOs found", not on the reviewedSendAmount guard
     await expect(executeInstantSwap(params, fakeDeps))
       .rejects.toThrow("no UTXOs found");
+  });
+});
+
+// ---- previewSwapQuote: the pay amount must include the dealer's fee ---------
+//
+// `base_amount` EXCLUDES the dealer fee, which is L-BTC-denominated. Measured on a
+// real $1 receive-exact quote: base 1556 + 83 fee = 1639, matching both SideSwap's
+// own 1638-sat ask and the ~1643 implied by a live sell-exact swap. Two things broke
+// when the preview returned the fee-exclusive figure:
+//
+//   1. "You pay" understated the charge (verified on mainnet: screen said 1556, the
+//      true cost was 1639).
+//   2. `reviewedSendAmount` fed the receive-exact `maxSendAmount` cap
+//      (reviewed * 105/100). With base 1556 the cap was 1633 — BELOW the real 1639
+//      charge — so the gate rejected a swap where nothing had drifted. An 83-sat fee
+//      is 5.3% of base, consuming the whole 5% drift allowance.
+describe("previewSwapQuote — fee-inclusive send amount", () => {
+  const LBTC = LBTC_MAINNET_ASSET_ID;
+  const USDT = USDT_LIQUID_ASSET_ID;
+
+  /** Deps that answer the preview flow with a fixed dealer quote. */
+  function depsFor(
+    quote: { base_amount: number; quote_amount: number; fixed_fee: number; server_fee: number },
+    utxoAsset: string = LBTC,
+  ) {
+    let handler: ((q: unknown) => void) | null = null;
+    return {
+      client: {
+        startQuotes: async () => {
+          // Push the quote once the orchestrator has registered its handler.
+          setTimeout(() => handler?.({
+            quote_sub_id: 1,
+            status: { Success: { ...quote, quote_id: 7, ttl: 30_000 } },
+          }), 0);
+          return { fee_asset: "Base" as const, quote_sub_id: 1 };
+        },
+        onQuote: (h: (q: unknown) => void) => { handler = h; },
+      } as never,
+      engineCall: (async (req: { kind: string }) => {
+        if (req.kind === "getUtxos") {
+          return [{ txid: "a".repeat(64), vout: 0, asset: utxoAsset, assetBf: "b", value: "1000000000", valueBf: "c" }];
+        }
+        if (req.kind === "getAddress") return { address: "lq1address", index: 0 };
+        throw new Error(`unexpected engine call: ${req.kind}`);
+      }) as never,
+      descriptor: "ct(slip77(00),elwpkh(xpub))",
+      network: "liquid" as LiquidNetwork,
+    };
+  }
+
+  it("adds the dealer fee to sendAmount when sending L-BTC", async () => {
+    // The real measured quote.
+    const res = await previewSwapQuote(
+      { sendAssetId: LBTC, recvAssetId: USDT, recvAmount: 100_000_000 },
+      depsFor({ base_amount: 1556, quote_amount: 100_000_000, fixed_fee: 83, server_fee: 0 }),
+    );
+    expect(res.sendAmount).toBe(1639n); // 1556 + 83, matching SideSwap's own ask
+    expect(res.fixedFee).toBe(83n); // still reported separately for the breakdown
+  });
+
+  it("keeps the 5% receive-exact cap above the real charge", async () => {
+    const res = await previewSwapQuote(
+      { sendAssetId: LBTC, recvAssetId: USDT, recvAmount: 100_000_000 },
+      depsFor({ base_amount: 1556, quote_amount: 100_000_000, fixed_fee: 83, server_fee: 0 }),
+    );
+    // This is what executeInstantSwap derives as maxSendAmount.
+    const cap = (res.sendAmount * 105n) / 100n;
+    expect(cap).toBeGreaterThan(res.sendAmount); // real headroom, not negative
+    // Regression guard: the fee-exclusive basis produced a cap BELOW the charge.
+    expect((1556n * 105n) / 100n).toBeLessThan(1639n);
+  });
+
+  it("does NOT add the L-BTC fee to a USDt send amount", async () => {
+    // Fees are always L-BTC. On a USDt send the dealer covers them and they surface
+    // as a reduced receive — adding them to a USDt figure would mix assets.
+    const res = await previewSwapQuote(
+      { sendAssetId: USDT, recvAssetId: LBTC, sendAmount: 400_000_000 },
+      depsFor({ base_amount: 6194, quote_amount: 400_000_000, fixed_fee: 83, server_fee: 0 }, USDT),
+    );
+    expect(res.sendAmount).toBe(400_000_000n); // quote_amount, unmodified
+    expect(res.recvAmount).toBe(6194n);
   });
 });

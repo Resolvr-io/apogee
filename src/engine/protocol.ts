@@ -361,6 +361,12 @@ export interface SwapQuotePreview {
    *  counts down to this and re-quotes instead of submitting a dead quote_id,
    *  which would fail only after burning a password step-up round trip. */
   expiresAt: number;
+  /** The dealer's fee components as base-10 sats strings (L-BTC-denominated).
+   *  Surfaced so the review screen can disclose the full cost of a swap: these
+   *  are flat, so on a small swap they dominate (a $1 swap loses ~9% to the
+   *  dealer fee plus the network fee, vs ~0.1% on a $100 swap). */
+  fixedFee: string;
+  serverFee: string;
 }
 
 /** Human-readable spend details for the Jade signing tab's review summary. */
