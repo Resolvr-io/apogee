@@ -19,7 +19,11 @@ export interface KnownAsset {
   label: string;
   precision: number;
   /** True for USD-pegged stablecoins: the UI may show an approximate fiat
-   *  value (1 unit ≈ $1) converted into the chosen display currency. */
+   *  value (1 unit ≈ $1) converted into the chosen display currency. Named
+   *  for the peg currency because the conversion assumes 1 unit = 1 USD —
+   *  do not reuse for a token pegged to something other than USD without
+   *  generalizing this to carry the peg currency (see usdToFiat in
+   *  Wallet.tsx, which is hardcoded to a USD rate). */
   pegUsd?: boolean;
 }
 
