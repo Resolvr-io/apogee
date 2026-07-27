@@ -333,8 +333,25 @@
      sized to the scroll container's pt-6, so at rest only the (empty) top padding
      is masked and the first content sits at full opacity. */
   .apogee-feather-top {
-    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 24px);
-    mask-image: linear-gradient(to bottom, transparent 0, #000 24px);
+    /* Two mask layers, added together:
+       1. the vertical fade — content dissolves as it scrolls up past the top edge;
+       2. an opaque strip over the 8px scrollbar gutter.
+       The mask has to stay on the SCROLL CONTAINER for the fade to work at all: its
+       box is the fixed viewport, so content scrolls *through* the gradient. (Moving
+       it to an inner wrapper makes the gradient scroll away with the content, which
+       removes the effect entirely after the first 24px.) But a mask clips everything
+       the element paints, including its own scrollbar, so the fade also ate the top
+       of the scrollbar thumb. Compositing a gutter-width opaque layer over it spares
+       the scrollbar while leaving the content fade untouched — and needs no JS.
+       `mask-composite: add` (with the -webkit- alias `source-over`) is the union of
+       the two layers. Keep the 8px offset in step with
+       `.apogee-scrollbar::-webkit-scrollbar { width }` below. */
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 24px),
+      linear-gradient(to right, transparent calc(100% - 8px), #000 calc(100% - 8px));
+    mask-image: linear-gradient(to bottom, transparent 0, #000 24px),
+      linear-gradient(to right, transparent calc(100% - 8px), #000 calc(100% - 8px));
+    -webkit-mask-composite: source-over;
+    mask-composite: add;
   }
   /* thin, dark-themed scrollbar */
   .apogee-scrollbar {
