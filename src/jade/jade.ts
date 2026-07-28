@@ -99,7 +99,16 @@ function summaryHtml(s: SendReview): string {
       <div class="row"><span class="k">${s.drain ? "Amount (max)" : "Amount"}</span><span class="v">${amount}</span></div>
       ${isToken ? `<div class="row"><span class="k">Asset</span><span class="v mono">${esc(shortenHex(s.assetId ?? "", 8, 8))}</span></div>` : ""}
       <div class="row"><span class="k">Network fee</span><span class="v">${formatSats(s.fee)} sats</span></div>
-      ${isToken ? "" : `<div class="row total"><span class="k">Total</span><span class="v">${formatSats(s.recipientSats + s.fee)} sats</span></div>`}
+      ${
+        isToken
+          ? ""
+          : s.toSelf
+            ? // Paying ourselves: the amount returns, so the fee is the whole
+              // cost and adding the two would overstate the spend.
+              `<div class="row total"><span class="k">Net cost</span><span class="v">${formatSats(s.fee)} sats</span></div>`
+            : `<div class="row total"><span class="k">Total</span><span class="v">${formatSats(s.recipientSats + s.fee)} sats</span></div>`
+      }
+      ${s.toSelf ? `<div class="row"><span class="k"></span><span class="v">To your own wallet</span></div>` : ""}
     </div>`;
 }
 

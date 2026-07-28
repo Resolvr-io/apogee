@@ -20,6 +20,7 @@ import {
   ENTERPRISE_TOKEN_URL,
 } from "@/lib/debug";
 import { SCAN_STATE_DB } from "@/engine/protocol";
+import { recipientAmount } from "./recipient-amount";
 import { verifyDealerPset } from "@/engine/verify-dealer-pset";
 import type {
   AddressDTO,
@@ -1216,26 +1217,39 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         throw e;
       }
 
-      // Derive fee AND recipient amount from the PSET we actually built — never
-      // from caller-supplied `sats`. lwk reports the wallet's net per-asset
-      // deltas for this PSET (negative for a spend). For LBTC the policy delta's
-      // magnitude is recipient + fee, so the recipient receives (-netPolicy - fee);
-      // for a token the fee lives entirely in the policy delta, so the recipient
-      // amount is simply the magnitude of the token delta — no fee term. Computed
-      // from the wallet's own inputs/change so it holds even with confidential
-      // recipient outputs (per-output reads are undefined when blinded).
+      // Read the fee and the wallet's net per-asset deltas off the PSET we
+      // actually built, then hand them to `recipientAmount` — which lives in its
+      // own module because everything here is behind loadLwk() + a live Wollet
+      // and so can't be reached from a test. See recipient-amount.ts for why the
+      // amount is PSET-derived rather than taken from the caller, and for the
+      // one case (paying ourselves) where the PSET has nothing left to read.
       const psetBalance = entry.wollet.psetDetails(pset).balance();
       const fee = Number(psetBalance.feesIn(net.policyAsset()));
       const deltas = balanceToRecord(psetBalance.balances());
-      const recipientAmount = isToken
-        ? -(deltas[req.asset as string] ?? 0)
-        : -(deltas[entry.policyAssetHex] ?? 0) - fee;
+      // Only an LBTC drain needs the wallet balance (see recipient-amount.ts), so
+      // don't pay for the extra lwk read on an ordinary send.
+      const policyBalance =
+        !isToken && req.drain
+          ? (balanceToRecord(entry.wollet.balance())[entry.policyAssetHex] ?? 0)
+          : 0;
+      const { amount, toSelf } = recipientAmount({
+        deltas,
+        fee,
+        recipientsCount: psetBalance.recipients().length,
+        sats,
+        drain: Boolean(req.drain),
+        isToken,
+        assetId: req.asset,
+        policyAssetHex: entry.policyAssetHex,
+        policyBalance,
+      });
 
       const result: PrepareSendResult = {
         pset: pset.toString(),
         fee,
-        recipientSats: recipientAmount,
+        recipientSats: amount,
         assetId: isToken ? (req.asset as string) : entry.policyAssetHex,
+        toSelf,
       };
       return result;
     }

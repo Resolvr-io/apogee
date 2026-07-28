@@ -196,8 +196,19 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
               console
             />
             <Row label="Network fee" value={`${formatSats(request.fee)} sats`} console />
-            <Row label="Total" value={`${formatSats(request.recipientSats + request.fee)} sats`} strong console />
+            {/* Paying one of our own addresses: the amount returns, so the fee is
+                the whole cost and a sum of the two would overstate the spend. */}
+            {request.toSelf ? (
+              <Row label="Net cost" value={`${formatSats(request.fee)} sats`} strong console />
+            ) : (
+              <Row label="Total" value={`${formatSats(request.recipientSats + request.fee)} sats`} strong console />
+            )}
           </dl>
+          {request.toSelf && (
+            <p className="mt-1.5 text-xs text-[color:var(--text-subtle)]">
+              This address belongs to this wallet — the amount returns to you.
+            </p>
+          )}
         </>
       )}
 
