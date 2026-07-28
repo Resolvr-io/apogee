@@ -217,15 +217,29 @@ const ICON =
         if (recipients.length !== 1) {
           throw new ProviderRpcError(-32602, "liquid_sendTransaction currently supports exactly one recipient");
         }
-        const r = recipients[0] as { address?: unknown; amount?: unknown };
+        const r = recipients[0] as { address?: unknown; amount?: unknown; assetId?: unknown };
         if (typeof r.address !== "string" || !Number.isSafeInteger(r.amount)) {
-          throw new ProviderRpcError(-32602, "Invalid recipient: { address: string, amount: integer }");
+          throw new ProviderRpcError(
+            -32602,
+            "Invalid recipient: { address: string, amount: integer, assetId?: string }",
+          );
         }
         const sendMax = params.sendMax === true;
+        const assetId = typeof r.assetId === "string" && r.assetId.length > 0 ? r.assetId : undefined;
+        // Also accept top-level params.assetId for convenience.
+        const topAsset = typeof params.assetId === "string" && params.assetId.length > 0 ? params.assetId : undefined;
+        const resolvedAsset = assetId ?? topAsset;
+        if (resolvedAsset !== undefined && !/^[0-9a-fA-F]{64}$/.test(resolvedAsset)) {
+          throw new ProviderRpcError(
+            -32602,
+            "Invalid assetId: expected 64-character hex string",
+          );
+        }
         const res = await call<{ txid: string }>("send", {
           address: r.address,
           sats: r.amount as number,
           drain: sendMax,
+          asset: resolvedAsset,
         });
         return { txid: res.txid } as T;
       }
@@ -244,7 +258,7 @@ const ICON =
             "liquid_disconnect",
             "liquid_getCapabilities",
           ],
-          features: { hardwareSigning: true, issuedAssets: true, confidential: true },
+          features: { hardwareSigning: true, issuedAssets: true, confidential: true, ampRestricted: false },
         } as T;
       }
       case "liquid_disconnect": {
