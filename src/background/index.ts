@@ -22,6 +22,8 @@ import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "
 import { SCAN_STATE_DB } from "@/engine/protocol";
 import { isNoReceiverError, shouldRetryEngineSend } from "@/lib/engine-retry";
 import { claimSecret, type ParkedSecret } from "@/lib/qr-secret";
+import { evaluateUpdate } from "@/lib/version-check";
+import { APP_VERSION } from "@/version";
 import { browser } from "@/lib/ext";
 // Static imports — dynamic import() is disallowed in the MV3 service worker
 // global scope per the HTML spec (Chrome blocks it at runtime).
@@ -151,6 +153,7 @@ const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
   "wallet/getAddress",
   "wallet/disconnectSite",
   "wallet/openGuide",
+  "wallet/checkUpdate",
   "wallet/touch",
 ]);
 
@@ -175,6 +178,10 @@ browser.alarms.onAlarm.addListener(async (alarm) => {
 // second copy. Lost on service-worker eviction, which just means the next click
 // opens a fresh tab — acceptable, and cheaper than holding the `tabs` permission.
 const GUIDE_URL = "src/guide/guide.html";
+// Latest published release. Public endpoint, no auth — the repo is public, and an
+// unauthenticated caller gets 60 requests/hour per IP, far above what a manual
+// click can reach.
+const UPDATE_FEED_URL = "https://api.github.com/repos/Resolvr-io/apogee/releases/latest";
 let guideTabId: number | null = null;
 
 // ---- scanned seed phrase: one-shot hand-off ---------------------------------
@@ -579,6 +586,33 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       const created = await browser.tabs.create({ url });
       guideTabId = created.id ?? null;
       return;
+    }
+
+    // One request to the repo's latest-release endpoint, on an explicit click.
+    // The release tag is what every store package is cut from, so it answers
+    // "has a newer version been published" for both browsers from one source —
+    // neither store exposes a usable version API. Aborted after 8s so a hung
+    // request can't leave the UI waiting indefinitely.
+    case "wallet/checkUpdate": {
+      let res: Response;
+      try {
+        res = await fetch(UPDATE_FEED_URL, {
+          headers: { Accept: "application/vnd.github+json" },
+          signal: AbortSignal.timeout(8_000),
+        });
+      } catch {
+        throw new Error("Couldn't reach the update server.");
+      }
+      if (!res.ok) throw new Error("Couldn't check for updates right now.");
+      const body = (await res.json()) as { tag_name?: unknown };
+      const result = evaluateUpdate(
+        typeof body.tag_name === "string" ? body.tag_name : "",
+        APP_VERSION,
+      );
+      // An unreadable tag must not be compared — better to say we couldn't check
+      // than to claim an update (or claim none) from a version we can't parse.
+      if (!result) throw new Error("Couldn't read the latest version.");
+      return result;
     }
 
     case "wallet/qr":

@@ -38,6 +38,9 @@ export function hostPermissions(mode: string): string[] {
     // SideSwap dealer (instant swaps): WebSocket (wss://) is covered by the
     // https host permission in Chrome MV3.
     "https://*.sideswap.io/*",
+    // Release feed for the Settings "Check for updates" link — one request to
+    // the latest-release endpoint, only when the user presses it.
+    "https://api.github.com/*",
     // Dev-only: localhost contract gateway / regtest Esplora. Excluded from
     // production builds so the shipped extension can't reach loopback.
     ...(mode === "development" ? ["http://localhost/*", "http://127.0.0.1/*"] : []),
