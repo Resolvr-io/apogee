@@ -254,6 +254,10 @@ export type WalletRequest =
   // the SW because it remembers the tab id it created — `tabs.query({url})` needs
   // the broad "tabs" permission, which this doesn't warrant.
   | { type: "wallet/openGuide" }
+  // Read the newest published release and compare it to this build. Runs only on
+  // an explicit user click (Settings → Check for updates), never on open or a
+  // timer. In the SW because the fetch needs the api.github.com host permission.
+  | { type: "wallet/checkUpdate" }
   | { type: "wallet/qr"; text: string }
   | { type: "wallet/getAsset"; assetId: string; network: LiquidNetwork }
   | { type: "wallet/getChainServer"; network: LiquidNetwork } // per-network Esplora override ("" = automatic)

@@ -36,6 +36,8 @@ import { PriceChart } from "@/sidepanel/components/PriceChart";
 import type { KeystoreState, LiquidNetwork, WalletInfo } from "@/keystore/keystore";
 import { explorerTxUrl } from "@/lib/explorer";
 import { APP_VERSION_DISPLAY } from "@/version";
+import { STORE_LISTING_URL } from "@/lib/store-links";
+import type { UpdateCheck } from "@/lib/version-check";
 import { KNOWN_ASSETS } from "@/lib/asset-registry";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY } from "@/lib/debug";
 import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS } from "@/lib/demo-funds";
@@ -1711,23 +1713,92 @@ function SettingsBody({
 
       {/* Resolvr footer: masked monochrome wordmark stacked over the copyright.
           The bottom darkening gradient is global (App shell), so this stays
-          legible over the moonlit-sea backdrop on every view. */}
-      <footer className="-mx-4 -mb-4 mt-auto flex flex-col gap-2 px-4 pt-4 pb-5 text-[color:var(--text-muted)]">
-        <div
-          className="h-[28px] w-[92px] bg-current"
-          style={{
-            maskImage: "url(/icons/resolvr-logo.svg)",
-            maskSize: "contain",
-            maskRepeat: "no-repeat",
-            WebkitMaskImage: "url(/icons/resolvr-logo.svg)",
-            WebkitMaskSize: "contain",
-            WebkitMaskRepeat: "no-repeat",
-          }}
-          role="img"
-          aria-label="Resolvr"
-        />
-        <span className="text-xs">© 2026 Resolvr, Inc.</span>
+          legible over the moonlit-sea backdrop on every view. The update link
+          sits in the row's spare width beside the wordmark and is shorter than
+          the two-line stack, so the footer's height is unchanged by it. */}
+      <footer className="-mx-4 -mb-4 mt-auto flex items-end justify-between gap-3 px-4 pt-4 pb-5 text-[color:var(--text-muted)]">
+        <div className="flex flex-col gap-2">
+          <div
+            className="h-[28px] w-[92px] bg-current"
+            style={{
+              maskImage: "url(/icons/resolvr-logo.svg)",
+              maskSize: "contain",
+              maskRepeat: "no-repeat",
+              WebkitMaskImage: "url(/icons/resolvr-logo.svg)",
+              WebkitMaskSize: "contain",
+              WebkitMaskRepeat: "no-repeat",
+            }}
+            role="img"
+            aria-label="Resolvr"
+          />
+          <span className="text-xs">© 2026 Resolvr, Inc.</span>
+        </div>
+        <UpdateCheckLink />
       </footer>
+    </div>
+  );
+}
+
+// Settings footer: check the published release against this build, on click
+// only. Sits in the footer row's spare width beside the wordmark; the wordmark +
+// copyright stack is taller than this link plus its result line, so neither
+// state changes the footer's height. The result replaces itself in place rather
+// than appending, so repeat presses can't grow the row.
+function UpdateCheckLink() {
+  const [state, setState] = useState<"idle" | "checking" | "done" | "error">("idle");
+  const [result, setResult] = useState<UpdateCheck | null>(null);
+  const [error, setError] = useState("");
+  // A resolved check must not call setState after the panel navigates away.
+  const alive = useRef(true);
+  useEffect(() => () => void (alive.current = false), []);
+
+  async function check() {
+    setState("checking");
+    setError("");
+    try {
+      const r = await wallet.checkUpdate();
+      if (!alive.current) return;
+      setResult(r);
+      setState("done");
+    } catch (e) {
+      if (!alive.current) return;
+      setError(errMessage(e));
+      setState("error");
+    }
+  }
+
+  return (
+    <div className="flex shrink-0 flex-col items-end gap-0.5 text-right">
+      <button
+        type="button"
+        onClick={check}
+        disabled={state === "checking"}
+        className="text-xs text-[color:var(--text-subtle)] underline underline-offset-2 transition-colors hover:text-[color:var(--text-muted)] disabled:no-underline"
+      >
+        {state === "checking" ? "Checking…" : "Check for updates"}
+      </button>
+      {state === "done" && result && (
+        <span className="text-[11px] text-[color:var(--text-subtle)]">
+          {result.newer ? (
+            // Released, not necessarily installable yet: a store can still be
+            // reviewing it, so this points at the listing instead of promising
+            // the update is already waiting there.
+            <a
+              href={STORE_LISTING_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="underline underline-offset-2 hover:text-[color:var(--text-muted)]"
+            >
+              Version {result.latest} is available
+            </a>
+          ) : (
+            "You're on the latest version."
+          )}
+        </span>
+      )}
+      {state === "error" && (
+        <span className="text-[11px] text-[color:var(--text-subtle)]">{error}</span>
+      )}
     </div>
   );
 }

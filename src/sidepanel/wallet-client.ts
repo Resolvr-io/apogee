@@ -27,6 +27,7 @@ import type {
   WalletSigner,
 } from "@/keystore/keystore";
 import { browser } from "@/lib/ext";
+import type { UpdateCheck } from "@/lib/version-check";
 
 async function call<T>(msg: WalletRequest): Promise<T> {
   const reply = (await browser.runtime.sendMessage(msg)) as Reply<T> | undefined;
@@ -77,6 +78,8 @@ export const wallet = {
   },
   /** Open the guide, focusing an existing tab rather than opening a duplicate. */
   openGuide: () => call<void>({ type: "wallet/openGuide" }),
+  /** Newest published release vs. this build. User-initiated only. */
+  checkUpdate: () => call<UpdateCheck>({ type: "wallet/checkUpdate" }),
   qr: (text: string) => call<string>({ type: "wallet/qr", text }),
   getAsset: (assetId: string, network: LiquidNetwork) =>
     call<AssetInfo>({ type: "wallet/getAsset", assetId, network }),
