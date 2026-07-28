@@ -171,13 +171,21 @@
     -webkit-mask-image: linear-gradient(to bottom, #000 52%, transparent 84%);
     mask-image: linear-gradient(to bottom, #000 52%, transparent 84%);
   }
-  /* shooting-star layer (see ShootingStars.tsx): same positioning + horizon fade
-     as the star canvas, drawn above the stars but behind the moon and glow. */
+  /* shooting-star layer (see ShootingStars.tsx): positioned like the star canvas
+     and drawn above the stars but behind the moon and glow. Its fade is its OWN,
+     and deliberately higher than .apogee-starfield's above — a moving streak has
+     to be gone well before the horizon, where a static star can sit and dim. */
+  /* Meteors belong to the upper sky only. This mask fades them out well above the
+     waterline (.apogee-ocean starts at 72%) so one never streaks across the
+     horizon or the moonlit dome — a fade, never a hard edge, so nothing is
+     clipped mid-trail. KEEP IN SYNC with FADE_START/FADE_END in ShootingStars.tsx,
+     which keeps the spawn band above the fade and retires a meteor once its whole
+     trail is past it. */
   .apogee-meteors {
     position: absolute;
     inset: 0;
-    -webkit-mask-image: linear-gradient(to bottom, #000 52%, transparent 84%);
-    mask-image: linear-gradient(to bottom, #000 52%, transparent 84%);
+    -webkit-mask-image: linear-gradient(to bottom, #000 34%, transparent 58%);
+    mask-image: linear-gradient(to bottom, #000 34%, transparent 58%);
   }
   /* moonlit blue dome at the horizon (static) */
   .apogee-glow {
