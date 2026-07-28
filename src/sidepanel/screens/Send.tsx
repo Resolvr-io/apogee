@@ -272,6 +272,7 @@ export function Send({
         recipientSats: prepared.recipientSats,
         fee: prepared.fee,
         drain,
+        toSelf: prepared.toSelf,
         ...(isLbtc
           ? {}
           : { assetId, assetTicker: assetLabel, assetPrecision: precision }),
@@ -338,19 +339,31 @@ export function Send({
             console
           />
           <Row label="Network fee" value={`${formatSats(prepared.fee)} sats`} console />
-          {/* A cross-asset total is meaningless — only LBTC sums with its fee. */}
-          {isLbtc && (
-            <Row
-              label="Total"
-              value={`${formatSats(recipientUnits + prepared.fee)} sats`}
-              strong
-              console
-            />
-          )}
+          {/* A cross-asset total is meaningless — only LBTC sums with its fee.
+              Paying ourselves, the amount comes straight back, so the fee is the
+              whole cost — summing it with the amount would overstate the spend. */}
+          {isLbtc &&
+            (prepared.toSelf ? (
+              <Row label="Net cost" value={`${formatSats(prepared.fee)} sats`} strong console />
+            ) : (
+              <Row
+                label="Total"
+                value={`${formatSats(recipientUnits + prepared.fee)} sats`}
+                strong
+                console
+              />
+            ))}
         </dl>
-        {!isLbtc && (
+        {/* One line, not two: a token self-send would otherwise print the
+            self-send note and the fee-asset note back to back, both about the
+            same fee. */}
+        {(prepared.toSelf || !isLbtc) && (
           <p className="mt-1.5 text-xs text-[color:var(--text-subtle)]">
-            The network fee is paid in LBTC.
+            {prepared.toSelf
+              ? isLbtc
+                ? "This address belongs to this wallet — the amount returns to you, so the network fee is the only cost."
+                : "This address belongs to this wallet — the amount returns to you, so the network fee (paid in LBTC) is the only cost."
+              : "The network fee is paid in LBTC."}
           </p>
         )}
         <ErrorText>{error}</ErrorText>

@@ -336,6 +336,10 @@ export interface PrepareSendResult {
   fee: number; // network fee, always in LBTC sats
   recipientSats: number; // what the recipient actually receives, in BASE UNITS of `assetId`
   assetId: string; // which asset moves — the policy asset hex for LBTC sends
+  // The destination belongs to this wallet, so the funds come straight back and
+  // the fee is the whole cost. Say so on review screens: otherwise a self-send
+  // reads as an ordinary spend whose amount vanishes from the wallet.
+  toSelf: boolean;
 }
 
 export interface SendResult {
@@ -375,6 +379,11 @@ export interface SendReview {
   recipientSats: number; // base units of the sent asset (sats for LBTC)
   fee: number; // LBTC sats
   drain: boolean;
+  // Destination is one of this wallet's own addresses — the amount returns, so
+  // the fee is the only cost. Display-only, like the rest of this summary.
+  // Required so every construction site states it rather than defaulting to
+  // "not a self-send" by omission.
+  toSelf: boolean;
   // Present for token sends (display-only — the PSET is the signed truth, and
   // the Jade device shows asset ids on-screen independently).
   assetId?: string;
@@ -465,6 +474,7 @@ export type ApprovalRequest =
       recipientSats: number; // what the recipient receives
       fee: number; // network fee, sats
       drain: boolean; // "send max"
+      toSelf: boolean; // destination is ours — the amount returns, fee is the cost
       network: DappNetwork;
       locked: boolean; // wallet was locked at request time → the UI must unlock first
       signerKind: WalletSigner; // "local" | "jade" — jade signs on-device in a tab

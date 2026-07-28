@@ -657,6 +657,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
           recipientSats: msg.review?.recipientSats ?? 0,
           fee: msg.review?.fee ?? 0,
           drain: msg.review?.drain ?? false,
+          toSelf: msg.review?.toSelf ?? false,
           // Token-send display fields (absent for LBTC) — the Jade tab renders
           // the asset amount and id; the device itself is the signed truth.
           assetId: msg.review?.assetId,
@@ -1028,6 +1029,7 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
         recipientSats: prepared.recipientSats,
         fee: prepared.fee,
         drain: Boolean(msg.drain),
+        toSelf: prepared.toSelf,
         network: toDappNetwork(info.network),
         // A Jade signs on-device, so there's no unlock-to-sign for it.
         locked: info.signer === "jade" ? false : keystore.isLocked(),
@@ -1230,8 +1232,9 @@ async function handleApprovalDecision(
             recipientSats: pending.request.recipientSats,
             fee: pending.request.fee,
             drain: pending.request.drain,
+            toSelf: pending.request.toSelf,
           }
-        : { address: "", recipientSats: 0, fee: 0, drain: false };
+        : { address: "", recipientSats: 0, fee: 0, drain: false, toSelf: false };
     try {
       const result = await signWithJade(
         pending.pset,
