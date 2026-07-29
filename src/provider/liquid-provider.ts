@@ -225,11 +225,10 @@ const ICON =
           );
         }
         const sendMax = params.sendMax === true;
+        // assetId is per-recipient only (not top-level params.assetId) so the
+        // shape stays future-proof if multi-recipient is ever added.
         const assetId = typeof r.assetId === "string" && r.assetId.length > 0 ? r.assetId : undefined;
-        // Also accept top-level params.assetId for convenience.
-        const topAsset = typeof params.assetId === "string" && params.assetId.length > 0 ? params.assetId : undefined;
-        const resolvedAsset = assetId ?? topAsset;
-        if (resolvedAsset !== undefined && !/^[0-9a-fA-F]{64}$/.test(resolvedAsset)) {
+        if (assetId !== undefined && !/^[0-9a-fA-F]{64}$/.test(assetId)) {
           throw new ProviderRpcError(
             -32602,
             "Invalid assetId: expected 64-character hex string",
@@ -239,7 +238,7 @@ const ICON =
           address: r.address,
           sats: r.amount as number,
           drain: sendMax,
-          asset: resolvedAsset,
+          asset: assetId,
         });
         return { txid: res.txid } as T;
       }
