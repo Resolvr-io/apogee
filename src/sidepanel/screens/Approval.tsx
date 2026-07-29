@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
 import type { ApprovalRequest } from "@/engine/protocol";
-import { formatSats } from "@/lib/format";
+import { formatAssetAmount, formatSats } from "@/lib/format";
 import { shortenHex } from "@/lib/utils";
 import { Button, Card, ErrorText, Field, Input, Spinner } from "@/sidepanel/components/ui";
 import { errMessage, unlockErrMessage, wallet } from "@/sidepanel/wallet-client";
@@ -192,16 +192,32 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
             <Row label="Network" value={networkLabel(request.network)} />
             <Row
               label={request.drain ? "Amount (max)" : "Amount"}
-              value={`${formatSats(request.recipientSats)} sats`}
+              value={
+                request.assetId
+                  ? `${formatAssetAmount(request.recipientSats, request.assetPrecision ?? null)} ${request.assetTicker ?? "units"}`
+                  : `${formatSats(request.recipientSats)} sats`
+              }
               console
             />
+            {request.assetId ? (
+              <Row label="Asset" value={shortenHex(request.assetId, 8, 8)} mono />
+            ) : null}
             <Row label="Network fee" value={`${formatSats(request.fee)} sats`} console />
             {/* Paying one of our own addresses: the amount returns, so the fee is
-                the whole cost and a sum of the two would overstate the spend. */}
+                the whole cost and a sum of the two would overstate the spend.
+                Token sends pay the fee in LBTC — show Fee asset when not toSelf;
+                self-sends (LBTC or token) show Net cost = fee only. */}
             {request.toSelf ? (
               <Row label="Net cost" value={`${formatSats(request.fee)} sats`} strong console />
+            ) : request.assetId ? (
+              <Row label="Fee asset" value="LBTC" console />
             ) : (
-              <Row label="Total" value={`${formatSats(request.recipientSats + request.fee)} sats`} strong console />
+              <Row
+                label="Total"
+                value={`${formatSats(request.recipientSats + request.fee)} sats`}
+                strong
+                console
+              />
             )}
           </dl>
           {request.toSelf && (

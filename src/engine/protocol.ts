@@ -431,7 +431,7 @@ export type ProviderRequest =
   | { type: "provider/getAssetInfo"; assetId: string }
   // The dapp passes intent (address + amount); Apogee builds the PSET, shows an
   // approval, signs, and broadcasts. A watch-only dapp can't build a PSET itself.
-  | { type: "provider/send"; address: string; sats: number; drain?: boolean };
+  | { type: "provider/send"; address: string; sats: number; drain?: boolean; asset?: string };
 
 /** Lightweight lock state for a connected dapp (no chain sync). */
 export interface ProviderStatus {
@@ -475,13 +475,17 @@ export type ApprovalRequest =
       id: string;
       origin: string; // requesting dapp origin
       address: string; // destination
-      recipientSats: number; // what the recipient receives
+      recipientSats: number; // what the recipient receives (base units of asset)
       fee: number; // network fee, sats
       drain: boolean; // "send max"
       toSelf: boolean; // destination is ours — the amount returns, fee is the cost
       network: DappNetwork;
       locked: boolean; // wallet was locked at request time → the UI must unlock first
       signerKind: WalletSigner; // "local" | "jade" — jade signs on-device in a tab
+      // Present for issued-asset sends (absent / policy asset = LBTC path).
+      assetId?: string;
+      assetTicker?: string | null;
+      assetPrecision?: number | null;
     };
 
 /** Uniform reply envelope for both channels. */

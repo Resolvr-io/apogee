@@ -23,6 +23,7 @@ import { SCAN_STATE_DB } from "@/engine/protocol";
 import { isNoReceiverError, shouldRetryEngineSend } from "@/lib/engine-retry";
 import { claimSecret, type ParkedSecret } from "@/lib/qr-secret";
 import { evaluateUpdate } from "@/lib/version-check";
+import { KNOWN_ASSETS } from "@/lib/asset-registry";
 import { APP_VERSION } from "@/version";
 import { browser } from "@/lib/ext";
 // Static imports — dynamic import() is disallowed in the MV3 service worker
@@ -1043,6 +1044,14 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
       if (info.signer === "watch") {
         throw new Error("Watch-only wallets can't sign or send.");
       }
+      // Optional issued-asset id (hex). Absent → LBTC / policy asset path.
+      // Engine prepareSend already supports token sends; the side-panel Send UI
+      // uses it. Wire the same field through the dapp provider so sites can move
+      // held Liquid assets (USDt, custom issued assets) with Jade/local signing.
+      // NOTE: Blockstream AMP *transfer-restricted* assets still need AMP
+      // cosigning and are NOT supported here (see docs/amp-assets.md).
+      const asset =
+        typeof msg.asset === "string" && msg.asset.length > 0 ? msg.asset : undefined;
       // Build the spend now (watch-only — works even while locked) so the approval
       // shows the real fee. Signing waits until the user approves: a local wallet
       // signs in the offscreen engine, a Jade signs on-device in a tab.
@@ -1053,7 +1062,31 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
         address: msg.address,
         sats: msg.sats,
         drain: msg.drain,
+        asset,
       });
+      // Display metadata for the approval UI / Jade review tab. Prefer local
+      // KNOWN_ASSETS (same path as Send.tsx) so USDt etc. render without a
+      // registry round-trip; only fetch when precision or ticker is still missing.
+      let assetTicker: string | null | undefined;
+      let assetPrecision: number | null | undefined;
+      if (asset) {
+        const known = KNOWN_ASSETS[prepared.assetId] ?? KNOWN_ASSETS[asset];
+        assetTicker = known?.label ?? null;
+        assetPrecision = known?.precision ?? null;
+        if (assetPrecision == null || !assetTicker) {
+          try {
+            const meta = await engine<AssetInfo>({
+              kind: "getAsset",
+              assetId: prepared.assetId,
+              network: info.network,
+            });
+            if (!assetTicker) assetTicker = meta.ticker ?? meta.name ?? null;
+            if (assetPrecision == null) assetPrecision = meta.precision ?? null;
+          } catch {
+            // leave known values or null
+          }
+        }
+      }
       const id = `appr-${approvalSeq++}-${Date.now()}`;
       const request: ApprovalRequest = {
         kind: "send",
@@ -1068,6 +1101,13 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
         // A Jade signs on-device, so there's no unlock-to-sign for it.
         locked: info.signer === "jade" ? false : keystore.isLocked(),
         signerKind: info.signer,
+        ...(asset
+          ? {
+              assetId: prepared.assetId,
+              assetTicker,
+              assetPrecision,
+            }
+          : {}),
       };
       // Resolve once the user approves (sign + broadcast) or rejects.
       return await new Promise<SendResult>((resolve, reject) => {
@@ -1267,6 +1307,9 @@ async function handleApprovalDecision(
             fee: pending.request.fee,
             drain: pending.request.drain,
             toSelf: pending.request.toSelf,
+            assetId: pending.request.assetId,
+            assetTicker: pending.request.assetTicker,
+            assetPrecision: pending.request.assetPrecision,
           }
         : { address: "", recipientSats: 0, fee: 0, drain: false, toSelf: false };
     try {
