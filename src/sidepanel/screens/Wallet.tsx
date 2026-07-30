@@ -1816,6 +1816,73 @@ function SubView({
   center?: boolean;
   children: React.ReactNode;
 }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // When a collapsible drawer (<details>) grows, scroll its header into view if
+  // the revealed content would otherwise fall below the fold. Native `toggle`
+  // did not bubble on our browser floors (Chrome <131, Firefox <132), so a
+  // React `onToggle` on an ancestor can't see it here — listen on the capture
+  // phase instead, which fires regardless. Inert in Receive/Send/Swap, which
+  // have no drawers; this is really a Settings behavior, but SubView owns the
+  // scroll container they all share.
+  //
+  // `toggle` alone is not enough, because a drawer can grow more than once and
+  // only the first growth is a toggle. "Reveal seed phrase" opens to just a
+  // password form; submitting it swaps in the phrase, a countdown and two
+  // buttons, and "Show as QR code" then swaps the phrase for a 180px QR —
+  // together more height than the toggle itself revealed, and both are React
+  // state changes that fire no event on the element. So the toggle only decides
+  // WHAT to watch, and a ResizeObserver decides WHEN to act. It also removes the
+  // need to measure on a frame timer: it reports the box after layout, whereas
+  // the old requestAnimationFrame could still measure the pre-expansion scroll
+  // range and under-scroll as a result.
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+
+    const revealIfClipped = (details: HTMLDetailsElement) => {
+      if (!details.open || !container.contains(details)) return;
+      const cRect = container.getBoundingClientRect();
+      const dRect = details.getBoundingClientRect();
+      // Already fully in view — leave it. Only act when the bottom is clipped, so
+      // opening a section near the top doesn't jump, and so a drawer that SHRINKS
+      // (the seed phrase auto-hiding, the QR collapsing) never yanks the view.
+      if (dRect.bottom <= cRect.bottom + 1) return;
+      // Bring the section's header to the top (with breathing room), which
+      // reveals everything below it — or, for a section taller than the
+      // viewport, the most useful anchor.
+      const target = details.querySelector("summary") ?? details;
+      container.scrollBy({
+        top: target.getBoundingClientRect().top - cRect.top - 12,
+        behavior: "smooth",
+      });
+    };
+
+    // One observer for every open drawer. observe() fires immediately with the
+    // current box, so opening a drawer is handled here too rather than needing a
+    // separate measurement path.
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.target instanceof HTMLDetailsElement) revealIfClipped(entry.target);
+      }
+    });
+
+    const onToggle = (e: Event) => {
+      const details = e.target;
+      if (!(details instanceof HTMLDetailsElement)) return;
+      // Watch only what's open: a closed drawer can't be clipped, and dropping it
+      // keeps the observer from reacting to the collapse animation.
+      if (details.open) observer.observe(details);
+      else observer.unobserve(details);
+    };
+
+    container.addEventListener("toggle", onToggle, true);
+    return () => {
+      container.removeEventListener("toggle", onToggle, true);
+      observer.disconnect();
+    };
+  }, []);
+
   return (
     // min-h-0 lets the scroll container actually shrink + scroll inside the flex
     // column; without it the content overflows and the footer gets clipped.
@@ -1827,6 +1894,7 @@ function SubView({
         <h1 className="console-title text-[13px]">{title}</h1>
       </div>
       <div
+        ref={scrollRef}
         className={cn(
           "min-h-0 flex-1 overflow-y-auto px-4 pb-4",
           center ? "flex flex-col justify-center" : "apogee-feather-top pt-6",
