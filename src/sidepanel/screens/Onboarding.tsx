@@ -391,6 +391,7 @@ export function Onboarding({
             onConfirm={setConfirm}
             autoFocus
           />
+          <PasswordRecoveryNotice />
           <ErrorText>{error}</ErrorText>
           <Button type="submit" disabled={busy || !passwordReady}>
             {busy ? <Spinner /> : "Create wallet"}
@@ -525,6 +526,7 @@ export function Onboarding({
           onPassword={setPassword}
           onConfirm={setConfirm}
         />
+        <PasswordRecoveryNotice />
         <ErrorText>{error}</ErrorText>
         <Button type="submit" disabled={busy || !passwordReady}>
           {busy ? <Spinner /> : "Restore wallet"}
@@ -681,5 +683,28 @@ function PasswordFields({
         {showMismatch ? "Passwords don't match." : ""}
       </p>
     </>
+  );
+}
+
+// Shown wherever a password is set to protect a seed. Two things it has to get
+// right, because this is the screen where a careful user is paying attention:
+//
+// The password is NEVER stored. `deriveKey` turns it into a key that decrypts the
+// mnemonic; what lands in storage is the encrypted seed and a verifier. Saying it
+// is "stored on this device" would describe a worse wallet than we built.
+//
+// And forgetting it does not lose funds. `keystore.reset()` exists for exactly
+// this — Unlock.tsx offers "Forgot your password?" — so the phrase is the real
+// safety net and saying so is more useful than a warning that reads like the
+// money is gone.
+//
+// Deliberately NOT on the hardware or watch-only steps: a Jade holds its own keys
+// and a watch-only wallet has none, so nothing about a recovery phrase applies.
+function PasswordRecoveryNotice() {
+  return (
+    <p className="mt-1.5 text-xs text-[color:var(--text-subtle)]">
+      Apogee never stores this password — only your encrypted seed is kept on this device. If you
+      forget it, you&apos;ll need your recovery phrase to get back in.
+    </p>
   );
 }
