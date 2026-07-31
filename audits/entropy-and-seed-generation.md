@@ -200,7 +200,7 @@ below is worded as a caution rather than a suggestion.
 |---|---|
 | Multiple independent entropy sources pooled with SHA-512 | **Not applicable / not done.** No hardware RNG or CPU counters exist in an extension. Single source: the browser CSPRNG. |
 | Generate a fresh phrase rather than restoring a suspect one | Supported — create is the default path, restore is a separate explicit choice. |
-| Verify receive addresses on the device | **Not supported, on any path.** Jade shows a transaction's outputs at signing, which protects a *send*; a receive address is produced from the watch-only descriptor by the engine and is never confirmed on the device. The Jade integration calls only `keyoriginXpub` and `sign` (`jade/jade.ts:247,260,337-338`) — there is no receive-address confirmation. See gap 6. |
+| Verify receive addresses on the device | **Not supported, on any path.** Jade shows a transaction's outputs at signing, which protects a *send*; a receive address is produced from the watch-only descriptor by the engine and is never confirmed on the device. The Jade integration asks the device for three things only — `keyoriginXpub` and `wpkh` at pairing, `sign` for a PSET (`jade/jade.ts:247,260,337-338`) — none of which confirms a receive address. See gap 6. |
 | Firmware/software from official channels only | Published to the Chrome Web Store and AMO; the repo is public. |
 | Consider a BIP-39 passphrase | **Not supported.** See below. |
 
@@ -231,8 +231,8 @@ below is worded as a caution rather than a suggestion.
    generator. A user who wants key material generated outside the browser should use Jade,
    which Apogee supports as an external signer — the keys never leave the device. Note the
    scope of that recommendation carefully, per gap 6.
-6. **No receive-address verification on device, including on Jade.** The Jade integration
-   calls exactly two device operations — `keyoriginXpub` at setup and `sign` for a PSET
+6. **No receive-address verification on device, including on Jade.** Apogee asks the device
+   for three things and no more — `keyoriginXpub` and `wpkh` at pairing, `sign` for a PSET
    (`jade/jade.ts:247,260,337-338`). A receive address is derived from the watch-only
    descriptor by the engine and displayed only by the extension, so a compromised host could
    show an address the device never attested. Jade *does* display a transaction's outputs at
