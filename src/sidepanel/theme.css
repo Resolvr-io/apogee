@@ -509,19 +509,23 @@
       drop-shadow(0 0 10px color-mix(in srgb, var(--telemetry-halo) 28%, transparent));
   }
 
-  /* Letter runs in TelemetryNumber — currency-prefix letters (the A in A$,
-     CHF) and unit suffixes (asset tickers): sized and raised to match the S
-     body of the telemetry face's $ so they read as one compound currency symbol.
-     Sign glyphs ($, £, ¥) stay full-size. Derived from the glyph geometry:
-     the $'s S spans y 48–688 of the 736-unit cap (bar tips poke past), so
-     letters get 640/736 ≈ 0.87em, raised 48/1024 parent-em ≈ 0.054 element-em
-     onto the S's baseline. */
+  /* Currency-prefix letters in TelemetryNumber (the A in A$, CHF): sized and
+     raised to match the S body of the telemetry face's $ so they read as one
+     compound currency symbol. Sign glyphs ($, £, ¥) stay full-size. Derived
+     from the glyph geometry: the $'s S spans y 48–688 of the 736-unit cap (bar
+     tips poke past), so letters get 640/736 ≈ 0.87em, raised 48/1024 parent-em
+     ≈ 0.054 element-em onto the S's baseline. */
   .telemetry-unit {
     font-size: 0.87em;
     letter-spacing: 0.04em;
     margin: 0 0.09em;
     vertical-align: 0.054em;
   }
+
+  /* No rule for the asset-ticker suffix on purpose: TelemetryNumber renders it
+     outside the telemetry span so it inherits the row's font, which is what
+     keeps it identical to the token row's asset label. Styling it here is what
+     made the two disagree — the label carries no font treatment of its own. */
 
   /* ── Console-panel voice: engineering labels, signage titles, and phosphor
      hairlines in the telemetry face — the 2001 instrument-panel treatment the

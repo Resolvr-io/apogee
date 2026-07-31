@@ -243,16 +243,29 @@ export function TelemetryNumber({
   glow?: boolean;
   className?: string;
 }) {
-  // Letter runs — currency prefixes (the A in A$, CHF) and unit suffixes
-  // (asset tickers) — render smaller via .telemetry-unit so they read as
-  // symbols next to the digits; sign glyphs ($, £, ¥, €) keep full size (the
-  // face's ¥ and € come from our font patch, see tools/patch-telemetry-font.py).
+  // Letter runs before the digits — currency prefixes (the A in A$, CHF) —
+  // render smaller via .telemetry-unit so they read as symbols next to the
+  // figures; sign glyphs ($, £, ¥, €) keep full size (the face's ¥ and € come
+  // from our font patch, see tools/patch-telemetry-font.py).
+  //
+  // A letter run *after* the digits is an asset ticker (USDt, sats, LBTC), and a
+  // ticker is a label rather than a figure: it renders OUTSIDE the telemetry
+  // span so it inherits the row's own font, which is what makes it identical to
+  // the token row's asset label. Deliberately not a font-family of its own —
+  // declaring one is what made the two disagree, since the label just inherits.
+  // The telemetry face's lowercase 't' is also a bare cross that reads as a
+  // dagger at label size, which a ticker should never be.
   const segments = value.split(/([A-Za-z]+)/);
-  return (
-    <span
-      className={cn(wide ? "font-telemetry-wide" : "font-telemetry", glow && "telemetry-glow", className)}
-    >
-      {segments.map((seg, si) =>
+  const firstDigit = segments.findIndex((s) => /\d/.test(s));
+  const tickerAt = segments.findIndex(
+    (s, i) => firstDigit !== -1 && i > firstDigit && /^[A-Za-z]/.test(s),
+  );
+  const figure = tickerAt === -1 ? segments : segments.slice(0, tickerAt);
+  const ticker = tickerAt === -1 ? "" : segments.slice(tickerAt).join("");
+
+  const figureNode = (
+    <span className={cn(wide ? "font-telemetry-wide" : "font-telemetry", glow && "telemetry-glow")}>
+      {figure.map((seg, si) =>
         /^[A-Za-z]/.test(seg) ? (
           <span key={si} className="telemetry-unit">
             {seg}
@@ -269,6 +282,14 @@ export function TelemetryNumber({
           )
         ),
       )}
+    </span>
+  );
+
+  if (!ticker) return className ? <span className={className}>{figureNode}</span> : figureNode;
+  return (
+    <span className={className}>
+      {figureNode}
+      <span>{ticker}</span>
     </span>
   );
 }
