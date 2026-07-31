@@ -879,37 +879,55 @@ function Tokens({
             KNOWN_ASSETS[asset]?.pegUsd && usdToFiat != null && precision != null
               ? (amt / 10 ** precision) * usdToFiat
               : null;
-          // In the row summary, only worth the line when it says something the
-          // amount above it doesn't: at the identity rate (USD-pegged token,
-          // USD display) "150.42" would sit above "≈ $150.42". Tested on the
-          // rate rather than the currency code so it stays correct if a
-          // non-USD-pegged asset is ever added. The value is still in the
-          // drawer either way.
-          const showFiatInSummary = fiatValue != null && usdToFiat !== 1;
+          // The fiat equivalent is shown only in the expandable drawer, not the
+          // row summary: a summary line rendered in the body font beneath a
+          // telemetry-font amount read as a typeface mix.
           return (
             <details
               key={asset}
               className="drawer"
             >
               <summary className="flex items-center justify-between px-3 py-2">
-                <span className="flex items-center gap-2">
-                  <AssetIcon assetId={asset} label={label} network={network} />
-                  <span className="text-sm text-[color:var(--text-primary)]">{label}</span>
+                {/* size-8 + gap-2.5 is deliberately the same icon size and gap the
+                    activity rows use, so both lists share one left structure:
+                    px-3 (12px) + 32px icon + 10px gap puts every label and
+                    timestamp on the same 54px column, with the icons sharing both
+                    a left edge and a center. Anything smaller here needs an offset
+                    to compensate, and the compensation is what drifts. */}
+                {/* min-w-0 + truncate: both children of this justify-between summary
+                    default to min-width:auto, so text won't shrink below its content,
+                    and the panel is overflow-hidden — an over-long label would push
+                    into the amount and clip it rather than truncate itself. `label`
+                    falls back to the registry's `info.name`, which is unbounded, and
+                    the wider icon leaves it 12px less room. Same pattern as the
+                    activity row and the asset-id row. */}
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <AssetIcon
+                    assetId={asset}
+                    label={label}
+                    network={network}
+                    size="size-8"
+                    // Keeps the glyph-to-disc ratio the default was drawn at — 10px
+                    // in a 20px disc — now that the disc is 32px. Leaving the 10px
+                    // default would fill 31% instead of 50% and read as an emptier
+                    // circle than the icons beside it.
+                    textSize="text-base"
+                  />
+                  <span className="truncate text-sm text-[color:var(--text-primary)]">{label}</span>
                 </span>
                 <span className="flex items-center gap-2">
                   <span className="flex flex-col items-end">
-                    <span className="text-[color:var(--text-strong)]">
+                    <span className="text-sm text-[color:var(--text-strong)]">
                       {hidden ? (
                         <HiddenValue count={3} size={8} className="text-[color:var(--text-subtle)]" />
                       ) : (
                         <TelemetryNumber value={amountLabel} glow={false} />
                       )}
                     </span>
-                    {!hidden && showFiatInSummary && (
-                      <span className="text-[11px] text-[color:var(--text-subtle)]">
-                        ≈ {formatFiat(fiatValue, fiat)}
-                      </span>
-                    )}
+                    {/* No fiat line in the summary: it rendered in the body font
+                        beneath a telemetry amount, so the two typefaces read as a
+                        mix. The equivalent still lives in the expandable drawer
+                        below (Value (<fiat>)). */}
                   </span>
                   <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
                 </span>
@@ -926,8 +944,8 @@ function Tokens({
                     <CopyIconButton value={asset} label="Copy asset ID" />
                   </span>
                 </div>
-                {/* Kept here in every currency — including USD, where it's dropped
-                    from the summary as redundant. Hidden while the balance is
+                {/* The only place the fiat equivalent appears — the row summary no
+                    longer carries one in any currency. Hidden while the balance is
                     hidden, so the drawer can't reveal what the row masks. */}
                 {!hidden && fiatValue != null && (
                   <Row label={`Value (${fiat})`} value={`≈ ${formatFiat(fiatValue, fiat)}`} />
