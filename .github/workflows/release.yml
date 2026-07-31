@@ -41,6 +41,11 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # The suite was previously run only by hand, so nothing stopped a release
+      # shipping with it red. Cheap here (~2s) and it gates the zip below.
+      - name: Test
+        run: pnpm test
+
       - name: Build and zip
         run: |
           VERSION="$(node -p "require('./package.json').version")"
