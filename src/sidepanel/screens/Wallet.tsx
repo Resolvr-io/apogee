@@ -1816,6 +1816,109 @@ function SubView({
   center?: boolean;
   children: React.ReactNode;
 }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // When a collapsible drawer (<details>) grows, scroll its header into view if
+  // the revealed content would otherwise fall below the fold.
+  //
+  // The listener is on the capture phase because `toggle` is specified
+  // bubbles:false — that is the event's definition, not a gap in our browser
+  // floors, so the capture flag is permanent. Don't drop it: a React `onToggle`
+  // on an ancestor, or a bubble-phase listener here, sees nothing at all.
+  //
+  // `toggle` alone is not enough, because a drawer can grow more than once and
+  // only the first growth is a toggle. "Reveal seed phrase" opens to just a
+  // password form; submitting it swaps in the phrase, a countdown and two
+  // buttons, and "Show as QR code" then swaps the phrase for a 180px QR —
+  // together more height than the toggle itself revealed, and both are React
+  // state changes that fire no event on the element. So the toggle only decides
+  // WHAT to watch, and a ResizeObserver decides WHEN to act. It also removes the
+  // need to measure on a frame timer: it reports the box after layout, whereas a
+  // requestAnimationFrame could still measure the pre-expansion scroll range and
+  // under-scroll as a result.
+  //
+  // Live wherever SubView hosts a drawer: the three Settings sections, and Swap's
+  // "Quoted by SideSwap" disclosure on its confirm screen. Receive and Send have
+  // none. Swap's container is centered rather than feathered, so its geometry
+  // differs from the Settings screen this was measured against.
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+
+    // Last measured height per open drawer, so growth can be told from shrinkage.
+    // Only growth scrolls. A drawer can shrink with no user action at all — the
+    // seed phrase auto-hides on a timer, and ChainServerStatus re-probes every 30s
+    // and can drop provider rows — and a shrink that leaves the bottom still
+    // clipped falls through the clipping check below, so without this it would
+    // slide the view out from under whoever is reading.
+    const heights = new WeakMap<Element, number>();
+
+    const revealIfClipped = (details: HTMLDetailsElement) => {
+      if (!details.open || !container.contains(details)) return;
+      const cRect = container.getBoundingClientRect();
+      const dRect = details.getBoundingClientRect();
+      // Already fully in view — leave it, so opening a section near the top
+      // doesn't jump.
+      if (dRect.bottom <= cRect.bottom + 1) return;
+      // Bring the section's header near the top, which reveals everything below
+      // it — or, for a section taller than the viewport, the most useful anchor.
+      // 28px and not 12: the non-centered container wears .apogee-feather-top,
+      // whose mask runs transparent -> opaque across its first 24px, so a header
+      // parked inside that band gets scrolled into view and then half dissolved.
+      // KEEP IN SYNC with that gradient in theme.css.
+      const target = details.querySelector("summary") ?? details;
+      const top = target.getBoundingClientRect().top - cRect.top - 28;
+      // Downward only. A drawer taller than the viewport can be scrolled into,
+      // putting its header above the top edge while the bottom is still clipped;
+      // this delta then goes negative and would yank the reader back up to the
+      // header, away from the controls they were using.
+      if (top <= 0) return;
+      container.scrollBy({
+        top,
+        // Reduced motion is honored across the app (theme.css, scene-scroll,
+        // ShootingStars) — a scroll nobody asked for should honor it too.
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "auto"
+          : "smooth",
+      });
+    };
+
+    // One observer for every open drawer. observe() fires immediately with the
+    // current box, so opening a drawer is handled here too rather than needing a
+    // separate measurement path.
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const details = entry.target;
+        if (!(details instanceof HTMLDetailsElement)) continue;
+        const height = entry.contentRect.height;
+        const previous = heights.get(details);
+        heights.set(details, height);
+        // No baseline yet means this is the callback observe() fires on open, which
+        // is itself the growth that opened the drawer.
+        if (previous === undefined || height > previous) revealIfClipped(details);
+      }
+    });
+
+    const onToggle = (e: Event) => {
+      const details = e.target;
+      if (!(details instanceof HTMLDetailsElement)) return;
+      // Watch only what's open: a closed drawer can't be clipped, and dropping it
+      // clears the baseline so a reopen counts as growth again.
+      if (details.open) {
+        observer.observe(details);
+      } else {
+        observer.unobserve(details);
+        heights.delete(details);
+      }
+    };
+
+    container.addEventListener("toggle", onToggle, true);
+    return () => {
+      container.removeEventListener("toggle", onToggle, true);
+      observer.disconnect();
+    };
+  }, []);
+
   return (
     // min-h-0 lets the scroll container actually shrink + scroll inside the flex
     // column; without it the content overflows and the footer gets clipped.
@@ -1827,6 +1930,7 @@ function SubView({
         <h1 className="console-title text-[13px]">{title}</h1>
       </div>
       <div
+        ref={scrollRef}
         className={cn(
           "min-h-0 flex-1 overflow-y-auto px-4 pb-4",
           center ? "flex flex-col justify-center" : "apogee-feather-top pt-6",
