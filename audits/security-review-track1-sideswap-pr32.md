@@ -5,7 +5,7 @@
   foundation (client, verification gate, UTXO data)".
 - **Reviewed at commit:** `eafcfa5` (branch tip — "address review — full-map drain check +
   client hardening"), i.e. after the @claude PR review was addressed.
-- **Audit stored in:** `audits/` on the branch (untracked), alongside the archived PR#1/#2
+- **Audit stored in:** `audits/`, tracked and public, alongside the archived PR#1/#2
   audit (`security-review-main-pr1-pr2.md`).
 - **Scope:** the new swap primitives only — the dealer-PSET verification gate
   (`engine/verify-dealer-pset.ts`), the SideSwap JSON-RPC WebSocket client
