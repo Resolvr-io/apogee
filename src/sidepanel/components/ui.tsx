@@ -248,24 +248,50 @@ export function TelemetryNumber({
   // figures; sign glyphs ($, £, ¥, €) keep full size (the face's ¥ and € come
   // from our font patch, see tools/patch-telemetry-font.py).
   //
-  // A letter run *after* the digits is an asset ticker (USDt, sats, LBTC), and a
-  // ticker is a label rather than a figure: it renders OUTSIDE the telemetry
-  // span so it inherits the row's own font, which is what makes it identical to
-  // the token row's asset label. Deliberately not a font-family of its own —
-  // declaring one is what made the two disagree, since the label just inherits.
-  // The telemetry face's lowercase 't' is also a bare cross that reads as a
-  // dagger at label size, which a ticker should never be.
-  const segments = value.split(/([A-Za-z]+)/);
-  const firstDigit = segments.findIndex((s) => /\d/.test(s));
-  const tickerAt = segments.findIndex(
-    (s, i) => firstDigit !== -1 && i > firstDigit && /^[A-Za-z]/.test(s),
-  );
-  const figure = tickerAt === -1 ? segments : segments.slice(0, tickerAt);
-  const ticker = tickerAt === -1 ? "" : segments.slice(tickerAt).join("");
+  // A trailing asset ticker (USDt, sats, LBTC) is a label rather than a figure, so
+  // it renders OUTSIDE the telemetry span and inherits the row's own font — which
+  // is what makes it identical to the token row's asset label. Deliberately not a
+  // font-family of its own: declaring one is what made the two disagree, since
+  // that label just inherits. The telemetry face's lowercase 't' is also a bare
+  // cross that reads as a dagger at label size, which a ticker should never be.
+  //
+  // A ticker is the trailing whitespace-separated token, made of letters and
+  // digits only and beginning with a letter. Both halves of that are load-bearing.
+  // Requiring a letter first keeps a currency prefix (the A in A$, CHF) in the
+  // figure. Allowing ONLY letters and digits keeps an unregistered asset's
+  // shortened id out of this path: `tokenAmountText` falls back to
+  // shortenHex(id) — "1a2b…c3d4" — whose ellipsis fails the test, so the id stays
+  // whole in the telemetry face. Classifying on "first letter run after the
+  // digits" instead would split "1a2b…c3d4" mid-token, leaving its leading digit
+  // behind in the figure and sending the rest to the body face.
+  //
+  // The prefix/suffix split assumes a prefixing locale, which holds because
+  // formatFiat pins en-US (see lib/format.ts). Under a suffixing locale
+  // ("1.234,50 CHF") the code would classify as a ticker and drop out of the
+  // telemetry face — worth knowing before any localization pass.
+  const tail = /^(.*\s)(\S+)$/.exec(value);
+  const hasTicker =
+    tail !== null && /\d/.test(tail[1]) && /^[A-Za-z][A-Za-z0-9]*$/.test(tail[2]);
+  const figureText = hasTicker ? tail[1] : value;
+  const ticker = hasTicker ? tail[2] : "";
+  const segments = figureText.split(/([A-Za-z]+)/);
 
+  // `glow` covers the figure only: a ticker is a label, and the phosphor halo
+  // belongs to the numerals. Nothing inlines a unit into a glow'd value today
+  // (the hero balance carries its unit as a separate subtitle), so this is only
+  // worth knowing if one ever does.
   const figureNode = (
-    <span className={cn(wide ? "font-telemetry-wide" : "font-telemetry", glow && "telemetry-glow")}>
-      {figure.map((seg, si) =>
+    <span
+      className={cn(
+        wide ? "font-telemetry-wide" : "font-telemetry",
+        glow && "telemetry-glow",
+        // With no ticker this is the only element, so a caller's className stays
+        // on it rather than moving to a wrapper — non-inherited properties
+        // (padding, background, transform) would otherwise apply a level out.
+        !ticker && className,
+      )}
+    >
+      {segments.map((seg, si) =>
         /^[A-Za-z]/.test(seg) ? (
           <span key={si} className="telemetry-unit">
             {seg}
@@ -285,7 +311,7 @@ export function TelemetryNumber({
     </span>
   );
 
-  if (!ticker) return className ? <span className={className}>{figureNode}</span> : figureNode;
+  if (!ticker) return figureNode;
   return (
     <span className={className}>
       {figureNode}
