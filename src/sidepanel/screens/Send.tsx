@@ -544,7 +544,6 @@ function Row({
   mono,
   strong,
   amount,
-  console: consoleValue,
 }: {
   label: string;
   value: string;
@@ -552,23 +551,31 @@ function Row({
   strong?: boolean;
   // An amount ending in a unit ("1,234 sats", "50.00 USDt"). Rendered through
   // TelemetryNumber so the figures take the telemetry face and the unit stays in
-  // the body face. Prefer this over `console` for anything with a unit on it.
+  // the body face.
   amount?: boolean;
-  // Raw telemetry-face readout for a string that is NOT an amount and has no
-  // unit to separate out — a wallet fingerprint, a version. TelemetryNumber
-  // would mistake its trailing letters for a ticker and set them in the body
-  // face, so these keep the whole string in the telemetry face.
-  console?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <dt className="text-[color:var(--text-subtle)]">{label}</dt>
+      {/* `strong` weights the LABEL, not the value. The telemetry face ships one
+          weight (theme.css), so font-semibold on a figure is synthesized — and now
+          that a ticker renders in the body face, which does have a real 600, the
+          two sat side by side in one string and read as a rendering fault rather
+          than as emphasis. Weight simply isn't an axis in the telemetry voice;
+          contrast there is color, which the value already carries via
+          --text-strong. The label is body-font, so its 600 is real. */}
+      <dt
+        className={[
+          "text-[color:var(--text-subtle)]",
+          strong ? "font-semibold" : "",
+        ].join(" ")}
+      >
+        {label}
+      </dt>
       <dd
         className={[
           "truncate",
           mono ? "font-mono" : "",
-          consoleValue ? "console-value" : "",
-          strong ? "font-semibold text-[color:var(--text-strong)]" : "text-[color:var(--text-primary)]",
+          strong ? "text-[color:var(--text-strong)]" : "text-[color:var(--text-primary)]",
         ].join(" ")}
       >
         {amount ? <TelemetryNumber value={value} glow={false} /> : value}

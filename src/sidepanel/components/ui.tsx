@@ -238,16 +238,27 @@ export function HiddenValue({
  * where every word starts with a letter and contains only letters and digits. Each
  * clause is load-bearing:
  *
- *   - Anchored on the FIGURE, not on the last whitespace. Anchoring on the last
- *     space splits a multi-word label — `1,234 Tether USD` would keep "Tether"
- *     inside the telemetry span (shrunk and raised by .telemetry-unit) and send
- *     only "USD" to the body face, spreading one label across two treatments.
+ *   - Anchored on the FIGURE, not on the last whitespace, and the `.*?` is LAZY.
+ *     The engine takes the earliest split that yields a valid tail, so the ticker
+ *     is the LONGEST trailing run of words — which is what makes `USDT base units`
+ *     come out whole instead of just `units`. Anchoring on the last space (or
+ *     making this greedy) splits a multi-word label: `1,234 Tether USD` would keep
+ *     "Tether" inside the telemetry span and send only "USD" to the body face,
+ *     spreading one label across two treatments.
  *   - Every word must START with a letter, which keeps a currency prefix (the A in
  *     A$, or CHF) in the figure where its geometry is tuned.
  *   - Words may contain ONLY letters and digits, which keeps an unregistered
  *     asset's shortened id out of this path: `tokenAmountText` falls back to
  *     shortenHex(id) — `1a2b…c3d4` — whose ellipsis fails the test, so the id
  *     stays whole in the telemetry face rather than being split mid-token.
+ *
+ * Know where that last clause draws the line: a label carrying anything but
+ * letters, digits and single spaces stays WHOLLY in the figure. `USDC.e`, `L-BTC`,
+ * `Tether USD (Wormhole)` and `Token 2049` all fall out of the ticker path on the
+ * punctuation or the trailing numeral. That matches the behavior before this rule
+ * existed, and those letters at least render at full size (see the prefix-only
+ * note where .telemetry-unit is applied) — but it is a boundary, not a bug, and
+ * registry-supplied names carry punctuation routinely.
  *
  * The prefix/suffix split assumes a prefixing locale, which holds because
  * formatFiat pins en-US (see lib/format.ts). Under a suffixing locale
@@ -258,10 +269,12 @@ export function HiddenValue({
  * already and the rewrite changed behavior for an input nobody had enumerated.
  */
 export function splitFigureAndTicker(value: string): { figure: string; ticker: string } {
-  const m = /^(.*?\d\S*)\s+((?:[A-Za-z][A-Za-z0-9]*)(?:\s+[A-Za-z][A-Za-z0-9]*)*)$/.exec(value);
+  const m = /^(.*?\d\S*)(\s+)((?:[A-Za-z][A-Za-z0-9]*)(?:\s+[A-Za-z][A-Za-z0-9]*)*)$/.exec(value);
   if (!m) return { figure: value, ticker: "" };
-  // Keep the separating space on the figure so the rendered spacing is unchanged.
-  return { figure: `${m[1]} `, ticker: m[2] };
+  // The separator is captured and kept on the figure rather than re-emitted as a
+  // single space: `figure + ticker` must reconstruct the input exactly, or a
+  // multi-space separator would silently lose a character on the way to the DOM.
+  return { figure: m[1] + m[2], ticker: m[3] };
 }
 
 /** Amount rendered in the telemetry face (see theme.css). `glow` adds the
@@ -304,23 +317,37 @@ export function TelemetryNumber({
         !ticker && className,
       )}
     >
-      {segments.map((seg, si) =>
-        /^[A-Za-z]/.test(seg) ? (
-          <span key={si} className="telemetry-unit">
-            {seg}
-          </span>
-        ) : (
-          Array.from(seg).map((ch, i) =>
-            ch === "1" ? (
-              <span key={`${si}-${i}`} className="inline-block w-[0.7ch] text-center">
-                1
-              </span>
-            ) : (
-              ch
-            ),
-          )
-        ),
-      )}
+      {/* .telemetry-unit goes on a letter run only while it PRECEDES the first
+          digit, because its geometry is derived from the telemetry $'s S body —
+          i.e. it means "part of a compound currency symbol" (the A in A$, CHF).
+          Letters that follow digits inside the figure are a different animal: an
+          unregistered asset's shortened id, or a label carrying punctuation that
+          keeps it out of the ticker path. Shrinking and raising those would render
+          "1a2b…c3d4" as digits interleaved with smaller lifted letters — one face
+          but two sizes — so they stay at full size instead. */}
+      {(() => {
+        let seenDigit = false;
+        return segments.map((seg, si) => {
+          const isLetters = /^[A-Za-z]/.test(seg);
+          const isPrefix = isLetters && !seenDigit;
+          if (!isLetters) seenDigit ||= /\d/.test(seg);
+          return isLetters ? (
+            <span key={si} className={isPrefix ? "telemetry-unit" : undefined}>
+              {seg}
+            </span>
+          ) : (
+            Array.from(seg).map((ch, i) =>
+              ch === "1" ? (
+                <span key={`${si}-${i}`} className="inline-block w-[0.7ch] text-center">
+                  1
+                </span>
+              ) : (
+                ch
+              ),
+            )
+          );
+        });
+      })()}
     </span>
   );
 

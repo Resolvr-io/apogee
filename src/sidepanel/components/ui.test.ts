@@ -49,6 +49,19 @@ const CASES: Array<[string, string, string]> = [
 
   // --- a trailing number is part of the figure, never a ticker ---
   ["Token 2049", "Token 2049", ""],
+
+  // --- the boundary: a label carrying punctuation falls out of the ticker path
+  //     entirely and stays wholly in the figure. Registry names do this routinely
+  //     (`info.ticker ?? info.name`), so these are reachable, not hypothetical.
+  //     Recorded because it is a limitation of the rule, not because it is right. ---
+  ["1,234 USDC.e", "1,234 USDC.e", ""],
+  ["1,234 L-BTC", "1,234 L-BTC", ""],
+  ["1,234 Tether USD (Wormhole)", "1,234 Tether USD (Wormhole)", ""],
+
+  // --- a trailing space loses the ticker path. Nothing emits this today; pinned
+  //     so a stray template-literal space is a test failure, not a silent
+  //     typography change. ---
+  ["1,234 sats ", "1,234 sats ", ""],
 ];
 
 describe("splitFigureAndTicker", () => {
@@ -58,13 +71,31 @@ describe("splitFigureAndTicker", () => {
     });
   }
 
-  it("never drops or reorders characters", () => {
-    for (const [input] of CASES) {
-      const { figure, ticker } = splitFigureAndTicker(input);
-      // The split may only move the separating whitespace, so rejoining must
-      // reproduce the input exactly.
-      expect((figure + ticker).replace(/\s+/g, " ")).toBe(input.replace(/\s+/g, " "));
+  it("never drops or reorders characters, over inputs outside the table", () => {
+    // The per-case assertions above already pin figure and ticker exactly, so an
+    // invariant over CASES could only catch a self-inconsistent row. Run it over
+    // generated shapes instead, where it can actually find something. Compared
+    // exactly — no whitespace normalizing — so a lost or duplicated space fails.
+    const figures = ["1", "50.00", "+1,234", "-0.00000001", "≈ 143", "A$9", "CHF 1,0"];
+    const tails = ["", " sats", " USDt", " LBTC", " Tether USD", " a1b2", " USDC.e", "  sats"];
+    for (const f of figures) {
+      for (const t of tails) {
+        const input = f + t;
+        const { figure, ticker } = splitFigureAndTicker(input);
+        expect(figure + ticker).toBe(input);
+      }
     }
+  });
+
+  it("keeps a two-leg string's second figure out of the ticker", () => {
+    // Why the Swap success line renders two TelemetryNumbers rather than one over
+    // the whole "A → B" string (Swap.tsx). One call splits at the LAST valid tail,
+    // so the receive leg's own figures — and the send leg's ticker — end up inside
+    // the telemetry span. Pinned so nobody collapses it back into one call.
+    expect(splitFigureAndTicker("0.94 USDt → 1,550 sats")).toEqual({
+      figure: "0.94 USDt → 1,550 ",
+      ticker: "sats",
+    });
   });
 
   it("puts a suffixed currency code in the ticker — the known en-US dependency", () => {

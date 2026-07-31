@@ -296,15 +296,24 @@ function Row({
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <dt className="text-[color:var(--text-subtle)]">{label}</dt>
+      {/* `strong` weights the LABEL, not the value — the telemetry face has one
+          weight, so font-semibold on a figure is synthesized, and beside a ticker
+          in the body face (which has a real 600) the mismatch reads as a rendering
+          fault. The value's emphasis is its --text-strong color. See Send.tsx. */}
+      <dt
+        className={[
+          "text-[color:var(--text-subtle)]",
+          strong ? "font-semibold" : "",
+        ].join(" ")}
+      >
+        {label}
+      </dt>
       <dd
         className={[
           "truncate",
           mono ? "font-mono" : "",
           consoleValue ? "console-value" : "",
-          strong
-            ? "font-semibold text-[color:var(--text-strong)]"
-            : "text-[color:var(--text-primary)]",
+          strong ? "text-[color:var(--text-strong)]" : "text-[color:var(--text-primary)]",
         ].join(" ")}
       >
         {amount ? <TelemetryNumber value={value} glow={false} /> : value}

@@ -576,7 +576,13 @@
     letter-spacing: 0.12em;
     color: var(--text-strong);
   }
-  /* Console readout value (fingerprint, version): quiet telemetry ink, no halo. */
+  /* Console readout value (fingerprint, version): quiet telemetry ink, no halo.
+
+     Note the layer: this lives in @layer base, so a Tailwind color utility on the
+     same element wins over the `color` below — that is why Send's balance readout
+     sets --telemetry-fg explicitly (Send.tsx) while Swap's review <dd>s, which
+     carry their own text-[color:…], do not. If this rule ever moves out of
+     @layer base, those call sites change color silently. */
   .console-value {
     font-family: var(--font-telemetry);
     color: var(--telemetry-fg);
