@@ -225,6 +225,45 @@ export function HiddenValue({
   );
 }
 
+/**
+ * Split an amount string into the figure and its trailing unit label.
+ *
+ * A ticker (`USDt`, `sats`, `LBTC`, `Tether USD`) is a label rather than a figure,
+ * so `TelemetryNumber` renders it outside the telemetry span, where it inherits the
+ * row's own font. That is what makes it identical to the token row's asset label,
+ * and it keeps the telemetry face's lowercase 't' — a bare cross that reads as a
+ * dagger at label size — out of a ticker.
+ *
+ * The ticker is the trailing run of whitespace-separated words after the figure,
+ * where every word starts with a letter and contains only letters and digits. Each
+ * clause is load-bearing:
+ *
+ *   - Anchored on the FIGURE, not on the last whitespace. Anchoring on the last
+ *     space splits a multi-word label — `1,234 Tether USD` would keep "Tether"
+ *     inside the telemetry span (shrunk and raised by .telemetry-unit) and send
+ *     only "USD" to the body face, spreading one label across two treatments.
+ *   - Every word must START with a letter, which keeps a currency prefix (the A in
+ *     A$, or CHF) in the figure where its geometry is tuned.
+ *   - Words may contain ONLY letters and digits, which keeps an unregistered
+ *     asset's shortened id out of this path: `tokenAmountText` falls back to
+ *     shortenHex(id) — `1a2b…c3d4` — whose ellipsis fails the test, so the id
+ *     stays whole in the telemetry face rather than being split mid-token.
+ *
+ * The prefix/suffix split assumes a prefixing locale, which holds because
+ * formatFiat pins en-US (see lib/format.ts). Under a suffixing locale
+ * (`1.234,50 CHF`) the code would classify as a ticker and drop out of the
+ * telemetry face — worth knowing before any localization pass.
+ *
+ * Exported for the table test in ui.test.ts; this rule has been rewritten once
+ * already and the rewrite changed behavior for an input nobody had enumerated.
+ */
+export function splitFigureAndTicker(value: string): { figure: string; ticker: string } {
+  const m = /^(.*?\d\S*)\s+((?:[A-Za-z][A-Za-z0-9]*)(?:\s+[A-Za-z][A-Za-z0-9]*)*)$/.exec(value);
+  if (!m) return { figure: value, ticker: "" };
+  // Keep the separating space on the figure so the rendered spacing is unchanged.
+  return { figure: `${m[1]} `, ticker: m[2] };
+}
+
 /** Amount rendered in the telemetry face (see theme.css). `glow` adds the
  *  phosphor ink + halo — reserved for the hero balance; list rows pass
  *  glow={false} and inherit their context color. Digits 0 and 2–9 share one
@@ -247,33 +286,7 @@ export function TelemetryNumber({
   // render smaller via .telemetry-unit so they read as symbols next to the
   // figures; sign glyphs ($, £, ¥, €) keep full size (the face's ¥ and € come
   // from our font patch, see tools/patch-telemetry-font.py).
-  //
-  // A trailing asset ticker (USDt, sats, LBTC) is a label rather than a figure, so
-  // it renders OUTSIDE the telemetry span and inherits the row's own font — which
-  // is what makes it identical to the token row's asset label. Deliberately not a
-  // font-family of its own: declaring one is what made the two disagree, since
-  // that label just inherits. The telemetry face's lowercase 't' is also a bare
-  // cross that reads as a dagger at label size, which a ticker should never be.
-  //
-  // A ticker is the trailing whitespace-separated token, made of letters and
-  // digits only and beginning with a letter. Both halves of that are load-bearing.
-  // Requiring a letter first keeps a currency prefix (the A in A$, CHF) in the
-  // figure. Allowing ONLY letters and digits keeps an unregistered asset's
-  // shortened id out of this path: `tokenAmountText` falls back to
-  // shortenHex(id) — "1a2b…c3d4" — whose ellipsis fails the test, so the id stays
-  // whole in the telemetry face. Classifying on "first letter run after the
-  // digits" instead would split "1a2b…c3d4" mid-token, leaving its leading digit
-  // behind in the figure and sending the rest to the body face.
-  //
-  // The prefix/suffix split assumes a prefixing locale, which holds because
-  // formatFiat pins en-US (see lib/format.ts). Under a suffixing locale
-  // ("1.234,50 CHF") the code would classify as a ticker and drop out of the
-  // telemetry face — worth knowing before any localization pass.
-  const tail = /^(.*\s)(\S+)$/.exec(value);
-  const hasTicker =
-    tail !== null && /\d/.test(tail[1]) && /^[A-Za-z][A-Za-z0-9]*$/.test(tail[2]);
-  const figureText = hasTicker ? tail[1] : value;
-  const ticker = hasTicker ? tail[2] : "";
+  const { figure: figureText, ticker } = splitFigureAndTicker(value);
   const segments = figureText.split(/([A-Za-z]+)/);
 
   // `glow` covers the figure only: a ticker is a label, and the phosphor halo

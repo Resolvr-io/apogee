@@ -509,12 +509,18 @@
       drop-shadow(0 0 10px color-mix(in srgb, var(--telemetry-halo) 28%, transparent));
   }
 
-  /* Currency-prefix letters in TelemetryNumber (the A in A$, CHF): sized and
-     raised to match the S body of the telemetry face's $ so they read as one
-     compound currency symbol. Sign glyphs ($, £, ¥) stay full-size. Derived
-     from the glyph geometry: the $'s S spans y 48–688 of the 736-unit cap (bar
-     tips poke past), so letters get 640/736 ≈ 0.87em, raised 48/1024 parent-em
-     ≈ 0.054 element-em onto the S's baseline. */
+  /* Letters that TelemetryNumber keeps INSIDE the figure — see
+     splitFigureAndTicker for what counts as a figure. Two cases reach this:
+     currency prefixes (the A in A$, CHF), which this geometry is tuned for, and
+     the letters of an unregistered asset's shortened id ("1a2b…c3d4"), which is
+     deliberately kept whole in the figure rather than split across two faces.
+     A trailing ticker never lands here — it renders outside the telemetry span.
+
+     Sized and raised to match the S body of the telemetry face's $ so a prefix
+     reads as one compound currency symbol. Sign glyphs ($, £, ¥) stay full-size.
+     Derived from the glyph geometry: the $'s S spans y 48–688 of the 736-unit cap
+     (bar tips poke past), so letters get 640/736 ≈ 0.87em, raised 48/1024
+     parent-em ≈ 0.054 element-em onto the S's baseline. */
   .telemetry-unit {
     font-size: 0.87em;
     letter-spacing: 0.04em;
