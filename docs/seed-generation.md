@@ -48,9 +48,10 @@ goes wrong in practice:
   error propagates as an error. You would get a failure, not a wallet built from zeros or
   from a half-filled buffer.
 
-`Math.random` — the ordinary, non-cryptographic one — does appear in Apogee, 18 times: 17
-of them drawing the night sky behind the UI (star positions, meteor timing) and one in a
-test that never ships. It is never used for anything to do with keys.
+`Math.random` — the ordinary, non-cryptographic one — does appear in Apogee: 19 calls across
+18 lines. Eighteen of them draw the night sky behind the UI (where each star sits, how a
+meteor moves and how often), and one is in a test that never ships. It is never used for
+anything to do with keys.
 
 ## What protects the phrase once it exists
 
@@ -60,12 +61,17 @@ Your phrase is encrypted before it touches disk, using a key derived from your p
 |---|---|
 | Password stretching | PBKDF2-HMAC-SHA256, 600,000 iterations |
 | Encryption | AES-GCM-256 |
-| Salt | 16 random bytes, unique per wallet |
+| Salt | 16 random bytes, generated once when you set your password |
 | Nonce | 12 random bytes, fresh for every encryption |
 | Tamper detection | the wallet id is bound into the ciphertext, so a swapped record fails to decrypt |
 
 The high iteration count exists to make a weak password expensive to attack. It is not a
 substitute for a good one.
+
+If you hold more than one wallet, they share a single password and a single derived key —
+the salt belongs to the vault, not to each wallet. What keeps one wallet's encrypted phrase
+from being swapped into another's slot is that each record is bound to its own wallet id,
+and a swapped record fails to decrypt.
 
 The phrase is never written anywhere in the clear, and no log line in the codebase prints a
 phrase, a seed, or a password. Hardware wallets store no phrase in Apogee at all — Jade
@@ -103,10 +109,16 @@ worth less:
 - **Your device is the boundary.** An unlocked wallet keeps the phrase in memory so it can
   sign, and no browser extension can defend against malware already running as you. Locking
   clears it.
+- **Receive addresses are not confirmed on a hardware device.** Apogee shows you a receive
+  address that it derived itself, on any wallet type including Jade. Jade shows you where
+  funds are *going* when you approve a send, but it is not asked to confirm an address you
+  are about to share. Do not assume that using a hardware wallet checks a receive address
+  for you here.
 
-**If you want entropy you can reason about, use a Jade.** Apogee supports it as an external
-signer, the keys never leave the device, and it verifies addresses on its own screen. That
-is the strongest configuration this wallet offers.
+**If you want your keys generated and held outside the browser, use a Jade.** Apogee
+supports it as an external signer: the phrase is never created by or stored in the
+extension, and the device shows the destination and amount before you approve a send. That
+is the strongest configuration this wallet offers — with the receive-address caveat above.
 
 ## Checking for yourself
 

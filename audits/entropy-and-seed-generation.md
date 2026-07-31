@@ -30,11 +30,14 @@ generation is delegated to Blockstream's own Liquid Wallet Kit, which draws from
 platform CSPRNG.
 
 To be precise about one thing a reader will grep for: `Math.random` **does** appear in
-`src/`, 18 times — 17 of them drawing the animated backdrop (5 in `Starfield.tsx` for star
-positions and sizes, 12 in `ShootingStars.tsx` for meteor timing) and 1 in
-`sideswap/integration.test.ts`. Neither backdrop component references key material,
-WebCrypto, or storage, and the test is not shipped. It appears **zero** times on any path
-that produces or protects a key, and zero times in `lwk_wasm`.
+`src/` — **19 calls across 18 lines** (`grep -c` reports 18; `ShootingStars.tsx:66` carries
+two calls on one line). Of those, 18 calls draw the animated backdrop — 5 in
+`Starfield.tsx` for star positions and sizes, 13 in `ShootingStars.tsx` for a meteor's
+direction, speed, spawn point, lifetime, size, brightness, velocity and trail length, of
+which only `:143` and `:146` are timing — and 1 is in `sideswap/integration.test.ts`.
+Neither backdrop component references key material, WebCrypto, or storage, and the test is
+not shipped. It appears **zero** times on any path that produces or protects a key, and
+zero times in `lwk_wasm`.
 
 The one substantive difference from the practices in the post is **architectural, not a
 bug**: Jade combines many independent entropy sources into a SHA-512 pool so that no single
@@ -66,7 +69,14 @@ Jade.
 
 **12 words means 128 bits of entropy** under BIP-39 (plus a 4-bit checksum). The engine
 protocol accepts `words?: 12 | 24` (`engine/protocol.ts:21`) and LWK supports
-12/15/18/21/24, but wallet creation passes 12 unconditionally; restore accepts 12 or 24.
+12/15/18/21/24, but wallet creation passes 12 unconditionally.
+
+Restore is looser than creation, and asymmetrically so: a **typed** phrase goes straight to
+`new lwk.Mnemonic()` (`Onboarding.tsx:194-200` → `engine-core.ts:813`), which accepts any
+valid BIP-39 length, so 15, 18 and 21 words restore fine. Only the **SeedQR** path gates on
+12-or-24 (`Onboarding.tsx:184`). Not a defect — LWK validates the phrase and its checksum
+either way — but the two paths do not agree, and the QR message ("not a 12- or 24-word seed
+phrase") would misdescribe a valid 15-word phrase.
 
 ## The entropy boundary
 
@@ -88,8 +98,24 @@ properties matter and both hold:
   (`lwk_wasm_bg.js:8025`), so an exception propagates into Rust as a `getrandom` error
   rather than yielding zeros or a partially filled buffer.
 
-Runtime checks inside the loaded extension (`chrome-extension://` origin, the same origin
-the offscreen engine runs on):
+**Which bytes these claims describe.** `lwk_wasm` is not vendored, so unlike `crypto.ts`
+this section cannot be checked by reading the repo — a reader has to install the package,
+and `package.json` specifies a range (`^0.18.0`), so a later install could resolve different
+code. Every claim above is therefore anchored to the exact artifact pinned in
+`pnpm-lock.yaml`:
+
+```
+lwk_wasm@0.18.0
+sha512-yyRBpt8gmvznOAftJbGOLdLXFqf6OLqsA59haHgOq5u2woVBu30CWcH2/acG4HcNRA2446DtzS5MBWAMgD9e8Q==
+```
+
+If that hash changes, re-run this section rather than assuming it still holds.
+
+Runtime checks inside the loaded extension. **Chrome only:** this was measured on a
+`chrome-extension://` origin, where the engine runs in an offscreen document. Firefox has no
+offscreen API, so the engine runs in-process in the background page
+(`background/index.ts:288-293`) on a `moz-extension://` origin — the same WebCrypto
+guarantees apply there, but these particular figures do not evidence it.
 
 ```
 isSecureContext        true
@@ -163,7 +189,7 @@ Two truncations do exist in the codebase, and neither is key material:
 | Site | What it truncates | Why it is not a narrowing defect |
 |---|---|---|
 | `engine-core.ts:225` | SHA-256 of the wallet **descriptor**, to 16 hex chars | A local cache key for scan state. The descriptor is public (it contains an xpub); the requirement is collision resistance within one namespaced store, not secrecy. |
-| `keystore.ts:203` | `crypto.randomUUID()`, to 16 hex chars (64 bits) | A wallet identifier. Used as an id and inside the AES-GCM AAD string `apogee:mnemonic:v1:{id}` (`keystore.ts:251-253`), where the requirement is uniqueness and binding, not entropy. AAD is authenticated, not secret. |
+| `keystore.ts:203` | `crypto.randomUUID()`, to 16 hex chars — **60 bits**, not 64 | A wallet identifier. Used as an id and inside the AES-GCM AAD string `apogee:mnemonic:v2:{id}` (`keystore.ts:251-253`, with `STORE_VERSION = 2` at `:47`), where the requirement is uniqueness and binding, not entropy. AAD is authenticated, not secret. The 60: stripping hyphens from a UUIDv4 puts the fixed version nibble `4` at index 12, inside `slice(0, 16)`, so the 16 characters carry 15 random nibbles. The variant nibble at index 16 falls outside the slice and costs nothing further. |
 
 Block's lesson 4 — "hashing cannot repair weak sources" — is the reason recommendation 2
 below is worded as a caution rather than a suggestion.
@@ -174,7 +200,7 @@ below is worded as a caution rather than a suggestion.
 |---|---|
 | Multiple independent entropy sources pooled with SHA-512 | **Not applicable / not done.** No hardware RNG or CPU counters exist in an extension. Single source: the browser CSPRNG. |
 | Generate a fresh phrase rather than restoring a suspect one | Supported — create is the default path, restore is a separate explicit choice. |
-| Verify receive addresses on the device | Supported on the Jade path (Jade displays the address); no second display exists for a software wallet. |
+| Verify receive addresses on the device | **Not supported, on any path.** Jade shows a transaction's outputs at signing, which protects a *send*; a receive address is produced from the watch-only descriptor by the engine and is never confirmed on the device. The Jade integration calls only `keyoriginXpub` and `sign` (`jade/jade.ts:247,260,337-338`) — there is no receive-address confirmation. See gap 6. |
 | Firmware/software from official channels only | Published to the Chrome Web Store and AMO; the repo is public. |
 | Consider a BIP-39 passphrase | **Not supported.** See below. |
 
@@ -202,9 +228,17 @@ below is worded as a caution rather than a suggestion.
    (`keystore.ts:99`) and JavaScript offers no reliable way to wipe a string. Inherent to
    the platform; mitigated by auto-lock, which clears the map.
 5. **The browser CSPRNG is unauditable from inside.** We verify the API path, not the
-   generator. A user who wants entropy they can reason about should use Jade, which Apogee
-   supports as an external signer — that is the highest-assurance path in this wallet and
-   worth saying so in user-facing docs.
+   generator. A user who wants key material generated outside the browser should use Jade,
+   which Apogee supports as an external signer — the keys never leave the device. Note the
+   scope of that recommendation carefully, per gap 6.
+6. **No receive-address verification on device, including on Jade.** The Jade integration
+   calls exactly two device operations — `keyoriginXpub` at setup and `sign` for a PSET
+   (`jade/jade.ts:247,260,337-338`). A receive address is derived from the watch-only
+   descriptor by the engine and displayed only by the extension, so a compromised host could
+   show an address the device never attested. Jade *does* display a transaction's outputs at
+   signing, which covers the send direction. This gap is worth naming because it is easy to
+   assume "hardware wallet" implies address verification; here it does not, and an earlier
+   draft of this audit asserted the opposite.
 
 ## Not verified
 
