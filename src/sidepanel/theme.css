@@ -509,12 +509,16 @@
       drop-shadow(0 0 10px color-mix(in srgb, var(--telemetry-halo) 28%, transparent));
   }
 
-  /* Letters that TelemetryNumber keeps INSIDE the figure — see
-     splitFigureAndTicker for what counts as a figure. Two cases reach this:
-     currency prefixes (the A in A$, CHF), which this geometry is tuned for, and
-     the letters of an unregistered asset's shortened id ("1a2b…c3d4"), which is
-     deliberately kept whole in the figure rather than split across two faces.
-     A trailing ticker never lands here — it renders outside the telemetry span.
+  /* Currency-prefix letters ONLY — a letter run inside the figure that comes
+     before any digit (the A in A$, CHF). That is the single case this geometry is
+     tuned for, and `figureSegments` in ui.tsx is what decides it.
+
+     Deliberately narrow. Letters that FOLLOW digits inside the figure — an
+     unregistered asset's shortened id ("1a2b…c3d4"), or a label whose punctuation
+     kept it out of the ticker path ("USDC.e") — render at full size instead,
+     because shrinking and raising those spells one token out in two sizes. A
+     trailing ticker never lands here either: it renders outside the telemetry
+     span entirely.
 
      Sized and raised to match the S body of the telemetry face's $ so a prefix
      reads as one compound currency symbol. Sign glyphs ($, £, ¥) stay full-size.

@@ -277,6 +277,37 @@ export function splitFigureAndTicker(value: string): { figure: string; ticker: s
   return { figure: m[1] + m[2], ticker: m[3] };
 }
 
+/**
+ * Break a figure into runs and mark which letter runs are currency prefixes.
+ *
+ * Only a letter run that precedes the first digit counts — `.telemetry-unit`'s
+ * geometry is derived from the telemetry `$`'s S body, so it means "part of a
+ * compound currency symbol" (the A in A$, or CHF), not "letters". Letters that
+ * FOLLOW digits are a different animal: an unregistered asset's shortened id, or a
+ * label whose punctuation kept it out of the ticker path. Shrinking and raising
+ * those spells `1a2b…c3d4` out in two sizes, so they render at full size.
+ *
+ * Exported and tested for the same reason `splitFigureAndTicker` is: it decides
+ * typography silently, and three guards elsewhere depend on how it treats a
+ * LEADING letter run — amounts lead with digits, Swap keeps placeholders out of
+ * TelemetryNumber, and the version string is passed as `console` rather than
+ * `amount`. If this rule drifts, those guards' rationale drifts with it and
+ * nothing else would notice.
+ */
+export function figureSegments(
+  figureText: string,
+): Array<{ text: string; letters: boolean; prefix: boolean }> {
+  let seenDigit = false;
+  // split() with a capture group yields alternating non-letter / letter runs, so a
+  // letter segment is always PURE letters — a digit can only appear in the others.
+  return figureText.split(/([A-Za-z]+)/).map((text) => {
+    const letters = /^[A-Za-z]/.test(text);
+    const prefix = letters && !seenDigit;
+    if (!letters) seenDigit ||= /\d/.test(text);
+    return { text, letters, prefix };
+  });
+}
+
 /** Amount rendered in the telemetry face (see theme.css). `glow` adds the
  *  phosphor ink + halo — reserved for the hero balance; list rows pass
  *  glow={false} and inherit their context color. Digits 0 and 2–9 share one
@@ -300,7 +331,6 @@ export function TelemetryNumber({
   // figures; sign glyphs ($, £, ¥, €) keep full size (the face's ¥ and € come
   // from our font patch, see tools/patch-telemetry-font.py).
   const { figure: figureText, ticker } = splitFigureAndTicker(value);
-  const segments = figureText.split(/([A-Za-z]+)/);
 
   // `glow` covers the figure only: a ticker is a label, and the phosphor halo
   // belongs to the numerals. Nothing inlines a unit into a glow'd value today
@@ -317,37 +347,23 @@ export function TelemetryNumber({
         !ticker && className,
       )}
     >
-      {/* .telemetry-unit goes on a letter run only while it PRECEDES the first
-          digit, because its geometry is derived from the telemetry $'s S body —
-          i.e. it means "part of a compound currency symbol" (the A in A$, CHF).
-          Letters that follow digits inside the figure are a different animal: an
-          unregistered asset's shortened id, or a label carrying punctuation that
-          keeps it out of the ticker path. Shrinking and raising those would render
-          "1a2b…c3d4" as digits interleaved with smaller lifted letters — one face
-          but two sizes — so they stay at full size instead. */}
-      {(() => {
-        let seenDigit = false;
-        return segments.map((seg, si) => {
-          const isLetters = /^[A-Za-z]/.test(seg);
-          const isPrefix = isLetters && !seenDigit;
-          if (!isLetters) seenDigit ||= /\d/.test(seg);
-          return isLetters ? (
-            <span key={si} className={isPrefix ? "telemetry-unit" : undefined}>
-              {seg}
-            </span>
-          ) : (
-            Array.from(seg).map((ch, i) =>
-              ch === "1" ? (
-                <span key={`${si}-${i}`} className="inline-block w-[0.7ch] text-center">
-                  1
-                </span>
-              ) : (
-                ch
-              ),
-            )
-          );
-        });
-      })()}
+      {figureSegments(figureText).map((seg, si) =>
+        seg.letters ? (
+          <span key={si} className={seg.prefix ? "telemetry-unit" : undefined}>
+            {seg.text}
+          </span>
+        ) : (
+          Array.from(seg.text).map((ch, i) =>
+            ch === "1" ? (
+              <span key={`${si}-${i}`} className="inline-block w-[0.7ch] text-center">
+                1
+              </span>
+            ) : (
+              ch
+            ),
+          )
+        ),
+      )}
     </span>
   );
 

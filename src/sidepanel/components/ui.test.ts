@@ -1,13 +1,21 @@
-// Tests for TelemetryNumber's figure/ticker split.
+// Tests for TelemetryNumber's two classifiers: the figure/ticker split, and which
+// letter runs inside the figure count as a currency prefix.
 //
-// This rule decides which characters render in the telemetry face and which fall
-// back to the row's own font, and it fails silently: a misclassification is a
-// typography change, not an error, so nothing surfaces until someone looks at a
-// screenshot. It has already been rewritten once, and that rewrite regressed
-// multi-word labels — which no case had covered. Hence a table.
+// Both decide which characters render in the telemetry face, and both fail
+// silently: a misclassification is a typography change, not an error, so nothing
+// surfaces until someone looks at a screenshot. Each has already been rewritten
+// once — the split's rewrite regressed multi-word labels, which no case covered.
+// Hence tables rather than spot checks.
 
 import { describe, expect, it } from "vitest";
-import { splitFigureAndTicker } from "./ui";
+import { figureSegments, splitFigureAndTicker } from "./ui";
+
+/** Compact view of figureSegments: the text of each run marked as prefix. */
+function prefixRuns(figure: string): string[] {
+  return figureSegments(figure)
+    .filter((s) => s.prefix)
+    .map((s) => s.text);
+}
 
 /** [input, expected figure, expected ticker] */
 const CASES: Array<[string, string, string]> = [
@@ -102,5 +110,42 @@ describe("splitFigureAndTicker", () => {
     // formatFiat pins en-US so this shape does not occur today. Pinned so that a
     // localization pass sees the consequence rather than discovering it.
     expect(splitFigureAndTicker("1,234.50 CHF")).toEqual({ figure: "1,234.50 ", ticker: "CHF" });
+  });
+});
+
+describe("figureSegments", () => {
+  it("marks a currency prefix — the one case .telemetry-unit's geometry is for", () => {
+    expect(prefixRuns("CHF 1,234.50")).toEqual(["CHF"]);
+    expect(prefixRuns("A$1,234")).toEqual(["A"]);
+  });
+
+  it("does not mark letters that follow digits", () => {
+    // A shortened asset id kept in the figure. Shrinking and raising these would
+    // spell one token out in two sizes, so they must render at full size.
+    expect(prefixRuns("+150.00 1a2b…c3d4")).toEqual([]);
+    expect(prefixRuns("1,234 USDC.e")).toEqual([]);
+    expect(prefixRuns("1,234 L-BTC")).toEqual([]);
+  });
+
+  it("marks nothing when the figure is all digits", () => {
+    expect(prefixRuns("1,234 ")).toEqual([]);
+    expect(prefixRuns("50.00")).toEqual([]);
+  });
+
+  it("marks a LEADING letter run — which is what three guards elsewhere rely on", () => {
+    // None of these reaches TelemetryNumber today, and that is the point: each is
+    // held back by a guard whose rationale is this behavior. Amounts lead with
+    // digits; Swap keeps placeholders out of the component; the version string is
+    // passed as `console`, not `amount`. Pinned so that if this rule ever changes,
+    // the guards' reasoning stops being silently load-bearing.
+    expect(prefixRuns("Token 2049")).toEqual(["Token"]);
+    expect(prefixRuns("Fetching...")).toEqual(["Fetching"]);
+    expect(prefixRuns("v0.6.0")).toEqual(["v"]);
+  });
+
+  it("reconstructs the figure exactly from its runs", () => {
+    for (const figure of ["CHF 1,234.50", "A$1,234", "+150.00 1a2b…c3d4", "1,234 ", "", "v0.6.0"]) {
+      expect(figureSegments(figure).map((s) => s.text).join("")).toBe(figure);
+    }
   });
 });
