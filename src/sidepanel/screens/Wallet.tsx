@@ -1083,11 +1083,14 @@ function TxRow({
               <span className="text-sm text-[color:var(--text-primary)]">{formatRelative(tx.timestamp)}</span>
             </span>
             <span className="ml-auto flex items-center gap-2">
-              <span className={cn("text-sm", pending && "animate-pulse")}>
+              <span className={cn("text-sm text-[color:var(--text-strong)]", pending && "animate-pulse")}>
                 {hidden ? (
                   <HiddenValue count={3} size={8} className="text-[color:var(--text-subtle)]" />
                 ) : (
-                  <span className="text-[color:var(--text-strong)]">{swapRecvText}</span>
+                  // Same readout as the send/receive rows below: a swap row's figure
+                  // is an amount, so it takes the telemetry face. Left in the body
+                  // face, swap rows read as a separate list from the rest.
+                  <TelemetryNumber value={swapRecvText ?? ""} glow={false} />
                 )}
               </span>
               <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />

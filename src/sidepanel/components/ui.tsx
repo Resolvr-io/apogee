@@ -225,6 +225,89 @@ export function HiddenValue({
   );
 }
 
+/**
+ * Split an amount string into the figure and its trailing unit label.
+ *
+ * A ticker (`USDt`, `sats`, `LBTC`, `Tether USD`) is a label rather than a figure,
+ * so `TelemetryNumber` renders it outside the telemetry span, where it inherits the
+ * row's own font. That is what makes it identical to the token row's asset label,
+ * and it keeps the telemetry face's lowercase 't' — a bare cross that reads as a
+ * dagger at label size — out of a ticker.
+ *
+ * The ticker is the trailing run of whitespace-separated words after the figure,
+ * where every word starts with a letter and contains only letters and digits. Each
+ * clause is load-bearing:
+ *
+ *   - Anchored on the FIGURE, not on the last whitespace, and the `.*?` is LAZY.
+ *     The engine takes the earliest split that yields a valid tail, so the ticker
+ *     is the LONGEST trailing run of words — which is what makes `USDT base units`
+ *     come out whole instead of just `units`. Anchoring on the last space (or
+ *     making this greedy) splits a multi-word label: `1,234 Tether USD` would keep
+ *     "Tether" inside the telemetry span and send only "USD" to the body face,
+ *     spreading one label across two treatments.
+ *   - Every word must START with a letter, which keeps a currency prefix (the A in
+ *     A$, or CHF) in the figure where its geometry is tuned.
+ *   - Words may contain ONLY letters and digits, which keeps an unregistered
+ *     asset's shortened id out of this path: `tokenAmountText` falls back to
+ *     shortenHex(id) — `1a2b…c3d4` — whose ellipsis fails the test, so the id
+ *     stays whole in the telemetry face rather than being split mid-token.
+ *
+ * Know where that last clause draws the line: a label carrying anything but
+ * letters, digits and single spaces stays WHOLLY in the figure. `USDC.e`, `L-BTC`,
+ * `Tether USD (Wormhole)` and `Token 2049` all fall out of the ticker path on the
+ * punctuation or the trailing numeral. That matches the behavior before this rule
+ * existed, and those letters at least render at full size (see the prefix-only
+ * note where .telemetry-unit is applied) — but it is a boundary, not a bug, and
+ * registry-supplied names carry punctuation routinely.
+ *
+ * The prefix/suffix split assumes a prefixing locale, which holds because
+ * formatFiat pins en-US (see lib/format.ts). Under a suffixing locale
+ * (`1.234,50 CHF`) the code would classify as a ticker and drop out of the
+ * telemetry face — worth knowing before any localization pass.
+ *
+ * Exported for the table test in ui.test.ts; this rule has been rewritten once
+ * already and the rewrite changed behavior for an input nobody had enumerated.
+ */
+export function splitFigureAndTicker(value: string): { figure: string; ticker: string } {
+  const m = /^(.*?\d\S*)(\s+)((?:[A-Za-z][A-Za-z0-9]*)(?:\s+[A-Za-z][A-Za-z0-9]*)*)$/.exec(value);
+  if (!m) return { figure: value, ticker: "" };
+  // The separator is captured and kept on the figure rather than re-emitted as a
+  // single space: `figure + ticker` must reconstruct the input exactly, or a
+  // multi-space separator would silently lose a character on the way to the DOM.
+  return { figure: m[1] + m[2], ticker: m[3] };
+}
+
+/**
+ * Break a figure into runs and mark which letter runs are currency prefixes.
+ *
+ * Only a letter run that precedes the first digit counts — `.telemetry-unit`'s
+ * geometry is derived from the telemetry `$`'s S body, so it means "part of a
+ * compound currency symbol" (the A in A$, or CHF), not "letters". Letters that
+ * FOLLOW digits are a different animal: an unregistered asset's shortened id, or a
+ * label whose punctuation kept it out of the ticker path. Shrinking and raising
+ * those spells `1a2b…c3d4` out in two sizes, so they render at full size.
+ *
+ * Exported and tested for the same reason `splitFigureAndTicker` is: it decides
+ * typography silently, and three guards elsewhere depend on how it treats a
+ * LEADING letter run — amounts lead with digits, Swap keeps placeholders out of
+ * TelemetryNumber, and the version string is passed as `console` rather than
+ * `amount`. If this rule drifts, those guards' rationale drifts with it and
+ * nothing else would notice.
+ */
+export function figureSegments(
+  figureText: string,
+): Array<{ text: string; letters: boolean; prefix: boolean }> {
+  let seenDigit = false;
+  // split() with a capture group yields alternating non-letter / letter runs, so a
+  // letter segment is always PURE letters — a digit can only appear in the others.
+  return figureText.split(/([A-Za-z]+)/).map((text) => {
+    const letters = /^[A-Za-z]/.test(text);
+    const prefix = letters && !seenDigit;
+    if (!letters) seenDigit ||= /\d/.test(text);
+    return { text, letters, prefix };
+  });
+}
+
 /** Amount rendered in the telemetry face (see theme.css). `glow` adds the
  *  phosphor ink + halo — reserved for the hero balance; list rows pass
  *  glow={false} and inherit their context color. Digits 0 and 2–9 share one
@@ -243,22 +326,34 @@ export function TelemetryNumber({
   glow?: boolean;
   className?: string;
 }) {
-  // Letter runs — currency prefixes (the A in A$, CHF) and unit suffixes
-  // (asset tickers) — render smaller via .telemetry-unit so they read as
-  // symbols next to the digits; sign glyphs ($, £, ¥, €) keep full size (the
-  // face's ¥ and € come from our font patch, see tools/patch-telemetry-font.py).
-  const segments = value.split(/([A-Za-z]+)/);
-  return (
+  // Letter runs before the digits — currency prefixes (the A in A$, CHF) —
+  // render smaller via .telemetry-unit so they read as symbols next to the
+  // figures; sign glyphs ($, £, ¥, €) keep full size (the face's ¥ and € come
+  // from our font patch, see tools/patch-telemetry-font.py).
+  const { figure: figureText, ticker } = splitFigureAndTicker(value);
+
+  // `glow` covers the figure only: a ticker is a label, and the phosphor halo
+  // belongs to the numerals. Nothing inlines a unit into a glow'd value today
+  // (the hero balance carries its unit as a separate subtitle), so this is only
+  // worth knowing if one ever does.
+  const figureNode = (
     <span
-      className={cn(wide ? "font-telemetry-wide" : "font-telemetry", glow && "telemetry-glow", className)}
+      className={cn(
+        wide ? "font-telemetry-wide" : "font-telemetry",
+        glow && "telemetry-glow",
+        // With no ticker this is the only element, so a caller's className stays
+        // on it rather than moving to a wrapper — non-inherited properties
+        // (padding, background, transform) would otherwise apply a level out.
+        !ticker && className,
+      )}
     >
-      {segments.map((seg, si) =>
-        /^[A-Za-z]/.test(seg) ? (
-          <span key={si} className="telemetry-unit">
-            {seg}
+      {figureSegments(figureText).map((seg, si) =>
+        seg.letters ? (
+          <span key={si} className={seg.prefix ? "telemetry-unit" : undefined}>
+            {seg.text}
           </span>
         ) : (
-          Array.from(seg).map((ch, i) =>
+          Array.from(seg.text).map((ch, i) =>
             ch === "1" ? (
               <span key={`${si}-${i}`} className="inline-block w-[0.7ch] text-center">
                 1
@@ -269,6 +364,14 @@ export function TelemetryNumber({
           )
         ),
       )}
+    </span>
+  );
+
+  if (!ticker) return figureNode;
+  return (
+    <span className={className}>
+      {figureNode}
+      <span>{ticker}</span>
     </span>
   );
 }
