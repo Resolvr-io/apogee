@@ -13,7 +13,16 @@ import { shortenHex } from "@/lib/utils";
 import { formatAssetAmount, formatBtc, formatSats, parseAssetAmount } from "@/lib/format";
 import { KNOWN_ASSETS } from "@/lib/asset-registry";
 import { explorerTxUrl } from "@/lib/explorer";
-import { Button, Card, CopyButton, ErrorText, Field, Input, Spinner } from "@/sidepanel/components/ui";
+import {
+  Button,
+  Card,
+  CopyButton,
+  ErrorText,
+  Field,
+  Input,
+  Spinner,
+  TelemetryNumber,
+} from "@/sidepanel/components/ui";
 import { AssetSelect } from "@/sidepanel/components/AssetSelect";
 import { errMessage, wallet } from "@/sidepanel/wallet-client";
 import { browser } from "@/lib/ext";
@@ -336,21 +345,21 @@ export function Send({
           <Row
             label={drain ? "Amount (max)" : "Amount"}
             value={amountLabel(recipientUnits)}
-            console
+            amount
           />
-          <Row label="Network fee" value={`${formatSats(prepared.fee)} sats`} console />
+          <Row label="Network fee" value={`${formatSats(prepared.fee)} sats`} amount />
           {/* A cross-asset total is meaningless — only LBTC sums with its fee.
               Paying ourselves, the amount comes straight back, so the fee is the
               whole cost — summing it with the amount would overstate the spend. */}
           {isLbtc &&
             (prepared.toSelf ? (
-              <Row label="Net cost" value={`${formatSats(prepared.fee)} sats`} strong console />
+              <Row label="Net cost" value={`${formatSats(prepared.fee)} sats`} strong amount />
             ) : (
               <Row
                 label="Total"
                 value={`${formatSats(recipientUnits + prepared.fee)} sats`}
                 strong
-                console
+                amount
               />
             ))}
         </dl>
@@ -403,12 +412,23 @@ export function Send({
       </h2>
       <div className="mb-4 flex flex-col items-center gap-0.5">
         <span className="text-xs text-[color:var(--text-subtle)]">Available balance</span>
-        <span className="console-value text-lg">
-          {isLbtc
-            ? isBtc
-              ? `${formatBtc(balance)} LBTC`
-              : `${formatSats(balance)} sats`
-            : `${formatAssetAmount(balance, precision)} ${assetLabel}`}
+        {/* TelemetryNumber, not the bare .console-value class: this string ends in
+            a unit (LBTC / sats / a ticker), and .console-value would set the
+            telemetry face for the unit too, where its lowercase letters are
+            display forms — the 't' in "sats" reads as a dagger. TelemetryNumber
+            keeps the figures in the telemetry face and leaves the unit in the
+            body face, matching how amounts read in the wallet's lists. */}
+        <span className="text-lg text-[color:var(--telemetry-fg)]">
+          <TelemetryNumber
+            glow={false}
+            value={
+              isLbtc
+                ? isBtc
+                  ? `${formatBtc(balance)} LBTC`
+                  : `${formatSats(balance)} sats`
+                : `${formatAssetAmount(balance, precision)} ${assetLabel}`
+            }
+          />
         </span>
       </div>
       <div className="flex flex-col gap-3">
@@ -523,13 +543,22 @@ function Row({
   value,
   mono,
   strong,
+  amount,
   console: consoleValue,
 }: {
   label: string;
   value: string;
   mono?: boolean;
   strong?: boolean;
-  console?: boolean; // telemetry-face readout (sats amounts)
+  // An amount ending in a unit ("1,234 sats", "50.00 USDt"). Rendered through
+  // TelemetryNumber so the figures take the telemetry face and the unit stays in
+  // the body face. Prefer this over `console` for anything with a unit on it.
+  amount?: boolean;
+  // Raw telemetry-face readout for a string that is NOT an amount and has no
+  // unit to separate out — a wallet fingerprint, a version. TelemetryNumber
+  // would mistake its trailing letters for a ticker and set them in the body
+  // face, so these keep the whole string in the telemetry face.
+  console?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
@@ -542,7 +571,7 @@ function Row({
           strong ? "font-semibold text-[color:var(--text-strong)]" : "text-[color:var(--text-primary)]",
         ].join(" ")}
       >
-        {value}
+        {amount ? <TelemetryNumber value={value} glow={false} /> : value}
       </dd>
     </div>
   );

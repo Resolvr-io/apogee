@@ -8,7 +8,15 @@ import { Check } from "lucide-react";
 import type { ApprovalRequest } from "@/engine/protocol";
 import { formatSats } from "@/lib/format";
 import { shortenHex } from "@/lib/utils";
-import { Button, Card, ErrorText, Field, Input, Spinner } from "@/sidepanel/components/ui";
+import {
+  Button,
+  Card,
+  ErrorText,
+  Field,
+  Input,
+  Spinner,
+  TelemetryNumber,
+} from "@/sidepanel/components/ui";
 import { errMessage, unlockErrMessage, wallet } from "@/sidepanel/wallet-client";
 import { browser } from "@/lib/ext";
 
@@ -193,15 +201,15 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
             <Row
               label={request.drain ? "Amount (max)" : "Amount"}
               value={`${formatSats(request.recipientSats)} sats`}
-              console
+              amount
             />
-            <Row label="Network fee" value={`${formatSats(request.fee)} sats`} console />
+            <Row label="Network fee" value={`${formatSats(request.fee)} sats`} amount />
             {/* Paying one of our own addresses: the amount returns, so the fee is
                 the whole cost and a sum of the two would overstate the spend. */}
             {request.toSelf ? (
-              <Row label="Net cost" value={`${formatSats(request.fee)} sats`} strong console />
+              <Row label="Net cost" value={`${formatSats(request.fee)} sats`} strong amount />
             ) : (
-              <Row label="Total" value={`${formatSats(request.recipientSats + request.fee)} sats`} strong console />
+              <Row label="Total" value={`${formatSats(request.recipientSats + request.fee)} sats`} strong amount />
             )}
           </dl>
           {request.toSelf && (
@@ -271,13 +279,20 @@ function Row({
   value,
   mono,
   strong,
+  amount,
   console: consoleValue,
 }: {
   label: string;
   value: string;
   mono?: boolean;
   strong?: boolean;
-  console?: boolean; // telemetry-face readout (sats amounts)
+  // An amount ending in a unit ("1,234 sats"). Rendered through TelemetryNumber
+  // so the figures take the telemetry face and the unit stays in the body face.
+  amount?: boolean;
+  // Raw telemetry-face readout for a non-amount string with no unit to split off
+  // — the wallet fingerprint. TelemetryNumber would read its trailing letters as
+  // a ticker and set them in the body face, so this keeps the whole string.
+  console?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
@@ -292,7 +307,7 @@ function Row({
             : "text-[color:var(--text-primary)]",
         ].join(" ")}
       >
-        {value}
+        {amount ? <TelemetryNumber value={value} glow={false} /> : value}
       </dd>
     </div>
   );

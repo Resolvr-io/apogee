@@ -19,7 +19,16 @@ import {
   USDT_TESTNET_ASSET_ID,
 } from "@/lib/asset-registry";
 import { explorerTxUrl } from "@/lib/explorer";
-import { Button, Card, CopyButton, ErrorText, Field, Input, Spinner } from "@/sidepanel/components/ui";
+import {
+  Button,
+  Card,
+  CopyButton,
+  ErrorText,
+  Field,
+  Input,
+  Spinner,
+  TelemetryNumber,
+} from "@/sidepanel/components/ui";
 import { AssetSelect } from "@/sidepanel/components/AssetSelect";
 import {
   lowBalanceAvailable,
@@ -546,9 +555,20 @@ export function Swap({
           </span>
           <div className="flex flex-col gap-0.5">
             <h2 className="text-lg font-semibold text-[color:var(--text-strong)]">Swap complete</h2>
+            {/* Two TelemetryNumbers, not one over the whole "A → B" string: it splits
+                at the FIRST unit after the digits, so a single call would treat
+                everything from "sats" onward — including the received amount's own
+                figures — as one unit and set it all in the body face. */}
             <p className="text-sm text-[color:var(--text-secondary)]">
-              {sendId === policyHex ? fmtLbtc(Number(result.sent)) : formatAssetAmount(Number(result.sent), sendPrecision)} {sendId === policyHex ? (isBtc ? "LBTC" : "sats") : sendLabel}{" → "}
-              {recvId === policyHex ? fmtLbtc(Number(result.received)) : formatAssetAmount(Number(result.received), recvPrecision)} {recvId === policyHex ? (isBtc ? "LBTC" : "sats") : recvLabel}
+              <TelemetryNumber
+                glow={false}
+                value={`${sendId === policyHex ? fmtLbtc(Number(result.sent)) : formatAssetAmount(Number(result.sent), sendPrecision)} ${sendId === policyHex ? (isBtc ? "LBTC" : "sats") : sendLabel}`}
+              />
+              {" → "}
+              <TelemetryNumber
+                glow={false}
+                value={`${recvId === policyHex ? fmtLbtc(Number(result.received)) : formatAssetAmount(Number(result.received), recvPrecision)} ${recvId === policyHex ? (isBtc ? "LBTC" : "sats") : recvLabel}`}
+              />
             </p>
             {(() => {
               const sentUsd = sendId === policyHex
@@ -655,8 +675,17 @@ export function Swap({
             <dt className="text-[color:var(--text-subtle)]">
               You pay{isReceiveExact && !quote ? " (est.)" : ""}
             </dt>
-            <dd className="console-value text-[color:var(--text-primary)]">
-              {payDisplay ?? (busy ? "Fetching..." : "\u2014")}
+            {/* TelemetryNumber only when there IS an amount: it treats a letter run
+                with no digits after it as a currency prefix, so "Fetching..." would
+                come out small and raised. The placeholders stay body text. */}
+            <dd className="text-[color:var(--text-primary)]">
+              {payDisplay ? (
+                <TelemetryNumber value={payDisplay} glow={false} />
+              ) : busy ? (
+                "Fetching..."
+              ) : (
+                "\u2014"
+              )}
             </dd>
           </div>
           {/* Receive side */}
@@ -668,8 +697,14 @@ export function Swap({
             <dt className="text-[color:var(--text-subtle)]">
               You receive{!isReceiveExact && !quote ? " (est.)" : ""}
             </dt>
-            <dd className="console-value text-[color:var(--text-primary)]">
-              {recvDisplay ?? (busy ? "Fetching..." : "\u2014")}
+            <dd className="text-[color:var(--text-primary)]">
+              {recvDisplay ? (
+                <TelemetryNumber value={recvDisplay} glow={false} />
+              ) : busy ? (
+                "Fetching..."
+              ) : (
+                "\u2014"
+              )}
             </dd>
           </div>
           {/* Fees: one calm line, with the split available on demand via the
