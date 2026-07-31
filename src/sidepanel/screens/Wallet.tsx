@@ -894,9 +894,26 @@ function Tokens({
                     timestamp on the same 54px column, with the icons sharing both
                     a left edge and a center. Anything smaller here needs an offset
                     to compensate, and the compensation is what drifts. */}
-                <span className="flex items-center gap-2.5">
-                  <AssetIcon assetId={asset} label={label} network={network} size="size-8" />
-                  <span className="text-sm text-[color:var(--text-primary)]">{label}</span>
+                {/* min-w-0 + truncate: both children of this justify-between summary
+                    default to min-width:auto, so text won't shrink below its content,
+                    and the panel is overflow-hidden — an over-long label would push
+                    into the amount and clip it rather than truncate itself. `label`
+                    falls back to the registry's `info.name`, which is unbounded, and
+                    the wider icon leaves it 12px less room. Same pattern as the
+                    activity row and the asset-id row. */}
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <AssetIcon
+                    assetId={asset}
+                    label={label}
+                    network={network}
+                    size="size-8"
+                    // Keeps the glyph-to-disc ratio the default was drawn at — 10px
+                    // in a 20px disc — now that the disc is 32px. Leaving the 10px
+                    // default would fill 31% instead of 50% and read as an emptier
+                    // circle than the icons beside it.
+                    textSize="text-base"
+                  />
+                  <span className="truncate text-sm text-[color:var(--text-primary)]">{label}</span>
                 </span>
                 <span className="flex items-center gap-2">
                   <span className="flex flex-col items-end">
@@ -927,8 +944,8 @@ function Tokens({
                     <CopyIconButton value={asset} label="Copy asset ID" />
                   </span>
                 </div>
-                {/* Kept here in every currency — including USD, where it's dropped
-                    from the summary as redundant. Hidden while the balance is
+                {/* The only place the fiat equivalent appears — the row summary no
+                    longer carries one in any currency. Hidden while the balance is
                     hidden, so the drawer can't reveal what the row masks. */}
                 {!hidden && fiatValue != null && (
                   <Row label={`Value (${fiat})`} value={`≈ ${formatFiat(fiatValue, fiat)}`} />
