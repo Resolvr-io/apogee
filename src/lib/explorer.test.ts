@@ -1,13 +1,17 @@
 // Tests for outbound explorer links.
 //
-// The one that matters is the testnet path. liquid.network's web UI uses
-// `testnet` while its REST API answers under `liquidtestnet`, and our own
-// network identifier is the latter — so the obvious implementation, dropping the
-// identifier straight into the path the way the blockstream.info URLs did,
-// produces a link that loads the explorer and then shows nothing. HTTP probing
-// will not catch it either: the explorer is a single-page app that returns 200
-// with an identical body for any path, so a wrong segment fails only in front of
-// a user.
+// These PIN the URL mapping; they do not validate it. A green run proves nobody
+// has changed the shape by accident, not that `testnet` is the right segment for
+// liquid.network's testnet UI — the explorer is a single-page app that answers
+// 200 with an identical body for every path, so only a human clicking a link
+// establishes that. Treat the mapping itself as manually verified and these
+// cases as the thing that keeps it from drifting.
+//
+// The segment is the trap worth guarding: our network identifier is
+// `liquidtestnet` and the explorer's REST prefix is `liquidtestnet`, but its web
+// UI wants `testnet`. The obvious implementation — dropping the identifier into
+// the path the way the old blockstream.info URLs did — fails only in front of a
+// user.
 
 import { describe, expect, it } from "vitest";
 import type { LiquidNetwork } from "@/keystore/keystore";
@@ -42,11 +46,47 @@ describe("explorerTxUrl", () => {
     }
   });
 
-  it("covers every network the keystore can report", () => {
+  /**
+   * Wallet records carry the network as a typed-but-unvalidated string, so a
+   * record written by a newer build and read back by an older one can arrive with
+   * a name the lookup has never heard of. The cast is the point of the test: it
+   * reproduces what the type system cannot.
+   *
+   * `__proto__` is in the list because it is the case a nullish guard alone does
+   * not catch — it indexes to `Object.prototype`, not `undefined`, and produced
+   * a live link to `https://liquid.network[object Object]/tx/…` until the lookup
+   * was gated on `Object.hasOwn`.
+   */
+  it("returns null for a network outside the union rather than a broken link", () => {
+    for (const unknown of ["liquidmutinynet", "", "liquid-testnet", "__proto__", "constructor", "toString"]) {
+      const url = explorerTxUrl(unknown as LiquidNetwork, TXID);
+      expect(url).toBeNull();
+      // Stringified, so this still reads as an assertion about the URL rather
+      // than about null: a regression to `=== null` returns
+      // "https://liquid.network/undefinedtx/…" and gets caught here.
+      expect(String(url)).not.toContain("undefined");
+    }
+  });
+
+  it("refuses a txid that is not a 32-byte hash", () => {
+    for (const bad of ["", "abc", TXID.slice(0, 63), `${TXID}0`, `${TXID}?x=1`, "../../address/foo"]) {
+      expect(explorerTxUrl("liquid", bad)).toBeNull();
+    }
+    // Case is the one thing it is relaxed about — hex is hex.
+    expect(explorerTxUrl("liquid", TXID.toUpperCase())).toBe(
+      `https://liquid.network/tx/${TXID.toUpperCase()}`,
+    );
+  });
+
+  /**
+   * Exhaustiveness over `LiquidNetwork` is enforced by `Record<LiquidNetwork, …>`
+   * at compile time, not here — this list is hardcoded, so a fourth variant added
+   * later would be silently skipped. Its job is narrower: every network the
+   * keystore can report today yields either a usable link or an explicit null.
+   */
+  it("yields a usable link or an explicit null for each network in use today", () => {
     const networks: LiquidNetwork[] = ["liquid", "liquidtestnet", "regtest"];
     for (const network of networks) {
-      // Either a usable link or an explicit null — never `undefined`, which is
-      // what a missing entry in the lookup would silently produce.
       const url = explorerTxUrl(network, TXID);
       expect(url === null || url.startsWith("https://liquid.network/")).toBe(true);
     }
