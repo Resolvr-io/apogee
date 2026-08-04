@@ -14,3 +14,9 @@ dist-firefox/
 
 # local release artifacts (zips live on GitHub Releases)
 releases/
+
+# scratch credential files staged by hand — never commit, whatever they get named.
+# The .env rules above only catch the names Vite loads; a key pasted into a file
+# while testing rarely gets one of those.
+.temp-*
+*.key
