@@ -7,12 +7,18 @@ Two independent concerns, often confused:
 
 | | Spot rate | Price history |
 |---|---|---|
-| Used by | balance in fiat, USD equivalents, swap estimates | the price chart / rate bar |
+| Used by | balance in fiat, the portfolio total, USD equivalents, swap estimates | the price chart / rate bar |
 | Entry point | `getRate` (`engine-core.ts`) | `getPriceHistory` / `getPrice24hAgo` |
 | Sources | lwk's `PricesFetcher`, then `fallbackRate`'s four tickers | mempool.space only |
 
 Everything here is **display-only**. No price ever feeds a send amount or a swap amount —
 swap safety comes from the verification gate reading the PSET itself, never from a rate.
+
+That includes the hero's portfolio total, which folds USD-pegged tokens into the balance
+figure at the spot rate (`lib/portfolio.ts`). Send and Swap read per-asset balances straight
+off the sync result, so a wrong rate can misprice the total but cannot change what leaves
+the wallet. It also adds **no request**: it reuses the USD rate already fetched when a
+pegged token is held, so the no-polling property below still holds.
 
 ## Spot rate
 

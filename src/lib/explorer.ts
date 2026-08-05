@@ -22,22 +22,21 @@ const EXPLORER_PATH: Record<LiquidNetwork, string | null> = {
   regtest: null, // local chain — nothing public to link to
 };
 
-/** A Liquid txid is a 32-byte hash; anything else means a bug further upstream. */
-const TXID = /^[0-9a-f]{64}$/i;
+/** Txids and asset ids are both 32-byte hashes; anything else is a bug upstream. */
+const ID_HEX = /^[0-9a-f]{64}$/i;
 
 /**
- * liquid.network URL for a txid, or null when there is nothing worth linking to.
+ * Build a liquid.network URL, or null when there is nothing worth linking to.
  *
  * liquid.network over blockstream.info because it reads better on exactly the
  * transactions this wallet produces: confidential amounts, asset labels and the
  * fee breakdown are legible without cross-referencing, and it surfaces the
  * discounted vsize that actually governs what a blinded transaction costs. It is
  * also the Esplora backend Apogee already syncs against by default, so a link
- * now shows the same view of the chain the wallet itself is reading — and
- * clicking one no longer tells a second server which transaction you are
- * looking at.
+ * shows the same view of the chain the wallet itself is reading — and clicking
+ * one no longer tells a second server what you are looking at.
  */
-export function explorerTxUrl(network: LiquidNetwork, txid: string): string | null {
+function explorerUrl(network: LiquidNetwork, id: string, route: string): string | null {
   // Why `Object.hasOwn` rather than indexing straight in: wallet records carry
   // the network as a string that is typed but never validated on load, so a
   // record written by a newer build and read back by an older one arrives here
@@ -56,7 +55,25 @@ export function explorerTxUrl(network: LiquidNetwork, txid: string): string | nu
 
   // No link at all beats a link that cannot resolve. Mirrors the guard the other
   // liquid.network URL builder applies to asset ids (`asset-icons.ts:35`).
-  if (!TXID.test(txid)) return null;
+  if (!ID_HEX.test(id)) return null;
 
-  return `https://liquid.network${path}/tx/${txid}`;
+  return `https://liquid.network${path}/${route}/${id}`;
+}
+
+/** liquid.network transaction page, or null where there is no public explorer. */
+export function explorerTxUrl(network: LiquidNetwork, txid: string): string | null {
+  return explorerUrl(network, txid, "tx");
+}
+
+/**
+ * liquid.network asset page, or null where there is no public explorer.
+ *
+ * The route is `assets/asset/:id`, not `asset/:id` — in mempool's Liquid
+ * frontend the single-asset view is a *child* of the assets section. Worth
+ * stating because the mistake is invisible: the explorer is a single-page app
+ * that answers 200 with an identical body for any path, so a wrong route renders
+ * an empty page rather than a 404 and no probe will tell you.
+ */
+export function explorerAssetUrl(network: LiquidNetwork, assetId: string): string | null {
+  return explorerUrl(network, assetId, "assets/asset");
 }

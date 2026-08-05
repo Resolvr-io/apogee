@@ -23,7 +23,9 @@ export interface KnownAsset {
    *  for the peg currency because the conversion assumes 1 unit = 1 USD —
    *  do not reuse for a token pegged to something other than USD without
    *  generalizing this to carry the peg currency (see usdToFiat in
-   *  Wallet.tsx, which is hardcoded to a USD rate). */
+   *  Wallet.tsx and portfolioTotal in lib/portfolio.ts, both of which are
+   *  hardcoded to a USD rate — the latter folds these balances into the
+   *  headline portfolio figure). */
   pegUsd?: boolean;
 }
 

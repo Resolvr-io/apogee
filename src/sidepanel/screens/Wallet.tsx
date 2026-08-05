@@ -34,11 +34,12 @@ import type {
 } from "@/engine/protocol";
 import { PriceChart } from "@/sidepanel/components/PriceChart";
 import type { KeystoreState, LiquidNetwork, WalletInfo } from "@/keystore/keystore";
-import { explorerTxUrl } from "@/lib/explorer";
+import { explorerAssetUrl, explorerTxUrl } from "@/lib/explorer";
 import { APP_VERSION_DISPLAY } from "@/version";
 import { STORE_LISTING_URL } from "@/lib/store-links";
 import type { UpdateCheck } from "@/lib/version-check";
 import { KNOWN_ASSETS } from "@/lib/asset-registry";
+import { type Denom, heroSubtitle, portfolioTotal } from "@/lib/portfolio";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY } from "@/lib/debug";
 import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS } from "@/lib/demo-funds";
 import { cn, shortenHex } from "@/lib/utils";
@@ -121,7 +122,6 @@ function useDemoFunds(): boolean {
   return on;
 }
 
-type Denom = "btc" | "sats" | "fiat";
 // Tap-to-cycle order — matches the Display settings dropdown (Sats > LBTC > Fiat).
 const DENOM_ORDER: Denom[] = ["sats", "btc", "fiat"];
 const DENOM_KEY = "apogee:denomination";
@@ -203,6 +203,9 @@ export function Wallet({
   // currency isn't USD — it converts the peg into the chosen fiat
   // (peggedFiat = units × rate/rateUsd). USD display needs no conversion.
   const [rateUsd, setRateUsd] = useState<number | null>(null);
+  // Terminal state for that fetch. Without it a wallet holding a pegged token
+  // whose USD rate never arrives would pulse forever, which reads as a stuck sync.
+  const [rateUsdFailed, setRateUsdFailed] = useState(false);
   const [liveSync, setSync] = useState<SyncResult | null>(null);
   const [liveTxs, setTxs] = useState<WalletTxDTO[]>([]);
   const [liveAssets, setAssets] = useState<Record<string, AssetInfo>>({});
@@ -280,22 +283,25 @@ export function Wallet({
     };
   }, [chartOpen, chartRange, fiat]);
 
-  const holdsPeggedToken = Boolean(
-    sync &&
-      Object.entries(sync.balance).some(
-        ([a, amt]) => a !== sync.policyAssetHex && amt > 0 && KNOWN_ASSETS[a]?.pegUsd,
-      ),
-  );
+  // BTC in USD. The display rate already IS it when the currency is USD, which is
+  // why the dedicated fetch below skips that case. The peg is to USD, so valuing a
+  // stablecoin needs this rate rather than the display-currency one.
+  const btcUsd = fiat === "USD" ? rate : rateUsd;
+  // The whole portfolio as one LBTC-denominated figure — see lib/portfolio.ts.
+  const total = portfolioTotal({ sync, btcUsd });
+  const holdsPeggedToken = total.holdsPegged;
   useEffect(() => {
     if (fiat === "USD" || !holdsPeggedToken) {
       setRateUsd(null);
+      setRateUsdFailed(false);
       return;
     }
     let alive = true;
+    setRateUsdFailed(false);
     wallet
       .getRate("USD")
       .then((r) => alive && setRateUsd(r))
-      .catch(() => {});
+      .catch(() => alive && setRateUsdFailed(true));
     return () => {
       alive = false;
     };
@@ -541,12 +547,20 @@ export function Wallet({
   }
 
   const hasUnconfirmed = txs.some((t) => t.height === null);
-  const pulse = syncing || hasUnconfirmed;
+  // A held token whose price hasn't landed means the figure is still settling —
+  // reuse the existing "not final" affordance rather than inventing one.
+  // `priceFailed` gives it a terminal state so it can't pulse forever.
+  const priceFailed = fiat === "USD" ? rateFailed : rateUsdFailed;
+  const pulse = syncing || hasUnconfirmed || (total.pricePending && !priceFailed);
+  // Holdings the total can't account for: no price source at all, plus the
+  // pegged ones whose rate fetch has given up.
+  const missingCount = total.unpricedCount + (priceFailed ? total.pendingCount : 0);
 
-  // Main balance presentation, driven by the tap-to-cycle denomination.
-  const sats = sync ? sync.lbtcSats : 0;
+  // Main balance presentation, driven by the tap-to-cycle denomination. The
+  // figure is the whole portfolio in LBTC terms — one integer rendered three
+  // ways, so the denominations cannot disagree.
+  const sats = total.totalSats;
   const showStars = hidden || !sync;
-  const unitLabel = denom === "sats" ? "sats" : denom === "fiat" ? fiat : "LBTC";
   let amountNode: React.ReactNode;
   if (showStars) {
     amountNode = <HiddenValue count={5} size={16} gap={9} className="telemetry-stars" />;
@@ -564,12 +578,7 @@ export function Wallet({
   } else {
     amountNode = <TelemetryNumber value={formatBtc(sats)} wide />;
   }
-  let subtitle = unitLabel;
-  if (!showStars && denom === "btc") {
-    subtitle = `LBTC · ${formatSats(sats)} sats`;
-  } else if (!showStars && denom === "fiat") {
-    subtitle = `${fiat} · ${formatSats(sats)} sats`;
-  }
+  const subtitle = heroSubtitle({ denom, fiat, total, rate, missingCount });
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -602,7 +611,14 @@ export function Wallet({
           {/* No denomination label while hidden — the unit is irrelevant when the
               amount is stars. A non-breaking space holds the line so toggling
               hide doesn't shift the Send/Receive row. */}
-          <span className="font-telemetry text-xs uppercase tracking-wide text-[color:var(--text-subtle)]">
+          {/* nowrap for the same reason: the figure above is a fixed h-9, so a
+              wrapped subtitle is the only way this block can change height. The
+              line is longest when the balance is a total with a cross-denomination
+              readout beside it (see heroSubtitle) — measured at 316px inside the
+              328px frame for a 1,000-BTC balance with 9 unpriced assets, so the
+              ellipsis only ever engages past that. Truncating is the right failure:
+              it keeps the frame's height AND stops a long line spilling the panel. */}
+          <span className="max-w-full truncate font-telemetry text-xs uppercase tracking-wide text-[color:var(--text-subtle)]">
             {showStars ? " " : subtitle}
           </span>
         </button>
@@ -753,6 +769,12 @@ export function Wallet({
           network={active.network}
           fiat={fiat}
           usdToFiat={usdToFiat}
+          // Itemize L-BTC exactly when the hero stops being the L-BTC balance.
+          // This is the same flag that makes the subtitle say "total", so the
+          // headline and the list beneath it can never disagree about what the
+          // headline is.
+          itemizePolicyAsset={total.tokensIncluded}
+          rate={rate}
           onSend={
             watchOnly
               ? null
@@ -841,6 +863,8 @@ function Tokens({
   network,
   fiat,
   usdToFiat,
+  itemizePolicyAsset,
+  rate,
   onSend,
   onSwap,
 }: {
@@ -850,21 +874,45 @@ function Tokens({
   network: LiquidNetwork;
   fiat: string;
   usdToFiat: number | null; // 1 USD in the display currency (null = unknown)
+  itemizePolicyAsset: boolean; // include L-BTC as a row — see the call site
+  rate: number | null; // BTC in the display currency, for the L-BTC row's value
   onSend: ((assetId: string) => void) | null; // null → no send affordance (watch-only)
   onSwap: ((assetId: string) => void) | null; // null → no swap affordance (watch-only)
 }) {
-  const tokens = sync
-    ? Object.entries(sync.balance).filter(([a, amt]) => a !== sync.policyAssetHex && amt > 0)
+  /**
+   * L-BTC is listed only when the hero above is a portfolio total.
+   *
+   * The policy asset was excluded outright while the hero simply *was* the L-BTC
+   * balance — a row restating it would have been pure duplication. Now that the
+   * hero can be a total, that exclusion leaves the one holding you cannot see
+   * anywhere: a wallet with 2,043 sats and some USDt showed the USDt exactly, the
+   * total in the hero, and the L-BTC nowhere but the Send screen. So the rule is
+   * that the list itemizes the hero whenever the hero is a sum, and stays out of
+   * the way when it isn't.
+   */
+  const rows = sync
+    ? Object.entries(sync.balance)
+        .filter(([a, amt]) => amt > 0 && (itemizePolicyAsset || a !== sync.policyAssetHex))
+        // L-BTC first: it is the fee asset and the denomination everything else
+        // is being converted into, so it reads as the anchor rather than as one
+        // token among several.
+        .sort(([a], [b]) =>
+          a === sync.policyAssetHex ? -1 : b === sync.policyAssetHex ? 1 : 0,
+        )
     : [];
-  if (tokens.length === 0) return null;
+  if (rows.length === 0) return null;
   return (
     <div className="mt-1">
+      {/* "Assets", not "Tokens": L-BTC is the policy asset rather than a token,
+          and the heading has to stay true in both modes. */}
       <h2 className="mb-2 px-1 console-overline console-ruled">
-        Tokens
+        Assets
       </h2>
       <div className="apogee-panel divide-y divide-[color:var(--border-soft)] overflow-hidden rounded-2xl border border-[color:var(--border-default)]">
-        {tokens.map(([asset, amt]) => {
+        {rows.map(([asset, amt]) => {
           const info = assets[asset];
+          const isPolicy = asset === sync?.policyAssetHex;
+          const assetExplorer = explorerAssetUrl(network, asset);
           const label =
             KNOWN_ASSETS[asset]?.label ?? info?.ticker ?? info?.name ?? shortenHex(asset, 6, 6);
           // Scale the raw base-unit balance by the asset's precision (e.g. a
@@ -875,8 +923,15 @@ function Tokens({
           // USD-pegged stablecoins have an approximate fiat value (1 unit ≈ $1,
           // converted into the display currency). Anything else has no price
           // source, so no figure is shown — honest over guessed.
-          const fiatValue =
-            KNOWN_ASSETS[asset]?.pegUsd && usdToFiat != null && precision != null
+          //
+          // L-BTC is the exception: its price is the display rate the whole panel
+          // already runs on, so leaving its row valueless while a stablecoin
+          // beside it shows one would be a gap with no reason behind it.
+          const fiatValue = isPolicy
+            ? rate != null
+              ? satsToFiat(amt, rate)
+              : null
+            : KNOWN_ASSETS[asset]?.pegUsd && usdToFiat != null && precision != null
               ? (amt / 10 ** precision) * usdToFiat
               : null;
           // The fiat equivalent is shown only in the expandable drawer, not the
@@ -933,15 +988,34 @@ function Tokens({
                 </span>
               </summary>
               <div className="flex flex-col gap-2 border-t border-[color:var(--border-soft)] px-3 py-2 text-xs">
+                {/* Controls, not characters. The id used to render as 20 of its 64
+                    hex digits, which is enough to verify an asset against a known
+                    value at a glance — a real need, for developers, and nobody
+                    else. It was also the widest thing in the drawer, so it is now
+                    the label's tooltip: no width at all, and the whole id rather
+                    than a truncation. The copy control cannot serve that purpose,
+                    since its own tooltip has to say what the button does.
+                    The pointer cursor is the only hint that hovering is worth it —
+                    `cursor-help`'s question mark read as an offer of documentation
+                    rather than of a value. */}
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-[color:var(--text-subtle)]">Asset ID</span>
-                  {/* Middle-truncated to one line; hover shows the full id and the
-                      copy button below carries the full value. */}
+                  <span title={asset} className="cursor-pointer text-[color:var(--text-subtle)]">
+                    Asset ID
+                  </span>
                   <span className="flex items-center gap-0.5">
-                    <span title={asset} className="font-mono text-[color:var(--text-primary)]">
-                      {shortenHex(asset, 10, 10)}
-                    </span>
                     <CopyIconButton value={asset} label="Copy asset ID" />
+                    {assetExplorer && (
+                      <a
+                        href={assetExplorer}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="View asset in explorer"
+                        aria-label="View asset in explorer"
+                        className="icon-btn size-6 shrink-0"
+                      >
+                        <ExternalLink size={13} />
+                      </a>
+                    )}
                   </span>
                 </div>
                 {/* The only place the fiat equivalent appears — the row summary no
@@ -1113,14 +1187,14 @@ function TxRow({
         )}
       </summary>
       <div className="flex flex-col gap-2 border-t border-[color:var(--border-soft)] px-3 py-2 text-xs">
+        {/* Controls, not characters — the same treatment as the asset drawer's id
+            row, so the two identifiers in this panel read alike: the full value on
+            the label's tooltip, copy and explorer as icons. */}
         <div className="flex items-center justify-between gap-3">
-          <span className="text-[color:var(--text-subtle)]">Txid</span>
-          {/* Middle-truncated to one line; hover shows the full txid and the
-              copy control carries the full value. */}
+          <span title={tx.txid} className="cursor-pointer text-[color:var(--text-subtle)]">
+            Txid
+          </span>
           <span className="flex items-center gap-0.5">
-            <span title={tx.txid} className="font-mono text-[color:var(--text-primary)]">
-              {shortenHex(tx.txid, 10, 10)}
-            </span>
             <CopyIconButton value={tx.txid} label="Copy txid" />
             {explorer && (
               <a
