@@ -1,15 +1,17 @@
 // Content script (ISOLATED world). Bridges the MAIN-world page provider
-// (window.apogee) to the service worker: it receives postMessage requests from
+// (legacy `window.liquid` plus the event-discovered provider) to the service worker:
 // the provider, relays them to the background via browser.runtime, and posts the
 // reply back. The ISOLATED world is the only one of the two that can reach
 // browser.runtime, so this hop is required.
 //
-// Per-site approval routing (connect/sign prompts) lands in a follow-up; for now
-// the bridge forwards the small set of provider methods straight through.
+// Replies and provider events travel back across the same bridge. The service
+// worker remains the trusted boundary: this page-visible hop contains no
+// authorization state or secrets.
 
 import { browser } from "@/lib/ext";
 
 const PROVIDER_METHODS = new Set([
+  "rpc",
   "connect",
   "disconnect",
   "getAccount",
@@ -37,7 +39,10 @@ function isProviderMessage(data: unknown): data is ProviderMessage {
   );
 }
 
-function reply(id: string, body: { ok: true; value: unknown } | { ok: false; error: string }): void {
+function reply(
+  id: string,
+  body: { ok: true; value: unknown } | { ok: false; error: unknown },
+): void {
   // "*" (not window.origin) so this same-window reply still delivers in sandboxed/
   // opaque-origin frames; the provider gates inbound on event.source === window.
   window.postMessage({ source: "apogee-content", id, ...body }, "*");
@@ -91,6 +96,26 @@ window.addEventListener("message", (event) => {
         !browser.runtime?.id || /context invalidated|Receiving end does not exist/i.test(message);
       reply(id, { ok: false, error: orphaned ? "PROVIDER_DISCONNECTED" : message });
     });
+});
+
+browser.runtime.onMessage.addListener((message, sender) => {
+  if (sender.id !== browser.runtime.id) return false;
+  if (
+    message?.type !== "apogee/provider-event" ||
+    message.origin !== window.location.origin ||
+    typeof message.event !== "string"
+  ) {
+    return false;
+  }
+  window.postMessage(
+    {
+      source: "apogee-content-event",
+      event: message.event,
+      payload: message.payload,
+    },
+    "*",
+  );
+  return false;
 });
 
 console.debug("[apogee] content bridge ready");

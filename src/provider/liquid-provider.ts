@@ -1,15 +1,19 @@
-// Page-context provider (MAIN world). Implements the `window.liquid` interface
-// — EIP-1193 `request({ method, params })` + EIP-6963 discovery — described in
-// the Liquid Provider spec (docs/liquid-provider-spec.md in the apogee repo),
-// backed by Apogee. The page never receives keys: `liquid_requestAccounts`
-// returns a watch-only account handle and all signing is delegated to the
-// extension, which authenticates the sender and gates every approval.
+// Page-context providers (MAIN world). The pre-standard `window.liquid` API is
+// retained for compatibility. Alongside it, Apogee announces a separate
+// conforming Liquid browser provider through `liquid:*` discovery events.
 //
 // This is a thin facade: each `liquid_*` method maps to an internal provider
 // method relayed over the same postMessage bridge to the content script, so the
 // service-worker router, engine, and Jade signing path are unchanged.
 
 import { LBTC_MAINNET_ASSET_ID, LBTC_TESTNET_ASSET_ID } from "@/lib/asset-registry";
+import {
+  LIQUID_CONNECTION_CHANGED_EVENT,
+} from "./liquid-browser-provider";
+import {
+  createLiquidProviderController,
+  installLiquidProviderDiscovery,
+} from "./liquid-browser-provider-runtime";
 
 type DappNetwork = "mainnet" | "testnet" | "regtest";
 type LiquidNetwork = "liquid" | "liquid-testnet" | "liquid-regtest";
@@ -84,7 +88,7 @@ const ICON =
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     const data = event.data as
-      | { source?: string; id?: string; ok?: boolean; value?: unknown; error?: string }
+      | { source?: string; id?: string; ok?: boolean; value?: unknown; error?: unknown }
       | undefined;
     if (!data || data.source !== "apogee-content" || typeof data.id !== "string") return;
     const req = pending.get(data.id);
@@ -96,7 +100,17 @@ const ICON =
 
   // Map an internal bridge error string to an EIP-1193 ProviderRpcError. The
   // original message is preserved so consumers that string-match still work.
-  function mapError(message: string): ProviderRpcError {
+  function mapError(error: unknown): ProviderRpcError {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      Number.isInteger((error as { code?: unknown }).code) &&
+      typeof (error as { message?: unknown }).message === "string"
+    ) {
+      const serialized = error as { code: number; message: string; data?: unknown };
+      return new ProviderRpcError(serialized.code, serialized.message, serialized.data);
+    }
+    const message = typeof error === "string" ? error : "Apogee request failed";
     // The extension was reloaded/updated and this page's bridge is orphaned — the
     // page must reload to get a working provider. 4900 = "provider disconnected".
     if (message.includes("PROVIDER_DISCONNECTED") || /context invalidated/i.test(message)) {
@@ -122,7 +136,11 @@ const ICON =
   }
 
   // Internal transport: relays one internal method to the content bridge.
-  function call<T>(method: string, params?: Record<string, unknown>): Promise<T> {
+  function call<T>(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMethod = method,
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const id = `apogee-${seq++}-${Date.now()}`;
       pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
@@ -132,12 +150,12 @@ const ICON =
       setTimeout(() => {
         if (pending.delete(id)) {
           reject(
-            APPROVAL_METHODS.has(method)
+            APPROVAL_METHODS.has(timeoutMethod) || timeoutMethod === "wallet_connect"
               ? new ProviderRpcError(-32603, "Apogee request timed out")
               : mapError("PROVIDER_DISCONNECTED"),
           );
         }
-      }, timeoutFor(method));
+      }, timeoutFor(timeoutMethod === "wallet_connect" ? "connect" : timeoutMethod));
     });
   }
 
@@ -290,6 +308,37 @@ const ICON =
   }
   window.addEventListener("eip6963:requestProvider", announce);
   announce();
+
+  // The standardized provider is additive: it does not replace or alias the
+  // legacy global. Discovery is intentionally limited to secure top-level,
+  // non-opaque contexts.
+  if (window.isSecureContext && window.top === window && window.location.origin !== "null") {
+    const standard = createLiquidProviderController(
+      (request) => call("rpc", { request }, request.method),
+      [LIQUID_CONNECTION_CHANGED_EVENT],
+      (error) => console.error("[apogee] Liquid provider listener failed", error),
+    );
+
+    window.addEventListener("message", (event) => {
+      if (event.source !== window) return;
+      const data = event.data as
+        | { source?: string; event?: string; payload?: unknown }
+        | undefined;
+      if (
+        !data ||
+        data.source !== "apogee-content-event" ||
+        data.event !== LIQUID_CONNECTION_CHANGED_EVENT
+      ) {
+        return;
+      }
+      standard.emit(data.event, data.payload);
+    });
+    // The legacy and standard façades are different provider objects, so each
+    // gets its own page-lifetime UUID even though their display metadata match.
+    const standardInfo = Object.freeze({ ...info, uuid: crypto.randomUUID() });
+    const detail = Object.freeze({ info: standardInfo, provider: standard.provider });
+    installLiquidProviderDiscovery(window, detail);
+  }
 
   console.debug("[apogee] window.liquid ready");
 })();

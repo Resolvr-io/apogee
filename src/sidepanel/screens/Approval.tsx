@@ -185,12 +185,17 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
       {request.kind === "connect" ? (
         <>
           <p className="text-sm text-[color:var(--text-secondary)]">
-            This site wants to connect to your wallet. It will see your addresses and balance, but
-            can't move funds without your approval.
+            {request.legacy
+              ? "This site wants to connect to your wallet. It will see your addresses and balance, but can't move funds without your approval."
+              : "This site is requesting the wallet permissions shown below. Transaction and signing requests still require their own review."}
           </p>
           <dl className="mt-3 flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
             <Row label="Wallet" value={request.fingerprint.toUpperCase()} console />
             <Row label="Network" value={networkLabel(request.network)} />
+            {!request.legacy && <Row label="Methods" value={request.methods.join(", ")} mono />}
+            {!request.legacy && request.events.length > 0 && (
+              <Row label="Events" value={request.events.join(", ")} mono />
+            )}
           </dl>
         </>
       ) : (

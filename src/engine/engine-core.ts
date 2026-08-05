@@ -38,6 +38,7 @@ import type {
   SignSwapPsetWireResult,
   SyncResult,
   UtxoDTO,
+  WalletIdentity,
   WalletTxDTO,
 } from "@/engine/protocol";
 
@@ -290,6 +291,26 @@ function balanceToRecord(balance: Lwk.Balance): Record<string, number> {
   } else if (raw && typeof raw === "object") {
     for (const [asset, amount] of Object.entries(raw as Record<string, unknown>)) {
       out[asset] = Number(amount);
+    }
+  }
+  return out;
+}
+
+function balanceToStringRecord(balance: Lwk.Balance): Record<string, string> {
+  const out: Record<string, string> = {};
+  let raw: unknown;
+  try {
+    raw = balance.toJSON();
+  } catch {
+    raw = undefined;
+  }
+  if (raw instanceof Map) {
+    raw.forEach((value, asset) => {
+      out[String(asset)] = String(value);
+    });
+  } else if (raw && typeof raw === "object") {
+    for (const [asset, amount] of Object.entries(raw as Record<string, unknown>)) {
+      out[asset] = String(amount);
     }
   }
   return out;
@@ -841,10 +862,12 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         entry.wollet.applyUpdate(update);
         if (serialized !== null) await persistScanUpdate(entry, serialized, tipOnly);
       }
-      const balance = balanceToRecord(entry.wollet.balance());
+      const walletBalance = entry.wollet.balance();
+      const balance = balanceToRecord(walletBalance);
       const result: SyncResult = {
         lbtcSats: balance[entry.policyAssetHex] ?? 0,
         balance,
+        balanceStrings: balanceToStringRecord(walletBalance),
         policyAssetHex: entry.policyAssetHex,
       };
       return result;
@@ -1131,6 +1154,25 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       }
       const info: DescriptorInfo = { fingerprint: originFp[1].toLowerCase(), mainnet: wd.isMainnet() };
       return info;
+    }
+
+    case "walletIdentity": {
+      const network = lwkNetwork(lwk, req.network);
+      const descriptor = new lwk.WolletDescriptor(req.descriptor);
+      const wollet = new lwk.Wollet(network, descriptor);
+      try {
+        const chainId = `bip122:${network.genesisBlockHash().slice(0, 32)}`;
+        const identity: WalletIdentity = {
+          dwid: wollet.dwid(),
+          chainId,
+          policyAssetId: `${chainId}/elip144:${network.policyAsset().toString()}`,
+        };
+        return identity;
+      } finally {
+        wollet.free();
+        descriptor.free();
+        network.free();
+      }
     }
 
     case "prepareSend": {
