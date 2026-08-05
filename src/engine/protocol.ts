@@ -38,6 +38,8 @@ export type EngineRequest =
   // Validate a pasted watch-only descriptor and read its fingerprint + network
   // (constructing the WolletDescriptor throws on a malformed descriptor).
   | { kind: "descriptorInfo"; descriptor: string }
+  // ELIP-0144/0152 identity metadata for a browser-provider connection.
+  | { kind: "walletIdentity"; descriptor: string; network: LiquidNetwork }
   // `drain` (send max): for LBTC, drain the wallet (fee deducted from the
   // amount); for a token (`asset` set), send the full token balance (the fee is
   // paid in LBTC, so no deduction). `sats` is in the asset's base units.
@@ -137,6 +139,12 @@ export interface DescriptorInfo {
   mainnet: boolean;
 }
 
+export interface WalletIdentity {
+  dwid: string;
+  chainId: string;
+  policyAssetId: string;
+}
+
 /** Windows the price chart can show. The upstream series is hourly, so the short
  *  ranges are the sparse ones: 24h is ~25 points, 1y is ~8,760. */
 export type PriceRange = "24h" | "7d" | "30d" | "1y" | "all";
@@ -200,6 +208,8 @@ export interface AddressDTO {
 export interface SyncResult {
   lbtcSats: number;
   balance: Record<string, number>; // assetIdHex → sats
+  /** Exact base-10 values for RPC consumers that must not round large issued-asset amounts. */
+  balanceStrings?: Record<string, string>;
   policyAssetHex: string; // which key in `balance` is LBTC (vs. tokens)
 }
 
@@ -268,7 +278,7 @@ export type WalletRequest =
   // Heartbeat from genuine side-panel activity (pointer/keyboard) that re-arms
   // the idle lock — unlike the background sync poll, which must not keep it alive.
   | { type: "wallet/touch" }
-  // Dapp connections (window.apogee): list/revoke sites connected to the wallet.
+  // Dapp provider connections: list/revoke sites connected to the wallet.
   | { type: "wallet/getConnectedSites" }
   | { type: "wallet/disconnectSite"; origin: string }
   | { type: "wallet/prepareSend"; walletId?: string; address: string; sats: number; drain?: boolean; asset?: string }
@@ -397,7 +407,7 @@ export interface SendReview {
 
 // ---- page provider (dapp) → content bridge → service worker ----------------
 //
-// A web page (a dapp) talks to `window.apogee` (MAIN-world provider),
+// A web page talks to the MAIN-world provider façade,
 // which postMessages to the content bridge (ISOLATED world), which relays these
 // requests to the service worker. The dapp speaks the standard network names
 // (mainnet/testnet/regtest), mapped from the internal LiquidNetwork.
@@ -419,6 +429,7 @@ export interface ProviderAccount {
 }
 
 export type ProviderRequest =
+  | { type: "provider/rpc"; request: unknown }
   | { type: "provider/connect" }
   | { type: "provider/disconnect" }
   // Silent authorization query: the account if this origin is already approved,
@@ -469,6 +480,9 @@ export type ApprovalRequest =
       fingerprint: string; // wallet fingerprint the site will see
       signerKind: WalletSigner; // "local" | "jade"
       locked: boolean; // wallet locked at request time → the UI must unlock first
+      methods: string[]; // exact standard-method grant after approval
+      events: string[]; // exact standard-event grant after approval
+      legacy: boolean; // request came through the backwards-compatible window.liquid API
     }
   | {
       kind: "send";

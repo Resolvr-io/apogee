@@ -1,0 +1,900 @@
+<pre>
+  ELIP: TBD
+  Layer: Wallet
+  Title: Liquid Browser Wallet Provider
+  Author: TBD
+  Comments-Summary: No comments yet.
+  Comments-URI: TBD
+  Status: Draft
+  Type: Standards Track
+  Created: 2026-07-31
+  License: BSD-3-Clause
+</pre>
+
+==Abstract==
+
+This ELIP defines a browser interface for discovering Liquid wallet providers and invoking the methods and receiving
+the events defined by the Liquid Wallet RPC Profile.
+
+Wallets announce providers through a race-free pair of <code>window</code> events. Applications select an announced
+provider and interact with it through a minimal JavaScript interface consisting of <code>request</code> and
+<code>on</code>. The <code>request</code> method accepts a method name and parameters, then resolves directly to the
+method result or rejects with a structured provider error. The <code>on</code> method registers an event listener and
+returns an idempotent unsubscribe function.
+
+This ELIP also defines an origin-bound connection model. A connection identifies one Liquid or Elements chain, one
+connected account, and the RPC methods and events authorized for the calling origin. Provider discovery exposes no
+account state. Applications must obtain user authorization before invoking account-scoped Liquid RPC methods.
+
+The design adapts the transport-agnostic provider model of
+[https://eips.ethereum.org/EIPS/eip-1193 EIP-1193], the multi-provider discovery model of
+[https://eips.ethereum.org/EIPS/eip-6963 EIP-6963], and the privacy-gated connection and capability-negotiation
+patterns of [https://eips.ethereum.org/EIPS/eip-2255 EIP-2255],
+[https://cips.cardano.org/cip/CIP-0030 CIP-30], and
+[https://github.com/wallet-standard/wallet-standard Wallet Standard]. It does not define a singleton
+<code>window.liquid</code> provider and does not claim conformance to any of those standards.
+
+==Copyright==
+
+This document is licensed under the 3-clause BSD license.
+
+==Motivation==
+
+The Liquid Wallet RPC Profile defines transport-neutral wallet methods, results, and events. A browser application
+additionally needs interoperable answers to the following questions:
+
+* How does an application discover installed Liquid wallets without knowing wallet-specific global names?
+* How can multiple installed wallets coexist without racing to overwrite a singleton property on <code>window</code>?
+* What JavaScript interface carries RPC calls and events?
+* How is private account state withheld until the user authorizes the calling origin?
+* How does an application restore, inspect, update, or revoke its connection?
+* How are supported capabilities distinguished from capabilities granted to one origin?
+* How are provider errors represented independently of an internal browser-extension transport?
+
+Historically, injected wallet interfaces have used singleton globals. A singleton cannot represent multiple installed
+wallets without an arbitrary first-loaded or last-loaded winner. Extension initialization order is not user intent,
+and a shared mutable property encourages overwrite races. This ELIP therefore makes event-based provider discovery
+the only standardized discovery mechanism.
+
+The page-facing interface is deliberately smaller than raw JSON-RPC 2.0. Applications call
+<code>request({ method, params })</code> and use the returned Promise as the handle for that invocation. The provider,
+acting as the JSON-RPC client when JSON-RPC is used internally, creates correlation identifiers and maps responses back
+to Promises. Browser applications do not need to allocate identifiers or process protocol response envelopes.
+
+==Terminology==
+
+{| class="wikitable"
+! Term !! Definition
+|-
+| Application / dapp || A web application that discovers and calls a Liquid wallet provider.
+|-
+| Wallet || Software that manages Liquid accounts, applies wallet policy, requests user approval, and services provider requests.
+|-
+| Provider || The JavaScript object exposed by a wallet to an application through the discovery protocol defined by this ELIP.
+|-
+| Provider instance || One provider object announced within one top-level browsing context.
+|-
+| Calling origin || The origin of the top-level browsing context in which the provider request is made. The wallet derives this value; application input cannot set it.
+|-
+| Connection || The wallet-maintained authorization binding one calling origin to one Liquid account, one chain, and a set of granted methods and events.
+|-
+| Supported capability || A method or event implemented by the wallet.
+|-
+| Granted permission || A supported method or event that the wallet has authorized the calling origin to use.
+|-
+| Liquid RPC method || A method defined by the Liquid Wallet RPC Profile.
+|-
+| Liquid RPC event || An event defined by the Liquid Wallet RPC Profile.
+|}
+
+==Specification==
+
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", and "MAY" in this
+document are to be interpreted as described in [https://www.rfc-editor.org/rfc/rfc2119 RFC 2119].
+
+===Scope and relationship to the Liquid Wallet RPC Profile===
+
+This ELIP specifies a browser binding. It does not redefine the parameters, results, approval requirements, or event
+payloads of the Liquid Wallet RPC Profile.
+
+A conforming provider MUST expose every Liquid RPC method it supports as a direct <code>request</code> method name.
+The provider MUST NOT require a chain-routing or session envelope around a Liquid RPC method. For example, an
+application requests a balance as follows:
+
+<pre>
+const balance = await provider.request({
+  method: "getBalance",
+  params: {}
+});
+</pre>
+
+The Promise MUST resolve to the <code>getBalance</code> result defined by the Liquid Wallet RPC Profile, not to a
+JSON-RPC response object or another routing envelope.
+
+Unless the Liquid RPC method explicitly contains an <code>account</code> parameter, the provider MUST apply the method
+to the account in the calling origin's current connection. If a method contains an <code>account</code> parameter, that
+account MUST equal the account in the current connection or the provider MUST reject the request with error
+<code>4100</code>.
+
+===Supported browsing contexts===
+
+Provider discovery MUST be exposed only in a
+[https://w3c.github.io/webappsec-secure-contexts/ secure context] whose <code>window</code> is the top-level browsing
+context. Loopback origins considered secure by the browser remain eligible.
+
+Wallets MUST NOT expose the discovery protocol directly in a cross-origin child frame. This version of the specification
+does not define delegated or embedded-frame access. A future ELIP may define an explicit delegation mechanism.
+
+Documents with opaque origins MUST NOT receive a provider announcement.
+
+===Provider discovery===
+
+Provider discovery uses two DOM event types:
+
+{| class="wikitable"
+! Event !! Sender !! Purpose
+|-
+| <code>liquid:requestProvider</code> || Application || Requests all available Liquid wallets to announce their provider.
+|-
+| <code>liquid:announceProvider</code> || Wallet || Announces one provider and its display metadata.
+|}
+
+This ELIP does not define <code>window.liquid</code>, <code>navigator.liquid</code>, a shared provider array, or any other
+singleton provider property. Applications conforming to this ELIP MUST NOT depend on such a property for discovery.
+A wallet MAY retain a pre-existing global interface for backwards compatibility, but that interface is outside this
+ELIP, MUST NOT be required to use the provider defined here, and MUST NOT suppress or alter this discovery protocol.
+
+====Provider information====
+
+Each announcement MUST contain immutable provider information with the following shape:
+
+<pre>
+interface LiquidProviderInfo {
+  readonly uuid: string;
+  readonly name: string;
+  readonly icon: string;
+  readonly rdns: string;
+}
+</pre>
+
+The fields have the following meanings:
+
+{| class="wikitable"
+! Field !! Requirements
+|-
+| <code>uuid</code> || A UUID version 4 value that uniquely identifies this provider instance for the lifetime of the page. It is not a stable wallet identity.
+|-
+| <code>name</code> || A human-readable wallet name suitable for display in a wallet-selection interface.
+|-
+| <code>icon</code> || A data URI containing a square SVG, WebP, PNG, or GIF image. Applications MUST render an SVG icon through an <code>img</code> element and MUST NOT insert its markup into the document.
+|-
+| <code>rdns</code> || A reverse-DNS identifier based on a domain controlled by the wallet publisher, such as <code>io.example.wallet</code>. This value is self-asserted and is not cryptographic proof of wallet identity.
+|}
+
+Unknown additional fields in <code>LiquidProviderInfo</code> MUST be ignored by applications.
+
+====Provider detail====
+
+An announcement carries the provider information and provider object together:
+
+<pre>
+interface LiquidProviderDetail {
+  readonly info: LiquidProviderInfo;
+  readonly provider: LiquidProvider;
+}
+</pre>
+
+The wallet MUST freeze the <code>info</code> and <code>detail</code> objects with <code>Object.freeze</code> before
+announcing them. The provider object itself MUST contain no secrets and MUST be treated by the wallet as controlled by
+an adversarial page.
+
+====Announcement protocol====
+
+The announcement event is a <code>CustomEvent</code> whose type is <code>liquid:announceProvider</code> and whose
+<code>detail</code> is a <code>LiquidProviderDetail</code>:
+
+<pre>
+interface LiquidAnnounceProviderEvent extends CustomEvent {
+  readonly type: "liquid:announceProvider";
+  readonly detail: LiquidProviderDetail;
+}
+</pre>
+
+The request event is an <code>Event</code> whose type is <code>liquid:requestProvider</code>:
+
+<pre>
+interface LiquidRequestProviderEvent extends Event {
+  readonly type: "liquid:requestProvider";
+}
+</pre>
+
+When a provider becomes ready, the wallet MUST:
+
+# create one immutable <code>LiquidProviderDetail</code> for the provider instance;
+# add a listener for <code>liquid:requestProvider</code> that re-announces that same detail; and
+# dispatch <code>liquid:announceProvider</code> once immediately.
+
+An application MUST add its <code>liquid:announceProvider</code> listener before dispatching
+<code>liquid:requestProvider</code>. It SHOULD retain the listener for the lifetime of the page so that wallets that
+become available later can be discovered.
+
+An application MUST de-duplicate repeated announcements by <code>uuid</code>. A repeated announcement from a conforming
+wallet with the same <code>uuid</code> MUST refer to the same provider object for the lifetime of the page. An application
+MUST retain the first valid announcement for a <code>uuid</code> and ignore a later announcement with that
+<code>uuid</code> if it contains a different provider object or provider information.
+
+The discovery protocol does not select a default wallet. The application or user selects one of the announced provider
+instances and retains that <code>provider</code> object for subsequent calls.
+
+====Discovery example====
+
+The following non-normative example discovers providers without an external library:
+
+<pre>
+const providers = new Map();
+
+window.addEventListener("liquid:announceProvider", (event) => {
+  const detail = event.detail;
+  if (!providers.has(detail.info.uuid)) {
+    providers.set(detail.info.uuid, detail);
+  }
+});
+
+window.dispatchEvent(new Event("liquid:requestProvider"));
+</pre>
+
+===Provider interface===
+
+A conforming provider MUST implement the following JavaScript interface:
+
+<pre>
+interface LiquidProviderRequestArguments {
+  readonly method: string;
+  readonly params?: Readonly<Record<string, unknown>>;
+}
+
+interface LiquidProviderEventArguments {
+  readonly event: string;
+  readonly listener: (payload: unknown) => void;
+}
+
+interface LiquidProvider {
+  request(args: LiquidProviderRequestArguments): Promise<unknown>;
+  on(args: LiquidProviderEventArguments): () => void;
+}
+</pre>
+
+====Request semantics====
+
+<code>request</code> MUST return a Promise for every invocation. If <code>args</code> is not an object,
+<code>args.method</code> is not a non-empty string, or <code>params</code> is present but is not a non-null, non-array
+object, the returned Promise MUST reject with <code>-32600</code>. Parameters MUST contain only JSON-serializable values.
+
+For each valid invocation, <code>request</code> MUST return a Promise that:
+
+* resolves exactly once to the result defined by the requested method; or
+* rejects exactly once with a <code>LiquidProviderError</code>.
+
+The Promise MUST NOT resolve to a JSON-RPC success object, a JSON-RPC failure object, or an object whose sole purpose is
+to repeat the requested method, account, or chain.
+
+<code>LiquidProviderRequestArguments</code> is not a
+[https://www.jsonrpc.org/specification JSON-RPC 2.0] Request Object. When an implementation uses JSON-RPC internally,
+the provider is the JSON-RPC client: it MUST assign a unique <code>id</code>, set
+<code>jsonrpc</code> to <code>"2.0"</code>, correlate the response, then resolve or reject the public Promise. The
+application MUST NOT supply the transport correlation identifier.
+
+If an application nevertheless includes an <code>id</code> field in <code>args</code>, the provider MUST ignore it for
+correlation and MUST NOT forward it as the underlying JSON-RPC identifier.
+
+For example, the provider may map:
+
+<pre>
+provider.request({ method: "getBalance", params: {} })
+</pre>
+
+to an internal request such as:
+
+<pre>
+{
+  "jsonrpc": "2.0",
+  "id": "provider-generated-42",
+  "method": "getBalance",
+  "params": {}
+}
+</pre>
+
+Every call to <code>request</code> expects a result or error. This interface does not expose JSON-RPC notification or
+batch-request semantics. Wallet-to-application notifications are delivered through <code>on</code>.
+
+An implementation MAY service independent requests concurrently. It MUST preserve the association between each Promise
+and its invocation regardless of response order.
+
+====Event subscription semantics====
+
+<code>on</code> registers one listener for one supported event and MUST return an unsubscribe function for that exact
+subscription.
+
+The unsubscribe function MUST be idempotent. After it is first called, the provider MUST NOT invoke that subscription's
+listener for subsequently emitted events. Registering the same listener more than once creates distinct subscriptions;
+each returned unsubscribe function removes only its own subscription.
+
+The provider MUST isolate listener failures. An exception thrown by one listener MUST NOT prevent other listeners from
+receiving the event and MUST NOT alter wallet state.
+
+The provider MAY allow an application to subscribe to a supported permission-controlled Liquid RPC event before a
+connection is granted, but it MUST NOT deliver that event until the current connection grants it. Subscribing to
+<code>wallet_connectionChanged</code> never requires an event permission.
+
+Malformed subscription arguments MUST cause <code>on</code> to throw a <code>TypeError</code> synchronously. An unsupported
+event MUST cause <code>on</code> to throw a <code>LiquidProviderError</code> with code <code>4200</code> synchronously. The
+returned unsubscribe function itself MUST NOT throw solely because it has already been called.
+
+===Provider errors===
+
+Every rejected provider request MUST reject with an <code>Error</code> implementing:
+
+<pre>
+interface LiquidProviderError extends Error {
+  readonly code: number;
+  readonly data?: unknown;
+}
+</pre>
+
+<code>message</code> MUST be a concise human-readable description. <code>code</code> MUST be an integer.
+<code>data</code>, when present, MUST be JSON-serializable and MUST NOT contain secrets or wallet-internal diagnostic
+information unsafe to disclose to the calling origin.
+
+Providers MUST use the following codes where applicable:
+
+{| class="wikitable"
+! Code !! Name !! Meaning
+|-
+| <code>4001</code> || User Rejected Request || The user rejected the request or approval.
+|-
+| <code>4100</code> || Unauthorized || The origin, account, method, event, or requested disclosure is not authorized.
+|-
+| <code>4200</code> || Unsupported Capability || The method or event is defined by a recognized profile but is not supported by this provider.
+|-
+| <code>4900</code> || Provider Disconnected || The provider cannot communicate with the wallet backend and cannot service requests.
+|-
+| <code>4901</code> || Chain Unavailable || The provider is operational but cannot service requests for the requested or connected chain.
+|-
+| <code>-32600</code> || Invalid Request || The request arguments do not form a valid provider request.
+|-
+| <code>-32601</code> || Method Not Found || The method name is not defined by this ELIP, the Liquid Wallet RPC Profile, or another profile advertised by the provider.
+|-
+| <code>-32602</code> || Invalid Parameters || The supplied parameters are invalid for the requested method.
+|-
+| <code>-32603</code> || Internal Error || The provider or wallet encountered an internal error that cannot be represented more specifically.
+|}
+
+If a Liquid RPC method specification mandates a more specific error code, the provider MUST preserve that code unless
+doing so would disclose information that the method or wallet policy requires it to withhold.
+
+===Capabilities===
+
+The <code>wallet_getCapabilities</code> method reports the provider interface version and supported public surface. It
+MUST be callable without an active connection and MUST NOT prompt the user.
+
+Request:
+
+<pre>
+{
+  "method": "wallet_getCapabilities",
+  "params": {}
+}
+</pre>
+
+Result:
+
+<pre>
+interface LiquidProviderCapabilities {
+  readonly browserProviderVersion: string;
+  readonly methods: readonly string[];
+  readonly events: readonly string[];
+}
+</pre>
+
+<code>browserProviderVersion</code> MUST be a semantic version of the interface defined by this ELIP. Implementations
+of this version MUST return <code>"1.0.0"</code>. <code>methods</code> MUST contain every Liquid RPC and
+<code>wallet_*</code> method that the provider supports. <code>events</code> MUST contain every event the provider can
+emit, including <code>wallet_connectionChanged</code>.
+
+A provider conforming to this version MUST support and advertise <code>wallet_getCapabilities</code>,
+<code>wallet_connect</code>, <code>wallet_getConnection</code>, and <code>wallet_disconnect</code>, and MUST support and
+advertise <code>wallet_connectionChanged</code>. These browser lifecycle capabilities are available independently of
+the Liquid RPC method and event permissions granted to an origin.
+
+The <code>methods</code> and <code>events</code> arrays MUST NOT contain duplicate values. Their order has no semantic
+meaning.
+
+Capabilities describe what the provider can implement, not what the calling origin is permitted to use. The result
+MUST NOT contain account identifiers, chain selection, wallet lock state, balances, or other user-specific state.
+
+Applications SHOULD feature-detect methods and events from this result rather than infer support from
+<code>name</code> or <code>rdns</code>.
+
+===Connection model===
+
+The wallet MUST maintain at most one active connection for each pair of calling origin and provider. A connection binds
+the origin to exactly one Liquid account and one Liquid or Elements chain.
+
+The wallet MUST derive and authenticate the calling origin outside page-controlled request parameters. A provider
+request MUST NOT accept an <code>origin</code> parameter that overrides the authenticated origin.
+
+The wallet MAY persist connections across navigation, page reload, browser restart, or wallet restart. Persisted
+connections MUST remain bound to the same origin and MUST be returned by <code>wallet_getConnection</code> only to that
+origin.
+
+The wallet's general account or chain selection UI MUST NOT silently change an existing dapp connection. A connection
+changes only when:
+
+* the application requests an updated connection and the user approves it;
+* the user explicitly changes the connection for that origin in wallet-controlled UI;
+* the connected account or chain becomes unavailable; or
+* the connection is revoked or expires.
+
+The connection has the following shape:
+
+<pre>
+interface LiquidConnectionPermissions {
+  readonly methods: readonly string[];
+  readonly events: readonly string[];
+}
+
+interface LiquidConnection {
+  readonly accountIdentifier: string;
+  readonly chainId: string;
+  readonly policyAssetId: string;
+  readonly permissions: LiquidConnectionPermissions;
+}
+</pre>
+
+<code>accountIdentifier</code>, <code>chainId</code>, and <code>policyAssetId</code> MUST use the identifier forms
+defined by ELIP-0144 and the Liquid Wallet RPC Profile. The chain component of all three values MUST agree.
+
+<code>permissions.methods</code> and <code>permissions.events</code> MUST contain the exact current grant, not merely
+the application's original request. Neither array may contain duplicate values, and array order has no semantic
+meaning. The permissions MUST NOT contain browser lifecycle methods or <code>wallet_connectionChanged</code>, because
+those capabilities do not require a connection grant.
+
+Granting a method authorizes the application to request it. A grant does not require the wallet to execute the method
+without further user interaction. The wallet MUST still apply every per-call approval, transaction review, descriptor
+disclosure, identity, signing, or wallet-policy requirement imposed by the Liquid Wallet RPC Profile.
+
+===<code>wallet_connect</code>===
+
+<code>wallet_connect</code> requests or updates the calling origin's connection.
+
+Parameters:
+
+<pre>
+interface LiquidConnectParams {
+  readonly chains?: readonly string[];
+  readonly methods: readonly string[];
+  readonly events?: readonly string[];
+}
+</pre>
+
+{| class="wikitable"
+! Field !! Required !! Meaning
+|-
+| <code>chains</code> || No || Acceptable ELIP-0144 chain identifiers. If omitted, the application accepts any Liquid or Elements chain supported by the wallet.
+|-
+| <code>methods</code> || Yes || Liquid RPC methods for which the application requests permission. The array MUST contain at least one method and MUST NOT contain browser lifecycle methods.
+|-
+| <code>events</code> || No || Permission-controlled Liquid RPC events the application wants to receive. <code>wallet_connectionChanged</code> MUST NOT be requested because it is always available.
+|}
+
+The wallet MUST reject malformed or duplicate entries with <code>-32602</code>. If <code>chains</code> is present, it
+MUST contain at least one syntactically valid chain identifier. Unknown method or event names MAY be ignored when at
+least one requested method is recognized, but they MUST NOT appear in the grant.
+
+The wallet and user select one account and one acceptable chain. The wallet MAY grant a subset of the requested methods
+and events. It MUST NOT grant a method or event that the application did not request during that invocation, except a
+permission already present in the origin's existing connection.
+
+A successful call MUST grant at least one method requested by the application. Declining every requested method MUST
+reject the request with <code>4001</code> and MUST NOT create an empty connection.
+
+On success, the method returns the complete current <code>LiquidConnection</code>.
+
+If the existing connection already uses an acceptable chain and its grant is equal to or wider than the request, the
+wallet SHOULD return it without prompting again. Creating a connection, adding permissions, or changing the connected
+account or chain MUST require affirmative user approval. Rejecting a connection update MUST leave the previous
+connection unchanged unless the user separately revokes it through an explicit wallet-controlled action.
+
+If none of the requested chains is supported or available, the provider MUST reject with <code>4901</code>. If the user
+rejects the connection, the provider MUST reject with <code>4001</code>. If no requested method is supported, the
+provider MUST reject with <code>4200</code>.
+
+An application MUST inspect the returned grant and MUST NOT assume that every requested method or event was granted.
+
+Example:
+
+<pre>
+const connection = await provider.request({
+  method: "wallet_connect",
+  params: {
+    chains: ["bip122:1466275836220db2944ca059a3a10ef6"],
+    methods: ["getBalance", "sendTransfer"],
+    events: ["bip122_walletDescriptorChanged"]
+  }
+});
+</pre>
+
+===<code>wallet_getConnection</code>===
+
+<code>wallet_getConnection</code> returns the calling origin's active connection without prompting the user.
+
+Request:
+
+<pre>
+{
+  "method": "wallet_getConnection",
+  "params": {}
+}
+</pre>
+
+The result MUST be the complete current <code>LiquidConnection</code>, or <code>null</code> if no active connection
+exists. A wallet MUST NOT return <code>null</code> solely because it is locked. It MAY return non-secret connection
+metadata while locked if wallet policy permits it; otherwise it MUST reject with <code>4100</code>. It MUST NOT expose a
+connection belonging to another origin.
+
+Applications SHOULD subscribe to <code>wallet_connectionChanged</code> before calling
+<code>wallet_getConnection</code>, so a connection change between initialization steps is not missed.
+
+===<code>wallet_disconnect</code>===
+
+<code>wallet_disconnect</code> revokes the calling origin's active connection.
+
+Request:
+
+<pre>
+{
+  "method": "wallet_disconnect",
+  "params": {}
+}
+</pre>
+
+The method MUST be idempotent and MUST resolve to <code>null</code>. If a connection existed, the wallet MUST revoke its
+method and event grants before resolving and MUST emit <code>wallet_connectionChanged</code> with <code>null</code>.
+
+===Authorization of Liquid RPC methods===
+
+Before servicing a Liquid RPC method, the provider MUST verify that:
+
+# the calling origin has an active connection;
+# the requested method appears in <code>connection.permissions.methods</code>;
+# the method applies to <code>connection.chainId</code>;
+# any explicit <code>account</code> parameter equals <code>connection.accountIdentifier</code>; and
+# all method-specific validation and wallet policy requirements pass.
+
+Failure of the first four authorization checks MUST reject with <code>4100</code> except that an unavailable connected
+chain MAY reject with <code>4901</code>. Parameter syntax failures MUST reject with <code>-32602</code>.
+
+===Events===
+
+====<code>wallet_connectionChanged</code>====
+
+<code>wallet_connectionChanged</code> notifies an application that its origin-bound connection changed. Its payload is
+the complete new <code>LiquidConnection</code>, or <code>null</code> if the connection no longer exists.
+
+The wallet MUST emit this event after:
+
+* a successful connection request creates a connection or changes the account, chain, or grant;
+* the user changes this origin's connection in wallet-controlled UI;
+* the connection is revoked or expires; or
+* the connected account or chain becomes unavailable and the connection is removed.
+
+The wallet MUST NOT emit this event merely because the wallet's general UI changes its currently displayed account or
+chain while the origin-bound connection remains unchanged.
+
+This event reports authorization state. It MUST NOT use <code>null</code> merely because the provider temporarily cannot
+communicate with its backend, the wallet is locked, or an individual request fails. Provider transport failures are
+reported with error <code>4900</code>.
+
+====Liquid RPC events====
+
+The provider MUST deliver a Liquid RPC event only if:
+
+* the event is supported;
+* the calling origin has an active connection;
+* the event appears in <code>connection.permissions.events</code>; and
+* the event data belongs to the connected account and chain.
+
+The event name and payload MUST match the Liquid Wallet RPC Profile. The provider MUST NOT add a JSON-RPC notification
+envelope, provider identifier, account-routing envelope, or chain-routing envelope around the event payload.
+
+===Versioning and extensibility===
+
+The provider interface version follows semantic versioning:
+
+* a major version changes incompatible provider, discovery, connection, or error semantics;
+* a minor version adds backward-compatible browser methods, events, or fields; and
+* a patch version clarifies behavior without changing the public interface.
+
+Applications MUST ignore unknown fields in result and event objects unless the method defining the object states
+otherwise. Providers MUST reject unknown methods with <code>-32601</code>. New optional Liquid RPC methods and events
+are feature-detected through <code>wallet_getCapabilities</code>.
+
+The <code>wallet_*</code> method and event namespace is reserved for standardized provider lifecycle and control
+capabilities. An implementation MUST NOT invent wallet-specific methods in this namespace. A future ELIP MAY add or
+adopt additional standardized capabilities in it.
+
+==Rationale==
+
+===EIP-1193 provider model===
+
+[https://eips.ethereum.org/EIPS/eip-1193 EIP-1193] establishes a small, transport- and protocol-agnostic provider whose
+<code>request</code> method resolves directly to an RPC method result and rejects with a structured provider error. This
+ELIP adopts that request and error model because it keeps JSON-RPC transport details out of application code and allows
+the Liquid Wallet RPC Profile to evolve by adding method names.
+
+This ELIP does not claim EIP-1193 conformance. It defines Liquid methods, connection semantics, and events, and it uses a
+different subscription-removal interface.
+
+===Unsubscribe function instead of <code>removeListener</code>===
+
+EIP-1193 inherits the Node.js <code>EventEmitter</code> convention of <code>on</code> plus
+<code>removeListener</code>. That convention requires applications to retain the exact listener function reference.
+Anonymous listeners and wrapped listeners are therefore easy to register but difficult to remove correctly.
+
+Returning an unsubscribe function binds cleanup to one precise subscription, handles duplicate listener registrations
+without ambiguity, and composes with component lifecycle APIs. Idempotency also makes repeated cleanup safe. This ELIP
+therefore defines <code>on({ event, listener }) =&gt; unsubscribe</code> and does not define
+<code>removeListener</code>. This cleanup shape is also used by
+[https://github.com/wallet-standard/wallet-standard Wallet Standard].
+
+===EIP-6963 discovery model===
+
+[https://eips.ethereum.org/EIPS/eip-6963 EIP-6963] solves load-order and namespace collisions among injected providers
+by using paired request and announcement events. This ELIP adopts that event choreography and its
+<code>uuid</code>/<code>name</code>/<code>icon</code>/<code>rdns</code> provider metadata, while using Liquid-specific
+event names and a Liquid provider type.
+
+EIP-6963 is a discovery layer rather than a replacement for the provider interface. Similarly, discovery under this
+ELIP yields a <code>LiquidProvider</code>; applications then retain that provider and call its methods.
+
+===No singleton global===
+
+A property such as <code>window.liquid</code> can refer to only one provider. If multiple extensions assign it, browser
+load order determines the winner unless wallets overwrite one another. Neither outcome expresses user choice. Defining
+both a singleton and event discovery would also create two permanent integration paths.
+
+Because this interface begins without a deployed legacy global, this ELIP standardizes discovery only and leaves wallet
+selection to the application and user.
+
+===CIP-30 connection model===
+
+[https://cips.cardano.org/cip/CIP-0030 CIP-30] separates public wallet metadata from an authorized account API obtained
+after <code>enable()</code>. It also distinguishes extensions supported by a wallet from extensions enabled for a dapp,
+and distinguishes connection consent from per-call signing approval.
+
+This ELIP adopts those separations while retaining one stable, extensible provider object. Provider discovery and
+<code>wallet_getCapabilities</code> reveal no account state. <code>wallet_connect</code> establishes the authorized
+account context. Sensitive Liquid RPC methods continue to apply their own per-call approval rules.
+
+===Method-scoped permissions and EIP-2255===
+
+[https://eips.ethereum.org/EIPS/eip-2255 EIP-2255] models wallet permissions as origin-scoped capabilities and keeps a
+permission grant distinct from a later request that exercises it. This ELIP adopts those properties, but does not adopt
+EIP-2255's Ethereum-specific <code>wallet_requestPermissions</code> request or caveat representation.
+
+Liquid browser applications need an account, chain, method grant, and event grant as one coherent authorization result.
+<code>wallet_connect</code> therefore returns that complete connection directly. The representation is intentionally
+specific to the Liquid Wallet RPC Profile rather than a generic capability language.
+
+===CAIP-25 sessions and CAIP-27 invocation===
+
+[https://standards.chainagnostic.org/CAIPs/caip-25 CAIP-25] defines chain-agnostic session authorization using scopes
+that can cover multiple networks, accounts, methods, and notifications.
+[https://standards.chainagnostic.org/CAIPs/caip-27 CAIP-27] defines <code>wallet_invokeMethod</code>, a routing method
+whose parameters contain a target chain, a nested RPC method and parameters, and a session identifier when required.
+Those abstractions are useful when one agent brokers multiple protocol namespaces, chains, or concurrent sessions.
+CAIP-27 standardizes that routing envelope; it does not by itself define the nested Liquid method dialect, browser
+provider object, discovery mechanism, or subscription interface.
+
+This ELIP has a narrower browser contract: a provider connection already selects one Liquid account and chain, and the
+Liquid Wallet RPC Profile supplies an unambiguous method dialect. Making CAIP-27 the only invocation path would repeat
+the connected chain on every request, add nested result and error envelopes, and make ordinary Liquid calls depend on a
+broader session stack. Direct methods are therefore the mandatory public path.
+
+This choice does not make CAIP compatibility impossible. A future ELIP may define an optional CAIP-25/27 adapter or
+additional provider capabilities for multi-chain or multi-session use. Such an adapter should be advertised through
+capability discovery and should not change the direct invocation semantics defined here.
+
+===Direct Liquid RPC invocation===
+
+The Liquid Wallet RPC Profile already assigns unique method names and specifies account and chain behavior through the
+transport session. Requiring every browser call to be nested in an additional routing method would add redundant syntax
+for the common case of one account and chain per origin. This ELIP therefore invokes Liquid RPC methods directly and
+stores the account and chain in the provider connection.
+
+===One account and chain per connection===
+
+A singular connection makes the implicit account context in the Liquid Wallet RPC Profile deterministic. It also
+prevents a wallet-wide account or network selection from becoming shared mutable state among unrelated applications.
+Future standards can add explicit multi-account request forms without changing the meaning of this version's implicit
+account context.
+
+===Full connection snapshots===
+
+Separate account, chain, and permission events can be observed in different orders and briefly create an impossible
+combination of state. <code>wallet_connectionChanged</code> therefore carries one complete snapshot. Applications can
+replace their previous connection state atomically.
+
+===Provider-owned correlation identifiers===
+
+JSON-RPC 2.0 requires the client that originates a Request Object to establish its identifier. In this interface, the
+provider originates the underlying Request Object and handles its Response Object. The application is a consumer of the
+provider's Promise-based client API. Provider ownership prevents identifier collisions among unrelated page libraries
+and preserves the provider's freedom to change its internal transport.
+
+===Permissions are not automatic approval===
+
+A method grant means that an origin may ask the wallet to perform that method. It does not mean that a wallet must sign,
+disclose descriptors, derive identity material, or transfer funds without further review. This distinction permits a
+single understandable connection prompt while retaining the method-specific protections required for Liquid's
+confidential and signing operations.
+
+==Security Considerations==
+
+===Adversarial page environment===
+
+The provider object is exposed to application scripts and MUST be treated as adversarial input by the wallet. The
+provider MUST contain no private keys, private blinding keys, authentication tokens, view material, or other secrets.
+Wallet logic and key material MUST remain isolated from the page. The wallet MUST validate every request again at its
+trusted boundary and MUST NOT rely on the page-visible provider object for authorization.
+
+===Origin authentication===
+
+The calling origin is a security principal. A page can forge fields in its own JavaScript messages, so the wallet MUST
+derive the origin from an authenticated browser or extension boundary. The origin comparison MUST include scheme, host,
+and port. Connections and event delivery MUST be isolated between origins.
+
+For framed or delegated access, comparing only the top-level URL, accepting a caller-provided origin, or trusting an
+unauthenticated <code>postMessage</code> field is insufficient. This version avoids that ambiguity by limiting provider
+discovery to secure top-level contexts.
+
+===Discovery spoofing and wallet metadata===
+
+Any page script can dispatch a DOM event and can imitate provider metadata. <code>uuid</code>, <code>name</code>,
+<code>icon</code>, and <code>rdns</code> are discovery and display data, not cryptographic identity. Applications MUST
+NOT treat them as proof that a provider is genuine. Wallet-controlled approval UI MUST display the authenticated calling
+origin and MUST remain authoritative for security-sensitive decisions.
+
+Applications MUST render provider icons as images. They MUST NOT execute or insert SVG markup from an announcement.
+
+===Privacy and fingerprinting===
+
+Discovery reveals that a wallet provider is installed. <code>wallet_getCapabilities</code> may reveal additional
+implementation characteristics. Wallets SHOULD keep pre-connection metadata stable and minimal. Discovery and capability
+results MUST NOT reveal whether an account exists, which account or chain is selected, wallet balances, wallet lock
+state, device model, or persisted connection state for another origin.
+
+Account identifiers, descriptors, balances, UTXOs, identity material, and transaction data MUST remain protected by the
+connection and method-specific policies.
+
+===Request completion and timeouts===
+
+For a request that may sign, broadcast, disclose sensitive data, or otherwise change state, the provider MUST NOT reject
+with a timeout or cancellation result while allowing the wallet to complete the operation later without an authoritative
+result path to the application. Before reporting such a request as canceled, the trusted wallet backend MUST guarantee
+that the operation can no longer complete. Otherwise the provider MUST continue waiting or reject only with an error that
+accurately communicates the operation's uncertain state.
+
+===Event isolation and resource limits===
+
+Wallets SHOULD limit subscriptions and request rates per origin. One listener's exception MUST NOT affect wallet state
+or other listeners. Revoking a connection MUST stop delivery of every permission-controlled event before the revocation
+is reported as complete.
+
+==Backwards Compatibility==
+
+This ELIP introduces a new browser provider and discovery interface. It does not alter the Liquid consensus protocol,
+existing JSON-RPC transports, or wallet-specific browser APIs.
+
+There is no standardized <code>window.liquid</code> interface to preserve. Wallets with pre-existing global interfaces
+may continue to expose them for backwards compatibility, but those interfaces remain outside this ELIP. Applications
+conforming to this ELIP discover and use providers only through <code>liquid:requestProvider</code> and
+<code>liquid:announceProvider</code>.
+
+==Reference TypeScript Definitions==
+
+The following definitions summarize the browser-specific surface. The Liquid Wallet RPC Profile supplies the strongly
+typed request, result, and domain-event mappings composed with these types by an implementation library.
+
+<pre>
+type Unsubscribe = () => void;
+
+interface LiquidProviderInfo {
+  readonly uuid: string;
+  readonly name: string;
+  readonly icon: string;
+  readonly rdns: string;
+}
+
+interface LiquidProviderRequestArguments {
+  readonly method: string;
+  readonly params?: Readonly<Record<string, unknown>>;
+}
+
+interface LiquidProviderEventArguments<Payload = unknown> {
+  readonly event: string;
+  readonly listener: (payload: Payload) => void;
+}
+
+interface LiquidProviderError extends Error {
+  readonly code: number;
+  readonly data?: unknown;
+}
+
+interface LiquidProvider {
+  request(args: LiquidProviderRequestArguments): Promise<unknown>;
+  on(args: LiquidProviderEventArguments): Unsubscribe;
+}
+
+interface LiquidProviderDetail {
+  readonly info: LiquidProviderInfo;
+  readonly provider: LiquidProvider;
+}
+
+interface LiquidProviderCapabilities {
+  readonly browserProviderVersion: "1.0.0";
+  readonly methods: readonly string[];
+  readonly events: readonly string[];
+}
+
+interface LiquidConnectionPermissions {
+  readonly methods: readonly string[];
+  readonly events: readonly string[];
+}
+
+interface LiquidConnection {
+  readonly accountIdentifier: string;
+  readonly chainId: string;
+  readonly policyAssetId: string;
+  readonly permissions: LiquidConnectionPermissions;
+}
+
+interface LiquidConnectParams {
+  readonly chains?: readonly string[];
+  readonly methods: readonly string[];
+  readonly events?: readonly string[];
+}
+</pre>
+
+==Test Cases==
+
+A conforming reference test suite SHOULD cover at least the following cases:
+
+# The wallet is ready before the application listener; the request event causes discovery.
+# The application listener is ready before the wallet; the initial announcement causes discovery.
+# Two wallets announce without overwriting or suppressing one another.
+# Re-announcing one provider uses the same <code>uuid</code> and provider object.
+# Discovery and provider use do not depend on a <code>window.liquid</code> property, whether or not a legacy property is present.
+# Every <code>request</code> invocation returns a Promise, including a malformed invocation that rejects.
+# Concurrent requests resolve to their own results even when responses arrive out of order.
+# A caller cannot supply or collide with the provider's internal JSON-RPC identifier.
+# An unsubscribe function removes exactly one subscription and remains safe when called twice.
+# An unsupported event causes <code>on</code> to throw code <code>4200</code> synchronously.
+# A listener exception does not prevent another listener from receiving the same event.
+# Capabilities include every required lifecycle method and event without duplicate values or account state.
+# Account-scoped RPC methods reject with <code>4100</code> before connection.
+# A connection result contains one internally consistent account, chain, and policy asset.
+# A new connection's partial grant contains only methods and events requested by the application and at least one method.
+# Rejecting a connection expansion leaves the previous connection unchanged.
+# An explicit account parameter that differs from the connected account rejects with <code>4100</code>.
+# Revocation stops permission-controlled event delivery before resolving.
+# Connections and events are isolated between two origins.
+# Provider discovery is not exposed directly to a cross-origin child frame.
+# Wallet UI account changes do not silently mutate an unrelated origin connection.
+# <code>wallet_connectionChanged</code> delivers one complete new snapshot or <code>null</code>.
+
+==Reference Implementation==
+
+Initial TypeScript definitions for the Liquid Wallet RPC Profile are available in
+[https://github.com/Resolvr-io/apogee/blob/main/src/provider/liquid-rpc.ts Apogee]. Apogee also contains an experimental
+browser-provider implementation of this ELIP.

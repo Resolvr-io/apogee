@@ -1,12 +1,24 @@
 /** Structured errors shared by the future page provider and service-worker RPC router. */
 
 export const LIQUID_RPC_ERROR_CODES = {
+  USER_REJECTED: 4001,
+  UNAUTHORIZED: 4100,
+  UNSUPPORTED_CAPABILITY: 4200,
+  PROVIDER_DISCONNECTED: 4900,
+  CHAIN_UNAVAILABLE: 4901,
+  INVALID_REQUEST: -32600,
   INTERNAL_ERROR: -32603,
   INVALID_PARAMS: -32602,
   METHOD_NOT_FOUND: -32601,
 } as const;
 
 export const LIQUID_RPC_ERROR_REASONS = {
+  USER_REJECTED: "user_rejected",
+  UNAUTHORIZED: "unauthorized",
+  UNSUPPORTED_CAPABILITY: "unsupported_capability",
+  PROVIDER_DISCONNECTED: "provider_disconnected",
+  CHAIN_UNAVAILABLE: "chain_unavailable",
+  INVALID_REQUEST: "invalid_request",
   INTERNAL_ERROR: "internal_error",
   INVALID_PARAMS: "invalid_params",
   METHOD_NOT_FOUND: "method_not_found",

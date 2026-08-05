@@ -57,8 +57,24 @@ import type {
   SendReview,
   SyncResult,
   WalletRequest,
+  WalletIdentity,
   WalletTxDTO,
 } from "@/engine/protocol";
+import {
+  LIQUID_BROWSER_PROVIDER_METHODS,
+  LIQUID_BROWSER_PROVIDER_VERSION,
+  LIQUID_CONNECTION_CHANGED_EVENT,
+  type LiquidConnection,
+  type LiquidConnectParams,
+} from "@/provider/liquid-browser-provider";
+import { parseLiquidProviderRequest } from "@/provider/liquid-browser-provider-validation";
+import { LIQUID_WALLET_RPC_METHODS } from "@/provider/liquid-rpc";
+import {
+  LIQUID_RPC_ERROR_CODES,
+  LIQUID_RPC_ERROR_REASONS,
+  LiquidRpcError,
+  serializeLiquidRpcError,
+} from "@/provider/liquid-rpc-errors";
 
 // This extension's own origin. Privileged wallet/* and apogee/* messages are
 // only honored when they come from one of our own pages (side panel, approval
@@ -400,8 +416,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       clearQrSecret();
       // Revoke connected dapp sessions on a wipe, so any connected app
       // disconnects (its next call gets NOT_CONNECTED) instead of going stale.
-      await browser.storage.session.remove(SITES_KEY);
-      broadcastSitesChanged();
+      await removeAllConnectedSites();
       // Fail any parked approvals too, so a reset doesn't leave one approvable.
       rejectPendingApprovals(undefined, "Apogee was reset.");
       // Tear down the offscreen engine so its cached (per-descriptor) wollets
@@ -472,8 +487,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
           // wallet, so connected sites must not silently carry over to it, and
           // any parked approval (holding a snapshot of the old wallet) must not
           // stay approvable.
-          await browser.storage.session.remove(SITES_KEY);
-          broadcastSitesChanged();
+          await removeAllConnectedSites();
           rejectPendingApprovals(undefined, "Apogee was reset.");
           await keystore.reset();
         }
@@ -852,74 +866,441 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
   }
 }
 
-// ---- dapp provider (window.apogee) requests --------------------------------
+// ---- dapp providers ---------------------------------------------------------
 
 /** Internal network → the standard names a connected dapp expects. */
 function toDappNetwork(n: LiquidNetwork): DappNetwork {
   return n === "liquid" ? "mainnet" : n === "liquidtestnet" ? "testnet" : "regtest";
 }
 
-// Connected dapp origins (window.apogee). Tracked in session storage so the side
-// panel can show + revoke them; cleared on browser restart.
+// The old release stored only an origin allowlist. Keep that key for a lazy,
+// session-only migration, but all new approvals use a connection pinned to a
+// wallet, chain, and exact standard-method grant.
 const SITES_KEY = "apogee_connected_sites";
+const CONNECTIONS_KEY = "apogee_provider_connections_v1";
+let connectionWriteQueue: Promise<void> = Promise.resolve();
+const connectionRevisions = new Map<string, number>();
+let connectionGeneration = 0;
+
+interface StoredProviderConnection extends LiquidConnection {
+  walletId: string;
+  legacy: boolean;
+}
+
+type StoredProviderConnections = Record<string, StoredProviderConnection>;
+
+function connectionRevision(origin: string): number {
+  return connectionRevisions.get(origin) ?? 0;
+}
+
+function queueConnectionWrite<T>(operation: () => Promise<T>): Promise<T> {
+  const result = connectionWriteQueue.then(operation);
+  connectionWriteQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+const SUPPORTED_PROFILE_METHODS = new Set<string>([LIQUID_WALLET_RPC_METHODS.GET_BALANCE]);
+const SUPPORTED_PROFILE_EVENTS = new Set<string>();
+const PROVIDER_CAPABILITIES = Object.freeze({
+  browserProviderVersion: LIQUID_BROWSER_PROVIDER_VERSION,
+  methods: Object.freeze([
+    ...Object.values(LIQUID_BROWSER_PROVIDER_METHODS),
+    ...SUPPORTED_PROFILE_METHODS,
+  ]),
+  events: Object.freeze([LIQUID_CONNECTION_CHANGED_EVENT, ...SUPPORTED_PROFILE_EVENTS]),
+});
+
+async function getProviderConnections(): Promise<StoredProviderConnections> {
+  const value = (await browser.storage.session.get(CONNECTIONS_KEY))[CONNECTIONS_KEY];
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as StoredProviderConnections)
+    : {};
+}
+
+function publicConnection(connection: StoredProviderConnection): LiquidConnection {
+  return {
+    accountIdentifier: connection.accountIdentifier,
+    chainId: connection.chainId,
+    policyAssetId: connection.policyAssetId,
+    permissions: {
+      methods: [...connection.permissions.methods],
+      events: [...connection.permissions.events],
+    },
+  };
+}
 
 async function getConnectedSites(): Promise<string[]> {
-  const v = (await browser.storage.session.get(SITES_KEY))[SITES_KEY];
-  return Array.isArray(v) ? (v as string[]) : [];
+  const stored = await browser.storage.session.get([SITES_KEY, CONNECTIONS_KEY]);
+  const legacy = Array.isArray(stored[SITES_KEY]) ? (stored[SITES_KEY] as string[]) : [];
+  const connections =
+    stored[CONNECTIONS_KEY] && typeof stored[CONNECTIONS_KEY] === "object"
+      ? Object.keys(stored[CONNECTIONS_KEY] as StoredProviderConnections)
+      : [];
+  return [...new Set([...legacy, ...connections])];
 }
 
 function broadcastSitesChanged(): void {
   browser.runtime.sendMessage({ type: "apogee/sites-changed" }).catch(() => {});
 }
 
-async function addConnectedSite(origin: string | undefined): Promise<void> {
-  if (!origin) return;
-  const sites = await getConnectedSites();
-  if (!sites.includes(origin)) {
-    await browser.storage.session.set({ [SITES_KEY]: [...sites, origin] });
+async function notifyConnectionChanged(
+  origin: string,
+  connection: StoredProviderConnection | null,
+): Promise<void> {
+  const tabs = await browser.tabs.query({});
+  await Promise.allSettled(
+    tabs.flatMap((tab) =>
+      tab.id === undefined
+        ? []
+        : [
+            browser.tabs.sendMessage(tab.id, {
+              type: "apogee/provider-event",
+              origin,
+              event: LIQUID_CONNECTION_CHANGED_EVENT,
+              payload: connection ? publicConnection(connection) : null,
+            }),
+          ],
+    ),
+  );
+}
+
+async function setProviderConnection(
+  origin: string,
+  connection: StoredProviderConnection,
+  expectedRevision = connectionRevision(origin),
+  expectedGeneration = connectionGeneration,
+): Promise<boolean> {
+  return queueConnectionWrite(async () => {
+    if (
+      connectionRevision(origin) !== expectedRevision ||
+      connectionGeneration !== expectedGeneration
+    ) {
+      return false;
+    }
+    const connections = await getProviderConnections();
+    connections[origin] = connection;
+    const storedSites = (await browser.storage.session.get(SITES_KEY))[SITES_KEY];
+    const legacySites = Array.isArray(storedSites) ? (storedSites as string[]) : [];
+    await browser.storage.session.set({
+      [CONNECTIONS_KEY]: connections,
+      [SITES_KEY]: legacySites.filter((site) => site !== origin),
+    });
+    connectionRevisions.set(origin, expectedRevision + 1);
     broadcastSitesChanged();
-  }
+    await notifyConnectionChanged(origin, connection);
+    return true;
+  });
 }
 
 async function removeConnectedSite(origin: string | undefined): Promise<void> {
   if (!origin) return;
-  const sites = await getConnectedSites();
-  if (sites.includes(origin)) {
-    await browser.storage.session.set({ [SITES_KEY]: sites.filter((s) => s !== origin) });
-    broadcastSitesChanged();
-  }
+  connectionRevisions.set(origin, connectionRevision(origin) + 1);
   // Fail any parked approval for this origin so a revoked site can't still be
   // approved — its dapp promise rejects immediately.
   rejectPendingApprovals(origin, "This site was disconnected.");
+  await queueConnectionWrite(async () => {
+    const stored = await browser.storage.session.get([SITES_KEY, CONNECTIONS_KEY]);
+    const sites = Array.isArray(stored[SITES_KEY]) ? (stored[SITES_KEY] as string[]) : [];
+    const connections =
+      stored[CONNECTIONS_KEY] && typeof stored[CONNECTIONS_KEY] === "object"
+        ? ({ ...(stored[CONNECTIONS_KEY] as StoredProviderConnections) } as StoredProviderConnections)
+        : {};
+    const existed = sites.includes(origin) || connections[origin] !== undefined;
+    delete connections[origin];
+    if (existed) {
+      await browser.storage.session.set({
+        [SITES_KEY]: sites.filter((site) => site !== origin),
+        [CONNECTIONS_KEY]: connections,
+      });
+      broadcastSitesChanged();
+      await notifyConnectionChanged(origin, null);
+    }
+  });
+}
+
+async function removeAllConnectedSites(): Promise<void> {
+  const origins = await getConnectedSites();
+  connectionGeneration += 1;
+  for (const origin of origins) {
+    connectionRevisions.set(origin, connectionRevision(origin) + 1);
+  }
+  await queueConnectionWrite(async () => {
+    await browser.storage.session.remove([SITES_KEY, CONNECTIONS_KEY]);
+    broadcastSitesChanged();
+    await Promise.all(origins.map((origin) => notifyConnectionChanged(origin, null)));
+  });
+}
+
+async function buildConnection(
+  walletId: string,
+  methods: readonly string[],
+  events: readonly string[],
+  legacy: boolean,
+): Promise<StoredProviderConnection> {
+  const info = await walletInfo(walletId);
+  const identity = await engine<WalletIdentity>({
+    kind: "walletIdentity",
+    descriptor: info.descriptor,
+    network: info.network,
+  });
+  return {
+    walletId: info.id,
+    legacy,
+    chainId: identity.chainId,
+    accountIdentifier: `${identity.chainId}:${identity.dwid}`,
+    policyAssetId: identity.policyAssetId,
+    permissions: { methods: [...methods], events: [...events] },
+  };
+}
+
+async function legacyAccount(connection: StoredProviderConnection): Promise<ProviderAccount> {
+  const info = await walletInfo(connection.walletId);
+  return {
+    network: toDappNetwork(info.network),
+    masterFingerprint: info.fingerprint,
+    signerKind: info.signer,
+  };
+}
+
+async function migrateLegacyConnection(
+  origin: string | undefined,
+): Promise<StoredProviderConnection | null> {
+  if (!origin) return null;
+  const existing = (await getProviderConnections())[origin];
+  if (existing) return existing;
+  const sites = (await browser.storage.session.get(SITES_KEY))[SITES_KEY];
+  if (!Array.isArray(sites) || !(sites as string[]).includes(origin)) return null;
+  const revision = connectionRevision(origin);
+  const generation = connectionGeneration;
+  const info = await walletInfo();
+  const connection = await buildConnection(info.id, [LIQUID_WALLET_RPC_METHODS.GET_BALANCE], [], true);
+  if (await setProviderConnection(origin, connection, revision, generation)) return connection;
+  return (await getProviderConnections())[origin] ?? null;
+}
+
+async function requireLegacyConnection(
+  origin: string | undefined,
+): Promise<StoredProviderConnection> {
+  const connection = await migrateLegacyConnection(origin);
+  if (!connection?.legacy) throw new Error("NOT_CONNECTED");
+  return connection;
+}
+
+function providerError(
+  code: (typeof LIQUID_RPC_ERROR_CODES)[keyof typeof LIQUID_RPC_ERROR_CODES],
+  message: string,
+  reason: (typeof LIQUID_RPC_ERROR_REASONS)[keyof typeof LIQUID_RPC_ERROR_REASONS],
+  data?: unknown,
+): LiquidRpcError {
+  return new LiquidRpcError(code, message, reason, data);
+}
+
+async function selectConnectionWallet(chains?: readonly string[]): Promise<StoredProviderConnection> {
+  const state = await keystore.getState();
+  if (!state.initialized || state.wallets.length === 0) {
+    throw providerError(
+      LIQUID_RPC_ERROR_CODES.CHAIN_UNAVAILABLE,
+      "No Liquid wallet is available in Apogee.",
+      LIQUID_RPC_ERROR_REASONS.CHAIN_UNAVAILABLE,
+    );
+  }
+  const active = state.wallets.find((wallet) => wallet.id === state.activeWalletId);
+  const candidates = active
+    ? [active, ...state.wallets.filter((wallet) => wallet.id !== active.id)]
+    : state.wallets;
+  for (const candidate of candidates) {
+    const connection = await buildConnection(candidate.id, [], [], false);
+    if (!chains || chains.includes(connection.chainId)) return connection;
+  }
+  throw providerError(
+    LIQUID_RPC_ERROR_CODES.CHAIN_UNAVAILABLE,
+    "None of the requested chains is available in Apogee.",
+    LIQUID_RPC_ERROR_REASONS.CHAIN_UNAVAILABLE,
+  );
+}
+
+async function requestStandardConnection(
+  origin: string,
+  params: LiquidConnectParams,
+): Promise<LiquidConnection> {
+  const requestedMethods = params.methods.filter((method) => SUPPORTED_PROFILE_METHODS.has(method));
+  if (requestedMethods.length === 0) {
+    throw providerError(
+      LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+      "None of the requested Liquid RPC methods is supported by Apogee.",
+      LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+    );
+  }
+  const requestedEvents = (params.events ?? []).filter((event) => SUPPORTED_PROFILE_EVENTS.has(event));
+  let existing = await migrateLegacyConnection(origin);
+  if (existing && params.chains && !params.chains.includes(existing.chainId)) existing = null;
+
+  const selected = existing ?? (await selectConnectionWallet(params.chains));
+  const methods = [...new Set([...selected.permissions.methods, ...requestedMethods])];
+  const events = [...new Set([...selected.permissions.events, ...requestedEvents])];
+  const alreadyGranted =
+    existing !== null &&
+    requestedMethods.every((method) => existing.permissions.methods.includes(method)) &&
+    requestedEvents.every((event) => existing.permissions.events.includes(event));
+  if (existing && alreadyGranted) return publicConnection(existing);
+
+  const connection: StoredProviderConnection = {
+    ...selected,
+    legacy: selected.legacy,
+    permissions: { methods, events },
+  };
+  const account = await legacyAccount(connection);
+  const id = `appr-${approvalSeq++}-${Date.now()}`;
+  const request: ApprovalRequest = {
+    kind: "connect",
+    id,
+    origin,
+    network: account.network,
+    fingerprint: account.masterFingerprint,
+    signerKind: account.signerKind,
+    locked: keystore.isLocked(),
+    methods,
+    events,
+    legacy: false,
+  };
+  return await new Promise<LiquidConnection>((resolve, reject) => {
+    parkApproval(id, {
+      kind: "connect",
+      request,
+      origin,
+      connection,
+      result: publicConnection(connection),
+      revision: connectionRevision(origin),
+      generation: connectionGeneration,
+      resolve: resolve as (result: unknown) => void,
+      reject,
+    });
+    void routeApproval(request);
+  });
+}
+
+async function handleStandardProvider(requestValue: unknown, origin: string | undefined) {
+  if (!origin) {
+    throw providerError(
+      LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+      "The calling origin could not be authenticated.",
+      LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+    );
+  }
+  const rawMethod =
+    requestValue && typeof requestValue === "object"
+      ? (requestValue as { method?: unknown }).method
+      : undefined;
+  if (
+    typeof rawMethod === "string" &&
+    Object.values(LIQUID_WALLET_RPC_METHODS).includes(rawMethod as never) &&
+    !SUPPORTED_PROFILE_METHODS.has(rawMethod)
+  ) {
+    throw providerError(
+      LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+      `Apogee does not support ${rawMethod}.`,
+      LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+      { method: rawMethod },
+    );
+  }
+  const request = parseLiquidProviderRequest(requestValue);
+  switch (request.method) {
+    case "wallet_getCapabilities":
+      return PROVIDER_CAPABILITIES;
+    case "wallet_getConnection": {
+      const connection = await migrateLegacyConnection(origin);
+      return connection ? publicConnection(connection) : null;
+    }
+    case "wallet_disconnect":
+      await removeConnectedSite(origin);
+      return null;
+    case "wallet_connect":
+      return requestStandardConnection(origin, request.params);
+    case "getBalance": {
+      const connection = await migrateLegacyConnection(origin);
+      if (!connection || !connection.permissions.methods.includes(request.method)) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "This origin is not authorized to read the connected wallet balance.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      }
+      if (keystore.isLocked()) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "Unlock Apogee to read this wallet balance.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+          { cause: "locked" },
+        );
+      }
+      const assetId = request.params?.assetId ?? connection.policyAssetId;
+      if (!assetId.startsWith(`${connection.chainId}/elip144:`)) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.INVALID_PARAMS,
+          "The requested asset belongs to a different chain.",
+          LIQUID_RPC_ERROR_REASONS.INVALID_PARAMS,
+          { path: "params.assetId" },
+        );
+      }
+      const info = await walletInfo(connection.walletId).catch(async () => {
+        await removeConnectedSite(origin);
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "The connected wallet is no longer available.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      });
+      const sync = await engine<SyncResult>({
+        kind: "sync",
+        descriptor: info.descriptor,
+        network: info.network,
+        esploraUrl: await chainServer(info.network),
+      });
+      const assetHex = assetId.slice(assetId.lastIndexOf(":") + 1);
+      return {
+        accountIdentifier: connection.accountIdentifier,
+        assetId,
+        balance: sync.balanceStrings?.[assetHex] ?? String(sync.balance[assetHex] ?? 0),
+        chainId: connection.chainId,
+        policyAssetId: connection.policyAssetId,
+      };
+    }
+    default:
+      throw providerError(
+        LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+        `Apogee does not support ${request.method}.`,
+        LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+        { method: request.method },
+      );
+  }
 }
 
 /**
  * Requests from a connected web page (relayed by the content bridge). The page
  * only ever gets watch-only material; signing/secrets stay in the keystore.
  * `origin` is the page's origin (sender.origin) — trusted, set by Chrome.
- * Per-site approval prompts (connect/sign) land in a follow-up — for now connect
- * returns the active wallet's watch-only account and records the origin.
+ * Standard connections pin an account, chain, and exact grant; the legacy
+ * façade adapts to the same record while preserving its response shapes.
  */
 async function handleProvider(msg: ProviderRequest, origin: string | undefined): Promise<unknown> {
   await keystore.ensureLoaded();
-  // Every call except connect/disconnect requires an approved session for this
-  // origin. Revoking a site from the side panel therefore actually cuts it off
-  // (the dapp gets NOT_CONNECTED and treats itself as disconnected).
-  if (
-    msg.type !== "provider/connect" &&
-    msg.type !== "provider/disconnect" &&
-    msg.type !== "provider/getAccount"
-  ) {
-    const sites = await getConnectedSites();
-    if (!origin || !sites.includes(origin)) throw new Error("NOT_CONNECTED");
-  }
   switch (msg.type) {
+    case "provider/rpc":
+      return handleStandardProvider(msg.request, origin);
+
     case "provider/connect": {
       const state = await keystore.getState();
       if (!state.initialized || state.wallets.length === 0) {
         throw new Error("No wallet in Apogee yet. Open Apogee to create or restore one, then connect.");
       }
-      const info = state.wallets.find((w) => w.id === state.activeWalletId) ?? state.wallets[0];
+      const existing = await migrateLegacyConnection(origin);
+      if (existing?.legacy) return legacyAccount(existing);
+      const info = existing
+        ? await walletInfo(existing.walletId)
+        : (state.wallets.find((wallet) => wallet.id === state.activeWalletId) ?? state.wallets[0]);
       // Page-safe account only. The descriptor (SLIP-77 blinding key + xpub) must
       // never cross the content bridge into the page — see ProviderAccount.
       const account: ProviderAccount = {
@@ -927,10 +1308,15 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
         masterFingerprint: info.fingerprint,
         signerKind: info.signer,
       };
-      // Already approved? Reconnect silently. Otherwise ask the user to approve
-      // this site (overlay if the side panel is open, else a popup).
-      const sites = await getConnectedSites();
-      if (origin && sites.includes(origin)) return account;
+      const base = existing ?? (await buildConnection(info.id, [], [], false));
+      const connection: StoredProviderConnection = {
+        ...base,
+        legacy: true,
+        permissions: {
+          methods: [...new Set([...base.permissions.methods, LIQUID_WALLET_RPC_METHODS.GET_BALANCE])],
+          events: [...base.permissions.events],
+        },
+      };
       const id = `appr-${approvalSeq++}-${Date.now()}`;
       const request: ApprovalRequest = {
         kind: "connect",
@@ -940,13 +1326,19 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
         fingerprint: account.masterFingerprint,
         signerKind: account.signerKind,
         locked: keystore.isLocked(),
+        methods: [...connection.permissions.methods],
+        events: [...connection.permissions.events],
+        legacy: true,
       };
       return await new Promise<ProviderAccount>((resolve, reject) => {
         parkApproval(id, {
           kind: "connect",
           request,
           origin,
-          account,
+          connection,
+          result: account,
+          revision: origin ? connectionRevision(origin) : 0,
+          generation: connectionGeneration,
           resolve: resolve as (r: unknown) => void,
           reject,
         });
@@ -960,24 +1352,13 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
     }
 
     case "provider/getAccount": {
-      // Silent: no prompt. Returns the active watch-only account if this origin
-      // is already authorized, else null. Network is available even while locked.
-      const sites = await getConnectedSites();
-      if (!origin || !sites.includes(origin)) return null;
-      const state = await keystore.getState();
-      if (!state.initialized || state.wallets.length === 0) return null;
-      const info = state.wallets.find((w) => w.id === state.activeWalletId) ?? state.wallets[0];
-      // Page-safe account only — never include the descriptor (see ProviderAccount).
-      const account: ProviderAccount = {
-        network: toDappNetwork(info.network),
-        masterFingerprint: info.fingerprint,
-        signerKind: info.signer,
-      };
-      return account;
+      const connection = await migrateLegacyConnection(origin);
+      return connection?.legacy ? legacyAccount(connection) : null;
     }
 
     case "provider/getNewAddress": {
-      const info = await walletInfo();
+      const connection = await requireLegacyConnection(origin);
+      const info = await walletInfo(connection.walletId);
       return engine<AddressDTO>({
         kind: "getAddress",
         descriptor: info.descriptor,
@@ -986,12 +1367,14 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
     }
 
     case "provider/getStatus": {
+      await requireLegacyConnection(origin);
       const state = await keystore.getState();
       const status: ProviderStatus = { locked: state.locked };
       return status;
     }
 
     case "provider/getBalance": {
+      const connection = await requireLegacyConnection(origin);
       // A locked wallet doesn't serve a balance — the dapp shows a locked state
       // and re-asks once unlocked (it polls getStatus). This also avoids handing
       // a balance to a page without the user having unlocked.
@@ -1000,7 +1383,7 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
         const locked: ProviderBalance = { locked: true, lbtcSats: null, assets: {} };
         return locked;
       }
-      const info = await walletInfo();
+      const info = await walletInfo(connection.walletId);
       // Fresh chain sync so a connected dapp sees the current balance.
       const result = await engine<SyncResult>({
         kind: "sync",
@@ -1019,9 +1402,10 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
     }
 
     case "provider/getAssetInfo": {
+      const connection = await requireLegacyConnection(origin);
       // Best-effort registry metadata (name/ticker/precision) for a token the
       // dapp saw in the balance map, on the connected wallet's network.
-      const info = await walletInfo();
+      const info = await walletInfo(connection.walletId);
       return engine<AssetInfo>({
         kind: "getAsset",
         assetId: msg.assetId,
@@ -1030,13 +1414,14 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
     }
 
     case "provider/send": {
+      const connection = await requireLegacyConnection(origin);
       // `drain` ignores `sats` (the built PSET moves the whole balance). For a
       // fixed send `sats` feeds the TxBuilder, so require a sane positive integer —
       // a dapp can pass anything, and BigInt() would otherwise throw a raw error.
       if (!msg.drain && (!Number.isSafeInteger(msg.sats) || msg.sats <= 0)) {
         throw new Error("Invalid send amount.");
       }
-      const info = await walletInfo();
+      const info = await walletInfo(connection.walletId);
       // Watch-only wallets can't sign — refuse before building a PSET or raising
       // an approval, so the dapp gets an immediate error and the user never sees
       // an approvable prompt for a wallet that can't spend.
@@ -1088,7 +1473,7 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
   }
 }
 
-// ---- dapp spend approvals (window.apogee send) -----------------------------
+// ---- dapp spend approvals (legacy window.liquid send) ----------------------
 //
 // A dapp `send` builds the PSET, then waits here for the user to approve it in
 // Apogee — as an overlay inside the side panel if it's open, otherwise in a
@@ -1101,7 +1486,10 @@ type PendingApproval =
       kind: "connect";
       request: ApprovalRequest;
       origin: string | undefined;
-      account: ProviderAccount;
+      connection: StoredProviderConnection;
+      result: unknown;
+      revision: number;
+      generation: number;
       resolve: (result: unknown) => void;
       reject: (err: Error) => void;
       timer?: ReturnType<typeof setTimeout>;
@@ -1136,7 +1524,13 @@ function parkApproval(id: string, entry: PendingApproval): void {
   pendingApprovals.set(id, entry);
   entry.timer = setTimeout(() => {
     if (!pendingApprovals.delete(id)) return; // already decided
-    entry.reject(new Error("This approval request timed out."));
+    entry.reject(
+      providerError(
+        LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
+        "This approval request timed out.",
+        LIQUID_RPC_ERROR_REASONS.INTERNAL_ERROR,
+      ),
+    );
     // Clear whichever surface is showing it: the side-panel overlay dismisses
     // itself on this broadcast; a popup window is closed outright (its
     // onRemoved handler finds the map entry gone and no-ops).
@@ -1153,7 +1547,15 @@ function rejectPendingApprovals(origin: string | undefined, reason: string): voi
     if (origin === undefined || p.origin === origin) {
       pendingApprovals.delete(id);
       clearTimeout(p.timer);
-      p.reject(new Error(reason));
+      p.reject(
+        p.kind === "connect"
+          ? providerError(
+              LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+              reason,
+              LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+            )
+          : new Error(reason),
+      );
       browser.runtime.sendMessage({ type: "apogee/approval-expired", id }).catch(() => {});
       if (p.windowId !== undefined) browser.windows.remove(p.windowId).catch(() => {});
     }
@@ -1193,11 +1595,13 @@ async function routeApproval(request: ApprovalRequest): Promise<void> {
     if (p) {
       pendingApprovals.delete(request.id);
       p.reject(
-        new Error(
-          request.kind === "connect"
-            ? "You rejected the connection."
-            : "You rejected the transaction.",
-        ),
+        request.kind === "connect"
+          ? providerError(
+              LIQUID_RPC_ERROR_CODES.USER_REJECTED,
+              "You rejected the connection.",
+              LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
+            )
+          : new Error("You rejected the transaction."),
       );
     }
   };
@@ -1216,11 +1620,13 @@ async function handleApprovalDecision(
   clearTimeout(pending.timer);
   if (!approved) {
     pending.reject(
-      new Error(
-        pending.kind === "connect"
-          ? "You rejected the connection."
-          : "You rejected the transaction.",
-      ),
+      pending.kind === "connect"
+        ? providerError(
+            LIQUID_RPC_ERROR_CODES.USER_REJECTED,
+            "You rejected the connection.",
+            LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
+          )
+        : new Error("You rejected the transaction."),
     );
     return { rejected: true };
   }
@@ -1228,20 +1634,48 @@ async function handleApprovalDecision(
     // A locked wallet must not authorize a new site (guards the stale-overlay /
     // popup-after-lock case; the side panel also clears the overlay on lock).
     if (keystore.isLocked()) {
-      const err = new Error("Unlock Apogee to connect this site.");
+      const err = providerError(
+        LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+        "Unlock Apogee to connect this site.",
+        LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        { cause: "locked" },
+      );
       pending.reject(err);
       throw err;
     }
-    // Approve the site: record the session and hand back the watch-only account.
-    await addConnectedSite(pending.origin);
-    pending.resolve(pending.account);
+    if (!pending.origin) {
+      const err = providerError(
+        LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+        "The calling origin could not be authenticated.",
+        LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+      );
+      pending.reject(err);
+      throw err;
+    }
+    // Record the exact, pinned connection before resolving or announcing it.
+    const connected = await setProviderConnection(
+      pending.origin,
+      pending.connection,
+      pending.revision,
+      pending.generation,
+    );
+    if (!connected) {
+      const err = providerError(
+        LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+        "This site was disconnected while the approval was open.",
+        LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+      );
+      pending.reject(err);
+      throw err;
+    }
+    pending.resolve(pending.result);
     return { ok: true };
   }
   // Re-validate the session at decision time: the site may have been revoked
   // while this send approval sat open. removeConnectedSite/reset also proactively
   // reject pending approvals; this closes the approve-vs-revoke race.
-  const sites = await getConnectedSites();
-  if (pending.origin && !sites.includes(pending.origin)) {
+  const connection = await requireLegacyConnection(pending.origin).catch(() => null);
+  if (!connection || connection.walletId !== pending.walletId) {
     const err = new Error("This site is no longer connected.");
     pending.reject(err);
     throw err;
@@ -1524,9 +1958,18 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // async sendResponse
   }
   if (msg.type.startsWith("provider/")) {
-    handleProvider(msg as ProviderRequest, sender.origin)
+    const request = msg as ProviderRequest;
+    handleProvider(request, sender.origin)
       .then((value) => sendResponse({ ok: true, value }))
-      .catch((err: unknown) => sendResponse({ ok: false, error: providerErrMsg(err) }));
+      .catch((err: unknown) =>
+        sendResponse({
+          ok: false,
+          error:
+            request.type === "provider/rpc"
+              ? serializeLiquidRpcError(err)
+              : providerErrMsg(err),
+        }),
+      );
     return true; // async sendResponse
   }
   return false;
