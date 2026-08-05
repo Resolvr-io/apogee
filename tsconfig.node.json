@@ -13,5 +13,13 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["vite.config.ts", "manifest.config.ts", "manifest.shared.ts", "scripts/build-firefox.ts"]
+  "include": [
+    "vite.config.ts",
+    "vite.playground.config.ts",
+    "playwright.config.ts",
+    "manifest.config.ts",
+    "manifest.shared.ts",
+    "scripts/build-firefox.ts",
+    "e2e/**/*.ts"
+  ]
 }
