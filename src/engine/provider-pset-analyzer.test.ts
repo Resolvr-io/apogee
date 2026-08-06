@@ -1,7 +1,11 @@
 import type * as Lwk from "lwk_wasm";
 import { describe, expect, it, vi } from "vitest";
 import type { NormalizedProviderPsetSignInput } from "./provider-pset-analyzer";
-import { analyzeProviderPset } from "./provider-pset-analyzer";
+import {
+  analyzeAndSignProviderPset,
+  analyzeProviderPset,
+} from "./provider-pset-analyzer";
+import { providerPsetReviewsMatch } from "./provider-pset-review";
 
 const POLICY = "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d";
 const OTHER_ASSET = "11".repeat(32);
@@ -61,6 +65,7 @@ interface FixtureOptions {
   balances?: Record<string, bigint>;
   fees?: Record<string, bigint>;
   recipients?: ReturnType<typeof mockRecipient>[];
+  walletStatus?: bigint;
 }
 
 describe("provider PSET analyzer", () => {
@@ -296,6 +301,82 @@ describe("provider PSET analyzer", () => {
     );
     expect(result).toEqual({ ok: false, reason: "unreviewable_output" });
   });
+
+  it("treats wallet status as freshness rather than an approved transaction effect", () => {
+    const approved = successfulAnalysis(makeFixture({ walletStatus: 41n }));
+    const current = successfulAnalysis(makeFixture({ walletStatus: 42n }));
+    expect(providerPsetReviewsMatch(approved, current)).toBe(true);
+    expect(
+      providerPsetReviewsMatch(approved, {
+        ...current,
+        recipients: [{ ...current.recipients[0], amount: "122455" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("re-analyzes and signs the exact approved PSET atomically", () => {
+    const approved = successfulAnalysis(makeFixture({ walletStatus: 41n }));
+    const fixture = makeFixture({ walletStatus: 42n });
+    const signedFree = vi.fn();
+    const sign = vi.fn((candidate: Lwk.Pset) => {
+      expect(candidate).toBe(fixture.pset);
+      return {
+        toString: () => "signed-pset",
+        free: signedFree,
+      } as unknown as Lwk.Pset;
+    });
+
+    const result = analyzeAndSignProviderPset(
+      fixture.pset as unknown as Lwk.Pset,
+      fixture.wollet as unknown as Lwk.Wollet,
+      POLICY,
+      fixture.requested,
+      approved,
+      sign,
+    );
+
+    expect(result).toMatchObject({ ok: true, pset: "signed-pset" });
+    expect(sign).toHaveBeenCalledOnce();
+    expect(signedFree).toHaveBeenCalledOnce();
+  });
+
+  it("never reaches the signer when current effects differ from approval", () => {
+    const approved = successfulAnalysis(makeFixture());
+    const fixture = makeFixture({
+      balances: { [POLICY]: -1_000n },
+      recipients: [],
+    });
+    const sign = vi.fn();
+
+    const result = analyzeAndSignProviderPset(
+      fixture.pset as unknown as Lwk.Pset,
+      fixture.wollet as unknown as Lwk.Wollet,
+      POLICY,
+      fixture.requested,
+      approved,
+      sign,
+    );
+
+    expect(result).toEqual({ ok: false, reason: "review_changed" });
+    expect(sign).not.toHaveBeenCalled();
+  });
+
+  it("contains signer failures behind a structured result", () => {
+    const approved = successfulAnalysis(makeFixture());
+    const fixture = makeFixture();
+    const result = analyzeAndSignProviderPset(
+      fixture.pset as unknown as Lwk.Pset,
+      fixture.wollet as unknown as Lwk.Wollet,
+      POLICY,
+      fixture.requested,
+      approved,
+      () => {
+        throw new Error("seed or signer internals");
+      },
+    );
+    expect(result).toEqual({ ok: false, reason: "signing_failed" });
+    expect(JSON.stringify(result)).not.toContain("seed or signer internals");
+  });
 });
 
 function analyze(fixture: ReturnType<typeof makeFixture>) {
@@ -305,6 +386,13 @@ function analyze(fixture: ReturnType<typeof makeFixture>) {
     POLICY,
     fixture.requested,
   );
+}
+
+function successfulAnalysis(fixture: ReturnType<typeof makeFixture>) {
+  const result = analyze(fixture);
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error(result.reason);
+  return result.analysis;
 }
 
 function makeFixture(options: FixtureOptions = {}) {
@@ -341,7 +429,7 @@ function makeFixture(options: FixtureOptions = {}) {
       expect(calls).toEqual(["addDetails", "psetDetails"]);
       return { balance: () => balance };
     }),
-    status: () => 42n,
+    status: () => options.walletStatus ?? 42n,
   };
   return {
     pset,

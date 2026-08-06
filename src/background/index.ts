@@ -20,6 +20,7 @@ import type { LiquidNetwork } from "@/keystore/keystore";
 import * as keystore from "@/keystore/keystore";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "@/lib/debug";
 import { SCAN_STATE_DB } from "@/engine/protocol";
+import { providerPsetReviewsMatch } from "@/engine/provider-pset-review";
 import { isNoReceiverError, shouldRetryEngineSend } from "@/lib/engine-retry";
 import { claimSecret, type ParkedSecret } from "@/lib/qr-secret";
 import { evaluateUpdate } from "@/lib/version-check";
@@ -47,6 +48,11 @@ import type {
   EngineRequest,
   PrepareSendResult,
   PriceHistory,
+  ProviderPsetAnalysisDTO,
+  ProviderPsetAnalysisResultDTO,
+  ProviderPsetApprovalReviewDTO,
+  ProviderPsetSignInputDTO,
+  ProviderPsetSignResultDTO,
   ProviderUtxoDTO,
   PublicWalletDescriptorDTO,
   ProviderAccount,
@@ -77,6 +83,7 @@ import {
   LIQUID_WALLET_RPC_METHODS,
   type LiquidGetUTXOsResult,
   type LiquidGetWalletDescriptorResult,
+  type LiquidSignPsetResult,
 } from "@/provider/liquid-rpc";
 import {
   LIQUID_RPC_ERROR_CODES,
@@ -917,6 +924,7 @@ const SUPPORTED_PROFILE_METHODS = new Set<string>([
   LIQUID_WALLET_RPC_METHODS.GET_UTXOS,
   LIQUID_WALLET_RPC_METHODS.GET_WALLET_DESCRIPTOR,
   LIQUID_WALLET_RPC_METHODS.SEND_TRANSFER,
+  LIQUID_WALLET_RPC_METHODS.SIGN_PSET,
 ]);
 const SUPPORTED_PROFILE_EVENTS = new Set<string>([LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT]);
 const PROVIDER_CAPABILITIES = Object.freeze({
@@ -1699,6 +1707,123 @@ async function handleStandardProvider(requestValue: unknown, origin: string | un
         void routeApproval(approval);
       });
     }
+    case "signPset": {
+      const connection = await migrateLegacyConnection(origin);
+      if (!connection || !connection.permissions.methods.includes(request.method)) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "This origin is not authorized to request PSET signatures from the connected wallet.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      }
+      if (request.params.broadcast === true) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+          "Apogee can sign and return a PSET but does not broadcast signPset requests.",
+          LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+          { method: request.method, capability: "broadcast", path: "params.broadcast" },
+        );
+      }
+
+      const revision = connectionRevision(origin);
+      const generation = connectionGeneration;
+      const info = await walletInfo(connection.walletId).catch(async () => {
+        await removeConnectedSite(origin);
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "The connected wallet is no longer available.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      });
+      if (info.signer === "watch") {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+          "The connected wallet is watch-only and cannot sign PSETs.",
+          LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+          { method: request.method, cause: "watch_only" },
+        );
+      }
+
+      const signInputs: ProviderPsetSignInputDTO[] = request.params.signInputs.map((input) => ({
+        index: input.index,
+        address: input.address,
+        ...(input.sighashTypes ? { sighashTypes: [...input.sighashTypes] } : {}),
+      }));
+      let analyzed: ProviderPsetAnalysisResultDTO;
+      try {
+        await engine<SyncResult>({
+          kind: "sync",
+          descriptor: info.descriptor,
+          network: info.network,
+          esploraUrl: await chainServer(info.network),
+        });
+        analyzed = await engine<ProviderPsetAnalysisResultDTO>({
+          kind: "analyzeProviderPset",
+          descriptor: info.descriptor,
+          network: info.network,
+          pset: request.params.pset,
+          signInputs,
+        });
+      } catch (error) {
+        console.debug("[apogee] signPset analysis failed:", errMsg(error));
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
+          "Apogee could not inspect this PSET against current wallet state.",
+          LIQUID_RPC_ERROR_REASONS.INTERNAL_ERROR,
+        );
+      }
+      if (!analyzed.ok) throw providerPsetAnalysisError(analyzed);
+
+      const current =
+        generation === connectionGeneration && revision === connectionRevision(origin)
+          ? (await getProviderConnections())[origin]
+          : undefined;
+      if (
+        !current ||
+        current.walletId !== connection.walletId ||
+        !current.permissions.methods.includes(request.method)
+      ) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "This site's wallet connection changed while Apogee inspected the PSET.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      }
+
+      const review: ProviderPsetApprovalReviewDTO = {
+        ...analyzed.analysis,
+        accountIdentifier: connection.accountIdentifier,
+      };
+      const id = `appr-${approvalSeq++}-${Date.now()}`;
+      const approval: ApprovalRequest = {
+        kind: "signPset",
+        id,
+        origin,
+        review,
+        network: toDappNetwork(info.network),
+        locked: info.signer === "jade" ? false : keystore.isLocked(),
+        signerKind: info.signer,
+      };
+      return await new Promise<LiquidSignPsetResult>((resolve, reject) => {
+        parkApproval(id, {
+          kind: "signPset",
+          request: approval,
+          origin,
+          walletId: info.id,
+          descriptor: info.descriptor,
+          network: info.network,
+          pset: request.params.pset,
+          signInputs,
+          expectedAnalysis: analyzed.analysis,
+          permissionMethod: request.method,
+          revision,
+          generation,
+          resolve: resolve as (result: unknown) => void,
+          reject,
+        });
+        void routeApproval(approval);
+      });
+    }
     default:
       throw providerError(
         LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
@@ -1707,6 +1832,71 @@ async function handleStandardProvider(requestValue: unknown, origin: string | un
         { method: request.method },
       );
   }
+}
+
+function providerPsetAnalysisError(
+  result: Extract<ProviderPsetAnalysisResultDTO, { ok: false }>,
+): LiquidRpcError {
+  if (result.reason === "analysis_failed") {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
+      "Apogee could not inspect this PSET safely.",
+      LIQUID_RPC_ERROR_REASONS.INTERNAL_ERROR,
+      { method: LIQUID_WALLET_RPC_METHODS.SIGN_PSET, cause: result.reason },
+    );
+  }
+  const unsupported = new Set([
+    "non_policy_fee",
+    "private_or_unsupported_script",
+    "unreviewable_output",
+    "unsupported_issuance",
+    "unsupported_sighash",
+  ]);
+  const data = {
+    method: LIQUID_WALLET_RPC_METHODS.SIGN_PSET,
+    cause: result.reason,
+    ...(result.inputIndex === undefined ? {} : { inputIndex: result.inputIndex }),
+  };
+  return unsupported.has(result.reason)
+    ? providerError(
+        LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+        "This PSET uses a transaction feature Apogee cannot safely sign.",
+        LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+        data,
+      )
+    : providerError(
+        LIQUID_RPC_ERROR_CODES.INVALID_PARAMS,
+        "This PSET does not match the connected wallet or the requested signing inputs.",
+        LIQUID_RPC_ERROR_REASONS.INVALID_PARAMS,
+        data,
+      );
+}
+
+function providerPsetSigningError(
+  result: Extract<ProviderPsetSignResultDTO, { ok: false }>,
+): LiquidRpcError {
+  const reason = result.reason;
+  if (reason === "review_changed") {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
+      "The wallet or PSET review changed before signing. Review the request again.",
+      LIQUID_RPC_ERROR_REASONS.INTERNAL_ERROR,
+      { method: LIQUID_WALLET_RPC_METHODS.SIGN_PSET, cause: reason },
+    );
+  }
+  if (reason === "signing_failed") {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
+      "Apogee could not sign this PSET.",
+      LIQUID_RPC_ERROR_REASONS.INTERNAL_ERROR,
+      { method: LIQUID_WALLET_RPC_METHODS.SIGN_PSET, cause: reason },
+    );
+  }
+  return providerPsetAnalysisError({
+    ok: false,
+    reason,
+    ...(result.inputIndex === undefined ? {} : { inputIndex: result.inputIndex }),
+  });
 }
 
 function standardTransferPreparationError(error: unknown): LiquidRpcError {
@@ -1944,11 +2134,11 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
 
 // ---- dapp spend approvals (legacy window.liquid send) ----------------------
 //
-// A dapp `send` builds the PSET, then waits here for the user to approve it in
-// Apogee — as an overlay inside the side panel if it's open, otherwise in a
-// standalone popup window. Only after approval do we sign + broadcast. The map
-// is in-memory: the open dapp message port keeps the SW alive for the (brief)
-// approval; if the SW is evicted the dapp's request times out and can retry.
+// A dapp spend or sign request waits here for the user to approve it in Apogee
+// — as an overlay inside the side panel if it's open, otherwise in a standalone
+// popup window. Sends sign + broadcast; signPset returns a signature without
+// broadcasting. The map is in-memory: the open dapp message port keeps the SW
+// alive for the (brief) approval; if the SW is evicted the dapp can retry.
 
 type PendingApproval =
   | {
@@ -1980,6 +2170,24 @@ type PendingApproval =
       reject: (err: Error) => void;
       timer?: ReturnType<typeof setTimeout>;
       windowId?: number;
+    }
+  | {
+      kind: "signPset";
+      request: Extract<ApprovalRequest, { kind: "signPset" }>;
+      origin: string;
+      walletId: string;
+      descriptor: string;
+      network: LiquidNetwork;
+      pset: string;
+      signInputs: ProviderPsetSignInputDTO[];
+      expectedAnalysis: ProviderPsetAnalysisDTO;
+      permissionMethod: string;
+      revision: number;
+      generation: number;
+      resolve: (result: unknown) => void;
+      reject: (err: Error) => void;
+      timer?: ReturnType<typeof setTimeout>;
+      windowId?: number;
     };
 
 const pendingApprovals = new Map<string, PendingApproval>();
@@ -1991,6 +2199,30 @@ let approvalSeq = 0;
 // which would sign + broadcast a transaction the dapp thinks failed.
 // (setTimeout dies with the SW, but so does the in-memory map it guards.)
 const APPROVAL_TTL_MS = 240_000; // 4 minutes
+
+function rejectedApprovalError(pending: PendingApproval): Error {
+  if (pending.kind === "connect") {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.USER_REJECTED,
+      "You rejected the connection.",
+      LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
+    );
+  }
+  if (pending.kind === "signPset") {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.USER_REJECTED,
+      "You rejected the PSET signing request.",
+      LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
+    );
+  }
+  return pending.permissionMethod
+    ? providerError(
+        LIQUID_RPC_ERROR_CODES.USER_REJECTED,
+        "You rejected the transfer.",
+        LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
+      )
+    : new Error("You rejected the transaction.");
+}
 
 /** Park an approval and start its expiry clock. */
 function parkApproval(id: string, entry: PendingApproval): void {
@@ -2021,22 +2253,28 @@ function rejectPendingApprovals(origin: string | undefined, reason: string): voi
       pendingApprovals.delete(id);
       clearTimeout(p.timer);
       p.reject(
-        p.kind === "connect"
+        p.kind === "connect" || p.permissionMethod
           ? providerError(
               LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
               reason,
               LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
             )
-          : p.permissionMethod
-            ? providerError(
-                LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
-                reason,
-                LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
-              )
-            : new Error(reason),
+          : new Error(reason),
       );
       browser.runtime.sendMessage({ type: "apogee/approval-expired", id }).catch(() => {});
       if (p.windowId !== undefined) browser.windows.remove(p.windowId).catch(() => {});
+    }
+  }
+  for (const [id, p] of pendingJadeSigns) {
+    if (p.kind === "signPset" && (origin === undefined || p.origin === origin)) {
+      takeJadeSign(id);
+      p.reject(
+        providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          reason,
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        ),
+      );
     }
   }
 }
@@ -2074,52 +2312,24 @@ async function routeApproval(request: ApprovalRequest): Promise<void> {
     if (p) {
       pendingApprovals.delete(request.id);
       clearTimeout(p.timer);
-      p.reject(
-        p.kind === "connect"
-          ? providerError(
-              LIQUID_RPC_ERROR_CODES.USER_REJECTED,
-              "You rejected the connection.",
-              LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
-            )
-          : p.permissionMethod
-            ? providerError(
-                LIQUID_RPC_ERROR_CODES.USER_REJECTED,
-                "You rejected the transfer.",
-                LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
-              )
-            : new Error("You rejected the transaction."),
-      );
+      p.reject(rejectedApprovalError(p));
     }
   };
   browser.windows.onRemoved.addListener(onClosed);
 }
 
-/** Apply the user's decision: reject, or unlock-gated sign + broadcast. */
+/** Apply the user's decision: reject, connect, or perform the approved signing action. */
 async function handleApprovalDecision(
   id: string,
   approved: boolean,
   password?: string,
-): Promise<SendResult | { ok: true } | { rejected: true }> {
+): Promise<SendResult | LiquidSignPsetResult | { ok: true } | { rejected: true }> {
   const pending = pendingApprovals.get(id);
   if (!pending) throw new Error("This approval expired. Try again from the app.");
   pendingApprovals.delete(id);
   clearTimeout(pending.timer);
   if (!approved) {
-    pending.reject(
-      pending.kind === "connect"
-        ? providerError(
-            LIQUID_RPC_ERROR_CODES.USER_REJECTED,
-            "You rejected the connection.",
-            LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
-          )
-        : pending.permissionMethod
-          ? providerError(
-              LIQUID_RPC_ERROR_CODES.USER_REJECTED,
-              "You rejected the transfer.",
-              LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
-            )
-          : new Error("You rejected the transaction."),
-    );
+    pending.reject(rejectedApprovalError(pending));
     return { rejected: true };
   }
   if (pending.kind === "connect") {
@@ -2164,8 +2374,8 @@ async function handleApprovalDecision(
     return { ok: true };
   }
   // Re-validate the session at decision time: the site may have been revoked
-  // while this send approval sat open. removeConnectedSite/reset also proactively
-  // reject pending approvals; this closes the approve-vs-revoke race.
+  // while this approval sat open. removeConnectedSite/reset also proactively
+  // rejects pending approvals; this closes the approve-vs-revoke race.
   const revisionMatches =
     pending.generation === connectionGeneration &&
     (pending.origin === undefined || pending.revision === connectionRevision(pending.origin));
@@ -2182,23 +2392,24 @@ async function handleApprovalDecision(
     const err = pending.permissionMethod
       ? providerError(
           LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
-          "This site is no longer authorized to send this transfer.",
+          pending.kind === "signPset"
+            ? "This site is no longer authorized to request PSET signatures."
+            : "This site is no longer authorized to send this transfer.",
           LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
         )
       : new Error("This site is no longer connected.");
     pending.reject(err);
     throw err;
   }
-  // A Jade wallet signs on the device — no seed here, and no unlock-to-sign
-  // (the device is the gate). Route the PSET to a Jade signing tab; the
-  // jade-signed handler finalizes + broadcasts + fires balance-changed.
   const info = await walletInfo(pending.walletId);
-  // Watch-only wallets can't sign — refuse the spend outright.
+  // Watch-only wallets can't sign — refuse the action outright.
   if (info.signer === "watch") {
     const err = pending.permissionMethod
       ? providerError(
           LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
-          "The connected wallet is watch-only and cannot send transfers.",
+          pending.kind === "signPset"
+            ? "The connected wallet is watch-only and cannot sign PSETs."
+            : "The connected wallet is watch-only and cannot send transfers.",
           LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
           { method: pending.permissionMethod, cause: "watch_only" },
         )
@@ -2206,6 +2417,115 @@ async function handleApprovalDecision(
     pending.reject(err);
     throw err;
   }
+
+  if (pending.kind === "signPset") {
+    if (info.signer !== "jade" && keystore.isLocked()) {
+      const err = providerError(
+        LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+        "Unlock Apogee to approve this PSET signature.",
+        LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        { cause: "locked" },
+      );
+      pending.reject(err);
+      throw err;
+    }
+    if (
+      info.signer !== "jade" &&
+      (await autoLockMinutes()) === 0 &&
+      (!password || !(await keystore.verifyPassword(password)))
+    ) {
+      const err = providerError(
+        LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+        "Enter your password to approve this PSET signature.",
+        LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        { cause: "step_up_required" },
+      );
+      pending.reject(err);
+      throw err;
+    }
+
+    try {
+      // Refresh current UTXOs after the user has reviewed the request. Local
+      // signing re-runs the analyzer and signs the same parsed PSET atomically;
+      // Jade gets an equivalent review binding across its device round-trip.
+      await engine<SyncResult>({
+        kind: "sync",
+        descriptor: pending.descriptor,
+        network: pending.network,
+        esploraUrl: await chainServer(pending.network),
+      });
+      const current =
+        pending.generation === connectionGeneration &&
+        pending.revision === connectionRevision(pending.origin)
+          ? (await getProviderConnections())[pending.origin]
+          : undefined;
+      if (
+        !current ||
+        current.walletId !== pending.walletId ||
+        !current.permissions.methods.includes(pending.permissionMethod)
+      ) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "This site was disconnected while Apogee refreshed the PSET.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      }
+
+      let result: LiquidSignPsetResult;
+      if (info.signer === "jade") {
+        const analyzed = await engine<ProviderPsetAnalysisResultDTO>({
+          kind: "analyzeProviderPset",
+          descriptor: pending.descriptor,
+          network: pending.network,
+          pset: pending.pset,
+          signInputs: pending.signInputs,
+        });
+        if (!analyzed.ok) throw providerPsetAnalysisError(analyzed);
+        if (!providerPsetReviewsMatch(pending.expectedAnalysis, analyzed.analysis)) {
+          throw providerPsetSigningError({ ok: false, reason: "review_changed" });
+        }
+        result = await signProviderPsetWithJade(pending, info.fingerprint);
+      } else {
+        const signed = await engine<ProviderPsetSignResultDTO>({
+          kind: "signProviderPset",
+          mnemonic: keystore.getMnemonic(pending.walletId),
+          descriptor: pending.descriptor,
+          network: pending.network,
+          pset: pending.pset,
+          signInputs: pending.signInputs,
+          expectedAnalysis: pending.expectedAnalysis,
+        });
+        if (!signed.ok) throw providerPsetSigningError(signed);
+        result = { pset: signed.pset };
+      }
+      const stillAuthorized =
+        pending.generation === connectionGeneration &&
+        pending.revision === connectionRevision(pending.origin)
+          ? (await getProviderConnections())[pending.origin]
+          : undefined;
+      if (
+        !stillAuthorized ||
+        stillAuthorized.walletId !== pending.walletId ||
+        !stillAuthorized.permissions.methods.includes(pending.permissionMethod)
+      ) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "This site was disconnected before Apogee could return the signature.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      }
+      pending.resolve(result);
+      return result;
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      pending.reject(err);
+      throw err;
+    }
+  }
+
+  // A Jade wallet signs sends on the device — no seed here, and no
+  // unlock-to-sign (the device is the gate). The existing send-only Jade path
+  // finalizes and broadcasts after the signature returns.
   if (info.signer === "jade") {
     const summary: SendReview = pending.request.review;
     try {
@@ -2277,31 +2597,37 @@ async function handleApprovalDecision(
 // ---- Jade on-device signing (E3) -------------------------------------------
 //
 // A Jade wallet keeps no seed in Apogee — it signs on the device. Web Serial is
-// only available in a top-level tab, so the SW opens a Jade signing tab, hands
-// it the PSET to sign (the device shows + approves the tx), then finalizes the
-// returned (signed) PSET with the watch-only wollet and broadcasts it here.
+// only available in a top-level tab, so the SW opens a Jade signing tab and
+// hands it the PSET. A send is finalized + broadcast after return; signPset is
+// validated against its approved effects and returned without broadcasting.
 
 interface PendingJadeSign {
+  kind: "send" | "signPset";
   pset: string; // the PSET to sign; the tab fetches it via apogee/jade-sign-get
-  descriptor: string; // watch-only descriptor — finalizes the signed PSET
+  descriptor: string; // watch-only descriptor — validates/finalizes the signed PSET
   network: LiquidNetwork;
   fingerprint: string; // expected wallet fingerprint — the tab verifies the device matches
-  summary: SendReview; // spend details the tab shows on its review screen
-  resolve: (txid: string) => void;
+  summary: SendReview | ProviderPsetApprovalReviewDTO;
+  resolve: (value: string) => void;
   reject: (err: Error) => void;
+  signInputs?: ProviderPsetSignInputDTO[];
+  expectedAnalysis?: ProviderPsetAnalysisDTO;
+  origin?: string;
+  walletId?: string;
+  permissionMethod?: string;
+  revision?: number;
+  generation?: number;
+  completing?: boolean;
   tabId?: number;
   timer?: ReturnType<typeof setTimeout>;
 }
 const pendingJadeSigns = new Map<string, PendingJadeSign>();
 let jadeSignSeq = 0;
 
-// A signing tab left idle (device never connected, tab forgotten) must not stay
-// broadcastable forever: for a dapp send the page's timeout is bounded, and a
-// broadcast after it gave up is exactly the sign-after-timeout bug the approval
-// TTL closes. Expiry rejects the waiting send; if the tab signs afterwards, the
-// jade-signed handler finds the entry gone and refuses to broadcast (no funds
-// move). APPROVAL_TTL_MS + JADE_SIGN_TTL_MS stays comfortably under the page
-// provider's send timeout (see liquid-provider.ts).
+// A signing tab left idle (device never connected, tab forgotten) must expire.
+// For a dapp send this prevents a late broadcast after the caller gave up; for
+// signPset it prevents returning a signature after authorization changed. The
+// provider timeout is longer than approval + device time (see liquid-provider.ts).
 const JADE_SIGN_TTL_MS = 360_000; // 6 minutes
 
 /** Drop a pending Jade sign and clear its expiry clock. */
@@ -2313,10 +2639,9 @@ function takeJadeSign(id: string): PendingJadeSign | undefined {
   return p;
 }
 
-/** Open a Jade signing tab for `pset` and await the broadcast txid. The tab
- *  signs on-device and posts the signature back; the jade-signed handler then
- *  finalizes + broadcasts and resolves this with the txid. Rejects if the user
- *  cancels (closes the tab) or it fails on the device. */
+/** Open a Jade signing tab for a send and await the broadcast txid. The tab
+ *  signs on-device and posts the signature back; the handler then finalizes +
+ *  broadcasts it. Rejects if the user closes the tab or the device fails. */
 async function signWithJade(
   pset: string,
   descriptor: string,
@@ -2327,6 +2652,7 @@ async function signWithJade(
   const id = `jsign-${jadeSignSeq++}-${Date.now()}`;
   const txid = await new Promise<string>((resolve, reject) => {
     const pending: PendingJadeSign = {
+      kind: "send",
       pset,
       descriptor,
       network,
@@ -2356,6 +2682,115 @@ async function signWithJade(
       });
   });
   return { txid };
+}
+
+async function signProviderPsetWithJade(
+  approval: Extract<PendingApproval, { kind: "signPset" }>,
+  fingerprint: string,
+): Promise<LiquidSignPsetResult> {
+  const id = `jsign-${jadeSignSeq++}-${Date.now()}`;
+  const pset = await new Promise<string>((resolve, reject) => {
+    const pending: PendingJadeSign = {
+      kind: "signPset",
+      pset: approval.pset,
+      descriptor: approval.descriptor,
+      network: approval.network,
+      fingerprint,
+      summary: approval.request.review,
+      signInputs: approval.signInputs.map((input) => ({
+        ...input,
+        ...(input.sighashTypes ? { sighashTypes: [...input.sighashTypes] } : {}),
+      })),
+      expectedAnalysis: approval.expectedAnalysis,
+      origin: approval.origin,
+      walletId: approval.walletId,
+      permissionMethod: approval.permissionMethod,
+      revision: approval.revision,
+      generation: approval.generation,
+      resolve,
+      reject,
+    };
+    pendingJadeSigns.set(id, pending);
+    pending.timer = setTimeout(() => {
+      const p = takeJadeSign(id);
+      p?.reject(new Error("Jade signing timed out. Ask the app to request the signature again."));
+    }, JADE_SIGN_TTL_MS);
+    browser.tabs
+      .create({
+        url: browser.runtime.getURL(
+          `src/jade/jade.html?sign=${encodeURIComponent(id)}&network=${encodeURIComponent(approval.network)}`,
+        ),
+      })
+      .then((tab) => {
+        pending.tabId = tab.id;
+      })
+      .catch((e) => {
+        takeJadeSign(id);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      });
+  });
+  return { pset };
+}
+
+async function validateJadeProviderSignature(
+  pending: PendingJadeSign,
+  signedPset: string,
+): Promise<void> {
+  if (
+    pending.kind !== "signPset" ||
+    !pending.origin ||
+    !pending.walletId ||
+    !pending.permissionMethod ||
+    pending.revision === undefined ||
+    pending.generation === undefined ||
+    !pending.signInputs ||
+    !pending.expectedAnalysis
+  ) {
+    throw providerError(
+      LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
+      "The Jade signing authorization is incomplete.",
+      LIQUID_RPC_ERROR_REASONS.INTERNAL_ERROR,
+    );
+  }
+
+  const requireAuthorization = async () => {
+    const current =
+      pending.generation === connectionGeneration &&
+      pending.revision === connectionRevision(pending.origin as string)
+        ? (await getProviderConnections())[pending.origin as string]
+        : undefined;
+    if (
+      !current ||
+      current.walletId !== pending.walletId ||
+      !current.permissions.methods.includes(pending.permissionMethod as string)
+    ) {
+      throw providerError(
+        LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+        "This site is no longer authorized to receive the Jade signature.",
+        LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+      );
+    }
+  };
+
+  await requireAuthorization();
+  await engine<SyncResult>({
+    kind: "sync",
+    descriptor: pending.descriptor,
+    network: pending.network,
+    esploraUrl: await chainServer(pending.network),
+  });
+  const analyzed = await engine<ProviderPsetAnalysisResultDTO>({
+    kind: "analyzeProviderPset",
+    descriptor: pending.descriptor,
+    network: pending.network,
+    pset: signedPset,
+    signInputs: pending.signInputs,
+  });
+  if (!analyzed.ok) throw providerPsetAnalysisError(analyzed);
+  if (!providerPsetReviewsMatch(pending.expectedAnalysis, analyzed.analysis)) {
+    throw providerPsetSigningError({ ok: false, reason: "review_changed" });
+  }
+  await requireAuthorization();
 }
 
 // Closing the signing tab before it returns a signature cancels the send.
@@ -2399,19 +2834,53 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const p = pendingJadeSigns.get(msg.id);
     sendResponse(
       p
-        ? { ok: true, pset: p.pset, fingerprint: p.fingerprint, summary: p.summary }
+        ? {
+            ok: true,
+            mode: p.kind,
+            pset: p.pset,
+            fingerprint: p.fingerprint,
+            summary: p.summary,
+          }
         : { ok: false, error: "This signing request expired. Try the send again from Apogee." },
     );
     return false;
   }
-  // The tab returns the on-device signature: finalize + broadcast here, hand the
-  // txid back to the tab (for its done screen) and to the waiting send caller.
+  // The tab returns the on-device signature. Provider signPset requests are
+  // revalidated and returned; sends are finalized and broadcast below.
   if (msg.type === "apogee/jade-signed") {
-    const p = takeJadeSign(msg.id);
+    const p = pendingJadeSigns.get(msg.id);
     if (!p) {
       sendResponse({ ok: false, error: "This signing request expired." });
       return false;
     }
+    if (p.kind === "signPset") {
+      if (p.completing) {
+        sendResponse({ ok: false, error: "This Jade signature is already being checked." });
+        return false;
+      }
+      p.completing = true;
+      const signedPset = String(msg.pset);
+      validateJadeProviderSignature(p, signedPset)
+        .then(() => {
+          if (takeJadeSign(msg.id) !== p) {
+            throw providerError(
+              LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+              "This signing request was revoked before Jade finished.",
+              LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+            );
+          }
+          p.resolve(signedPset);
+          sendResponse({ ok: true, signed: true });
+        })
+        .catch((e) => {
+          takeJadeSign(msg.id);
+          const err = e instanceof Error ? e : new Error(String(e));
+          p.reject(err);
+          sendResponse({ ok: false, error: err.message });
+        });
+      return true;
+    }
+    takeJadeSign(msg.id);
     chainServer(p.network)
       .then((esploraUrl) =>
         engine<SendResult>({

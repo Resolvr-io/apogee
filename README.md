@@ -111,11 +111,13 @@ The implementation is in [`src/provider/liquid-provider.ts`](src/provider/liquid
 Developers can exercise the real injected boundary with the
 [Liquid provider playground](docs/liquid-provider-playground.md).
 The standard provider currently implements `getBalance`, `getUTXOs`,
-`getWalletDescriptor`, and `sendTransfer`. Descriptor disclosure is a separate,
+`getWalletDescriptor`, `sendTransfer`, and `signPset`. Descriptor disclosure is a separate,
 explicit per-origin permission: Apogee returns only a checksummed ordinary
 public descriptor and never exports its SLIP-77 master blinding key.
-`signPset` is not advertised yet; its first internal security boundary is the
-[wallet-scoped PSET analyzer](docs/provider-pset-analyzer.md).
+PSET signing is also separately permissioned and individually approved. Its
+[wallet-scoped analyzer](docs/provider-pset-analyzer.md) revalidates every
+transaction effect before local or Jade signing; Apogee returns the signed PSET
+and does not broadcast it.
 
 ## Unreleased
 

@@ -64,6 +64,7 @@
             <button id="connect-utxos">Enable · getUTXOs</button>
             <button id="connect-descriptor">Enable · descriptor + event</button>
             <button id="connect-transfer">Enable · sendTransfer</button>
+            <button id="connect-sign-pset">Enable · signPset</button>
             <button id="connection">Get connection</button>
             <button id="disconnect" class="danger">Disconnect</button>
           </div>
@@ -139,6 +140,27 @@
               <input id="transfer-memo" autocomplete="off" placeholder="4c6971756964" />
             </label>
             <button id="transfer" class="wide">Send transfer</button>
+          </div>
+
+          <div class="request-group">
+            <h3>Sign PSET</h3>
+            <p class="request-note">
+              Paste a base64 PSET and the exact wallet inputs to authorize. Apogee reviews every
+              transaction effect and returns a signed PSET without broadcasting it.
+            </p>
+            <label class="request-field">
+              <span>PSET <em>base64</em></span>
+              <textarea id="sign-pset" rows="5" autocomplete="off" placeholder="cHNldP8B…"></textarea>
+            </label>
+            <label class="request-field">
+              <span>Signing inputs <em>JSON array</em></span>
+              <textarea id="sign-inputs" rows="4" autocomplete="off" placeholder='[{"index":0,"address":"tlq1…","sighashTypes":[1]}]'></textarea>
+            </label>
+            <label class="check-field">
+              <input id="sign-broadcast" type="checkbox" />
+              Request <code>broadcast: true</code> (currently rejected)
+            </label>
+            <button id="sign" class="wide">Sign PSET</button>
           </div>
 
           <div class="result-shell">

@@ -67,32 +67,35 @@ function networkLabel(n: "mainnet" | "testnet" | "regtest"): string {
 
 export function Approval({ request, onClose }: { request: ApprovalRequest; onClose: () => void }) {
   const isConnect = request.kind === "connect";
-  const review = request.kind === "send" ? request.review : null;
-  const tokenAmount = review?.assetId
-    ? `${formatAssetAmountExact(review.recipientAmount, review.assetPrecision ?? null)} ${review.assetTicker ?? shortenHex(review.assetId, 6, 6)}`
-    : review
-      ? `${formatBaseUnits(review.recipientAmount)} sats`
+  const isPset = request.kind === "signPset";
+  const sendReview = request.kind === "send" ? request.review : null;
+  const tokenAmount = sendReview?.assetId
+    ? `${formatAssetAmountExact(sendReview.recipientAmount, sendReview.assetPrecision ?? null)} ${sendReview.assetTicker ?? shortenHex(sendReview.assetId, 6, 6)}`
+    : sendReview
+      ? `${formatBaseUnits(sendReview.recipientAmount)} sats`
       : "";
   const lbtcTotal =
-    review && !review.assetId
-      ? formatBaseUnits((BigInt(review.recipientAmount) + BigInt(review.feeAmount)).toString())
+    sendReview && !sendReview.assetId
+      ? formatBaseUnits(
+          (BigInt(sendReview.recipientAmount) + BigInt(sendReview.feeAmount)).toString(),
+        )
       : "";
-  // A Jade send is signed on the device (in a tab) after approval, not here.
-  const jade = request.kind === "send" && request.signerKind === "jade";
-  // A locked wallet must be unlocked before connecting or sending — the SW
-  // rejects a connect/send decision while locked, so gate it behind this form.
+  // Jade actions are signed on the device (in a tab) after approval, not here.
+  const jade = request.kind !== "connect" && request.signerKind === "jade";
+  // A locked wallet must be unlocked before connecting, sending, or signing —
+  // the SW rejects the decision while locked, so gate it behind this form.
   const [locked, setLocked] = useState(Boolean(request.locked));
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Brief confirmation (checkmark) shown after a successful decision, before the
-  // overlay closes. Kind-aware: connect → Connected, local send → Sent, Jade →
-  // Approved (on-device signing continues after this step).
-  const [done, setDone] = useState<"" | "connected" | "sent" | "approved">("");
+  // overlay closes. Kind-aware: connect → Connected, send → Sent, provider
+  // PSET → Signed, and Jade send → Approved while the device flow continues.
+  const [done, setDone] = useState<"" | "connected" | "sent" | "approved" | "signed">("");
   const [autoLock, setAutoLock] = useState(15);
   const [sendPassword, setSendPassword] = useState("");
-  // Auto-lock "never" steps up auth: a local send requires the password.
-  const needsSendPassword = !isConnect && !jade && autoLock === 0;
+  // Auto-lock "never" steps up auth: any local signing requires the password.
+  const needsStepUpPassword = !isConnect && !jade && autoLock === 0;
 
   // Hold the success checkmark for a beat, then dismiss the overlay.
   useEffect(() => {
@@ -124,11 +127,11 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
     setBusy(true);
     setError("");
     try {
-      const res = await decide(request.id, true, needsSendPassword ? sendPassword : undefined);
+      const res = await decide(request.id, true, needsStepUpPassword ? sendPassword : undefined);
       if (!res?.ok) {
         throw new Error(res?.error ?? (isConnect ? "Couldn't connect." : "The transaction failed."));
       }
-      setDone(isConnect ? "connected" : jade ? "approved" : "sent");
+      setDone(isConnect ? "connected" : isPset ? "signed" : jade ? "approved" : "sent");
     } catch (err) {
       setError(errMessage(err));
     } finally {
@@ -147,7 +150,13 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
 
   if (done) {
     const connected = done === "connected";
-    const label = connected ? "Connected" : done === "sent" ? "Sent" : "Approved";
+    const label = connected
+      ? "Connected"
+      : done === "sent"
+        ? "Sent"
+        : done === "signed"
+          ? "Signed"
+          : "Approved";
     // Connect success uses a blue Sputnik glyph (vs the green check for sends),
     // so the two outcomes read differently at a glance — and it nods to Apogee's
     // orbital/telemetry theme.
@@ -185,7 +194,7 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
           <img src="/icons/apogee-icon.svg" alt="" className="relative h-10 w-auto" />
         </span>
         <h2 className="console-overline">
-          {isConnect ? "Connect" : "Approve transaction"}
+          {isConnect ? "Connect" : isPset ? "Sign PSET" : "Approve transaction"}
         </h2>
         <p className="-mt-1 truncate text-xs text-[color:var(--text-subtle)]" title={request.origin}>
           {request.origin}
@@ -212,6 +221,12 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
               the ability to unblind outputs.
             </p>
           )}
+          {!request.legacy && request.methods.includes("signPset") && (
+            <p className="mt-2 text-xs leading-relaxed text-[color:var(--warning-text)]">
+              PSET signing lets this site ask for transaction signatures. Every request still
+              shows its exact inputs, recipients, asset changes, and fees for separate approval.
+            </p>
+          )}
           <dl className="mt-3 flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
             <Row label="Wallet" value={request.fingerprint.toUpperCase()} console />
             <Row label="Network" value={networkLabel(request.network)} />
@@ -221,63 +236,65 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
             )}
           </dl>
         </>
+      ) : request.kind === "signPset" ? (
+        <ProviderPsetReview review={request.review} network={request.network} />
       ) : (
         <>
           <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
             <Row
               label="To"
-              value={shortenHex(review?.address ?? "", 10, 8)}
-              title={review?.address}
+              value={shortenHex(sendReview?.address ?? "", 10, 8)}
+              title={sendReview?.address}
               mono
             />
             <Row label="Network" value={networkLabel(request.network)} />
-            {review?.accountIdentifier && (
+            {sendReview?.accountIdentifier && (
               <Row
                 label="Account"
-                value={shortenHex(review.accountIdentifier, 18, 12)}
-                title={review.accountIdentifier}
+                value={shortenHex(sendReview.accountIdentifier, 18, 12)}
+                title={sendReview.accountIdentifier}
                 mono
               />
             )}
-            {review?.assetId && (
+            {sendReview?.assetId && (
               <Row
                 label="Asset"
-                value={shortenHex(review.assetId, 18, 12)}
-                title={review.assetId}
+                value={shortenHex(sendReview.assetId, 18, 12)}
+                title={sendReview.assetId}
                 mono
               />
             )}
             <Row
-              label={review?.drain ? "Amount (max)" : "Amount"}
+              label={sendReview?.drain ? "Amount (max)" : "Amount"}
               value={tokenAmount}
               amount
             />
-            {review?.assetId && review.assetPrecision != null && (
+            {sendReview?.assetId && sendReview.assetPrecision != null && (
               <Row
                 label="Base units"
-                value={formatBaseUnits(review.recipientAmount)}
+                value={formatBaseUnits(sendReview.recipientAmount)}
                 mono
               />
             )}
             <Row
               label="Network fee"
-              value={`${formatBaseUnits(review?.feeAmount ?? "0")} sats`}
+              value={`${formatBaseUnits(sendReview?.feeAmount ?? "0")} sats`}
               amount
             />
             {/* Paying one of our own addresses: the amount returns, so the fee is
                 the whole cost and a sum of the two would overstate the spend. */}
-            {review?.toSelf ? (
+            {sendReview?.toSelf ? (
               <Row
                 label="Net cost"
-                value={`${formatBaseUnits(review.feeAmount)} sats`}
+                value={`${formatBaseUnits(sendReview.feeAmount)} sats`}
                 strong
                 amount
               />
-            ) : review?.assetId ? null : (
+            ) : sendReview?.assetId ? null : (
               <Row label="Total" value={`${lbtcTotal} sats`} strong amount />
             )}
           </dl>
-          {review?.toSelf && (
+          {sendReview?.toSelf && (
             <p className="mt-1.5 text-xs text-[color:var(--text-subtle)]">
               This address belongs to this wallet — the amount returns to you.
             </p>
@@ -310,10 +327,12 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
             <p className="text-center text-xs text-[color:var(--text-subtle)]">
               {busy
                 ? "Approve the transaction on your Jade in the window that opened…"
-                : "You'll sign on your Jade — a window opens after you approve."}
+                : isPset
+                  ? "You'll sign on your Jade. The signed PSET returns to the app and is not broadcast."
+                  : "You'll sign on your Jade — a window opens after you approve."}
             </p>
           )}
-          {needsSendPassword && (
+          {needsStepUpPassword && (
             <Field label="Password (auto-lock is off)">
               <Input
                 type="password"
@@ -325,10 +344,20 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
           )}
           <Button
             onClick={approve}
-            disabled={busy || (needsSendPassword && !sendPassword)}
+            disabled={busy || (needsStepUpPassword && !sendPassword)}
             className={busy ? undefined : "apogee-cta"}
           >
-            {busy ? <Spinner /> : isConnect ? "Connect" : jade ? "Approve & sign on Jade" : "Approve & send"}
+            {busy ? (
+              <Spinner />
+            ) : isConnect ? (
+              "Connect"
+            ) : isPset ? (
+              jade ? "Approve & sign on Jade" : "Approve & sign"
+            ) : jade ? (
+              "Approve & sign on Jade"
+            ) : (
+              "Approve & send"
+            )}
           </Button>
           <Button variant="secondary" onClick={reject} disabled={busy}>
             Reject
@@ -339,6 +368,179 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
   );
 }
 
+type ProviderPsetReviewDTO = Extract<ApprovalRequest, { kind: "signPset" }>["review"];
+
+function ProviderPsetReview({
+  review,
+  network,
+}: {
+  review: ProviderPsetReviewDTO;
+  network: "mainnet" | "testnet" | "regtest";
+}) {
+  const sighashes = [...new Set(review.inputs.map((input) => input.sighashType))]
+    .map(sighashLabel)
+    .join(", ");
+  const balanceChanges = Object.entries(review.balanceChanges);
+  const fees = Object.entries(review.fees).filter(([, amount]) => BigInt(amount) !== 0n);
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-sm text-[color:var(--text-secondary)]">
+        This site is asking Apogee to sign—not broadcast—this transaction. Verify every asset and
+        recipient below.
+      </p>
+      <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
+        <Row label="Network" value={networkLabel(network)} />
+        <Row
+          label="Account"
+          value={review.accountIdentifier}
+          title={review.accountIdentifier}
+          mono
+          wrap
+        />
+        <Row
+          label="PSET"
+          value={review.uniqueId}
+          title={review.uniqueId}
+          mono
+          wrap
+        />
+        <Row label="Inputs" value={String(review.inputCount)} />
+        <Row label="Outputs" value={String(review.outputCount)} />
+        <Row label="Sighash" value={sighashes} mono />
+        <Row
+          label="Confidential"
+          value={`inputs ${review.hasConfidentialInputs ? "yes" : "no"} · outputs ${review.hasConfidentialOutputs ? "yes" : "no"}`}
+        />
+      </dl>
+
+      <ReviewSection title="Wallet inputs">
+        {review.inputs.map((input) => (
+          <ReviewItem key={`${input.txid}:${input.vout}`}>
+            <Row
+              label={`Input ${input.index}`}
+              value={`${input.txid}:${input.vout}`}
+              title={`${input.txid}:${input.vout}`}
+              mono
+              wrap
+            />
+            <Row
+              label="Address"
+              value={input.address}
+              title={input.address}
+              mono
+              wrap
+            />
+            <Row
+              label="Amount"
+              value={psetAssetAmount(input.amount, input.assetId, review.policyAssetId)}
+              amount
+            />
+            <Row
+              label="Asset"
+              value={exactAssetLabel(input.assetId, review.policyAssetId)}
+              title={input.assetId}
+              mono
+              wrap
+            />
+            <Row label="Sighash" value={sighashLabel(input.sighashType)} mono />
+          </ReviewItem>
+        ))}
+      </ReviewSection>
+
+      <ReviewSection title="External recipients">
+        {review.recipients.length === 0 ? (
+          <p className="text-xs text-[color:var(--text-subtle)]">No external recipients.</p>
+        ) : (
+          review.recipients.map((recipient, index) => (
+            <ReviewItem key={`${recipient.address}:${recipient.assetId}:${index}`}>
+              <Row
+                label={`To ${index + 1}`}
+                value={recipient.address}
+                title={recipient.address}
+                mono
+                wrap
+              />
+              <Row
+                label="Amount"
+                value={psetAssetAmount(recipient.amount, recipient.assetId, review.policyAssetId)}
+                amount
+              />
+              <Row
+                label="Asset"
+                value={exactAssetLabel(recipient.assetId, review.policyAssetId)}
+                title={recipient.assetId}
+                mono
+                wrap
+              />
+              <Row label="Confidential" value={recipient.confidential ? "yes" : "no"} />
+            </ReviewItem>
+          ))
+        )}
+      </ReviewSection>
+
+      <ReviewSection title="Wallet effect">
+        {balanceChanges.map(([assetId, amount]) => (
+          <ReviewItem key={`change:${assetId}`}>
+            <Row
+              label="Change"
+              value={psetAssetAmount(amount, assetId, review.policyAssetId)}
+              amount
+            />
+            <Row
+              label="Asset"
+              value={exactAssetLabel(assetId, review.policyAssetId)}
+              title={assetId}
+              mono
+              wrap
+            />
+          </ReviewItem>
+        ))}
+        {fees.map(([assetId, amount]) => (
+          <ReviewItem key={`fee:${assetId}`}>
+            <Row
+              label="Network fee"
+              value={psetAssetAmount(amount, assetId, review.policyAssetId)}
+              amount
+              strong
+            />
+          </ReviewItem>
+        ))}
+      </ReviewSection>
+    </div>
+  );
+}
+
+function ReviewSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section>
+      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-[color:var(--text-subtle)]">
+        {title}
+      </h3>
+      <div className="flex flex-col gap-1.5">{children}</div>
+    </section>
+  );
+}
+
+function ReviewItem({ children }: { children: React.ReactNode }) {
+  return (
+    <dl className="flex flex-col gap-1 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
+      {children}
+    </dl>
+  );
+}
+
+function sighashLabel(value: number): string {
+  return value === 1 ? "ALL (0x01)" : value === 129 ? "ALL|ANYONECANPAY (0x81)" : `0x${value.toString(16)}`;
+}
+
+function exactAssetLabel(assetId: string, policyAssetId: string): string {
+  return assetId === policyAssetId ? `LBTC · ${assetId}` : assetId;
+}
+
+function psetAssetAmount(amount: string, assetId: string, policyAssetId: string): string {
+  return `${formatBaseUnits(amount)} ${assetId === policyAssetId ? "sats" : "base units"}`;
+}
+
 function Row({
   label,
   value,
@@ -347,6 +549,7 @@ function Row({
   amount,
   console: consoleValue,
   title,
+  wrap,
 }: {
   label: string;
   value: string;
@@ -360,6 +563,9 @@ function Row({
   // a ticker and set them in the body face, so this keeps the whole string.
   console?: boolean;
   title?: string;
+  // Security-sensitive identifiers can opt out of truncation so the review
+  // displays the exact value instead of relying on a hover title.
+  wrap?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
@@ -378,7 +584,7 @@ function Row({
       <dd
         title={title}
         className={[
-          "truncate",
+          wrap ? "min-w-0 break-all text-right" : "truncate",
           mono ? "font-mono" : "",
           consoleValue ? "console-value" : "",
           strong ? "text-[color:var(--text-strong)]" : "text-[color:var(--text-primary)]",

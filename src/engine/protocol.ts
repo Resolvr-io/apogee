@@ -52,6 +52,18 @@ export type EngineRequest =
       pset: string;
       signInputs: ProviderPsetSignInputDTO[];
     }
+  // Atomic approval binding for the public ELIP signPset path. The same parsed
+  // PSET is re-analyzed against current wallet state and passed to the signer
+  // only when its review still matches what the user approved.
+  | {
+      kind: "signProviderPset";
+      mnemonic: string;
+      descriptor: string;
+      network: LiquidNetwork;
+      pset: string;
+      signInputs: ProviderPsetSignInputDTO[];
+      expectedAnalysis: ProviderPsetAnalysisDTO;
+    }
   // `drain` (send max): for LBTC, drain the wallet (fee deducted from the
   // amount); for a token (`asset` set), send the full token balance (the fee is
   // paid in LBTC, so no deduction). `sats` is in the asset's base units.
@@ -208,6 +220,10 @@ export interface ProviderPsetAnalysisDTO {
   hasConfidentialOutputs: boolean;
 }
 
+export interface ProviderPsetApprovalReviewDTO extends ProviderPsetAnalysisDTO {
+  accountIdentifier: string;
+}
+
 export type ProviderPsetAnalysisFailureReason =
   | "analysis_failed"
   | "duplicate_input"
@@ -230,6 +246,14 @@ export type ProviderPsetAnalysisFailureReason =
 export type ProviderPsetAnalysisResultDTO =
   | { ok: true; analysis: ProviderPsetAnalysisDTO }
   | { ok: false; reason: ProviderPsetAnalysisFailureReason; inputIndex?: number };
+
+export type ProviderPsetSignResultDTO =
+  | { ok: true; pset: string; analysis: ProviderPsetAnalysisDTO }
+  | {
+      ok: false;
+      reason: ProviderPsetAnalysisFailureReason | "review_changed" | "signing_failed";
+      inputIndex?: number;
+    };
 
 /** Result of `descriptorInfo`: the master fingerprint embedded in a watch-only
  *  descriptor, and whether it targets mainnet (used to sanity-check the network). */
@@ -601,6 +625,15 @@ export type ApprovalRequest =
       network: DappNetwork;
       locked: boolean; // wallet was locked at request time → the UI must unlock first
       signerKind: WalletSigner; // "local" | "jade" — jade signs on-device in a tab
+    }
+  | {
+      kind: "signPset";
+      id: string;
+      origin: string;
+      review: ProviderPsetApprovalReviewDTO;
+      network: DappNetwork;
+      locked: boolean;
+      signerKind: WalletSigner;
     };
 
 /** Uniform reply envelope for both channels. */

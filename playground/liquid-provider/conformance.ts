@@ -116,6 +116,7 @@ export async function runSafeConformanceChecks(
     assert(raw.methods.includes("getUTXOs"), "Apogee does not advertise getUTXOs");
     assert(raw.methods.includes("getWalletDescriptor"), "Apogee does not advertise getWalletDescriptor");
     assert(raw.methods.includes("sendTransfer"), "Apogee does not advertise sendTransfer");
+    assert(raw.methods.includes("signPset"), "Apogee does not advertise signPset");
     assert(raw.events.includes("wallet_connectionChanged"), "missing connection event");
     assert(
       raw.events.includes("bip122_walletDescriptorChanged"),

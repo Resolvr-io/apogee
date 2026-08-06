@@ -23,6 +23,7 @@ import { SCAN_STATE_DB } from "@/engine/protocol";
 import { exactRecipientAmount } from "./recipient-amount";
 import { collectProviderUtxos } from "./provider-utxos";
 import {
+  analyzeAndSignProviderPset,
   analyzeProviderPset,
   type NormalizedProviderPsetSignInput,
 } from "./provider-pset-analyzer";
@@ -40,6 +41,8 @@ import type {
   PriceRange,
   ProviderProbe,
   ProviderPsetAnalysisResultDTO,
+  ProviderPsetSignInputDTO,
+  ProviderPsetSignResultDTO,
   PublicWalletDescriptorDTO,
   ProbeStatus,
   SendResult,
@@ -283,6 +286,42 @@ function lwkNetwork(lwk: typeof Lwk, network: LiquidNetwork): Lwk.Network {
     case "regtest":
       return lwk.Network.regtestDefault();
   }
+}
+
+function normalizeProviderPsetSignInputs(
+  lwk: typeof Lwk,
+  network: Lwk.Network,
+  inputs: readonly ProviderPsetSignInputDTO[],
+):
+  | { ok: true; inputs: NormalizedProviderPsetSignInput[] }
+  | { ok: false; result: ProviderPsetAnalysisResultDTO } {
+  const normalized: NormalizedProviderPsetSignInput[] = [];
+  for (const input of inputs) {
+    try {
+      const address = lwk.Address.parse(input.address, network);
+      try {
+        const script = address.scriptPubkey();
+        try {
+          normalized.push({
+            index: input.index,
+            address: address.toString(),
+            scriptPubKey: script.toString(),
+            ...(input.sighashTypes ? { sighashTypes: [...input.sighashTypes] } : {}),
+          });
+        } finally {
+          script.free();
+        }
+      } finally {
+        address.free();
+      }
+    } catch {
+      return {
+        ok: false,
+        result: { ok: false, reason: "invalid_address", inputIndex: input.index },
+      };
+    }
+  }
+  return { ok: true, inputs: normalized };
 }
 
 /** Normalize lwk's Balance (Map or plain object) to assetHex → sats.
@@ -1217,39 +1256,18 @@ export async function handle(req: EngineRequest): Promise<unknown> {
 
       const network = lwkNetwork(lwk, req.network);
       try {
-        const signInputs: NormalizedProviderPsetSignInput[] = [];
-        for (const input of req.signInputs) {
-          try {
-            const address = lwk.Address.parse(input.address, network);
-            try {
-              const script = address.scriptPubkey();
-              try {
-                signInputs.push({
-                  index: input.index,
-                  address: address.toString(),
-                  scriptPubKey: script.toString(),
-                  ...(input.sighashTypes ? { sighashTypes: [...input.sighashTypes] } : {}),
-                });
-              } finally {
-                script.free();
-              }
-            } finally {
-              address.free();
-            }
-          } catch {
-            const result: ProviderPsetAnalysisResultDTO = {
-              ok: false,
-              reason: "invalid_address",
-              inputIndex: input.index,
-            };
-            return result;
-          }
-        }
+        const normalized = normalizeProviderPsetSignInputs(lwk, network, req.signInputs);
+        if (!normalized.ok) return normalized.result;
 
         const entry = await ensureWollet(lwk, req.descriptor, req.network);
         const policyAsset = network.policyAsset();
         try {
-          return analyzeProviderPset(pset, entry.wollet, policyAsset.toString(), signInputs);
+          return analyzeProviderPset(
+            pset,
+            entry.wollet,
+            policyAsset.toString(),
+            normalized.inputs,
+          );
         } finally {
           policyAsset.free();
         }
@@ -1258,6 +1276,53 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         return result;
       } finally {
         pset.free();
+        network.free();
+      }
+    }
+
+    case "signProviderPset": {
+      let pset: Lwk.Pset;
+      try {
+        pset = new lwk.Pset(req.pset);
+      } catch {
+        const result: ProviderPsetSignResultDTO = { ok: false, reason: "malformed_pset" };
+        return result;
+      }
+
+      let consumed = false;
+      const network = lwkNetwork(lwk, req.network);
+      try {
+        const normalized = normalizeProviderPsetSignInputs(lwk, network, req.signInputs);
+        if (!normalized.ok) return normalized.result;
+        const entry = await ensureWollet(lwk, req.descriptor, req.network);
+        const policyAsset = network.policyAsset();
+        try {
+          return analyzeAndSignProviderPset(
+            pset,
+            entry.wollet,
+            policyAsset.toString(),
+            normalized.inputs,
+            req.expectedAnalysis,
+            (candidate) => {
+              const mnemonic = new lwk.Mnemonic(req.mnemonic);
+              const signer = new lwk.Signer(mnemonic, network);
+              consumed = true;
+              try {
+                return signer.sign(candidate);
+              } finally {
+                signer.free();
+                mnemonic.free();
+              }
+            },
+          );
+        } finally {
+          policyAsset.free();
+        }
+      } catch {
+        const result: ProviderPsetSignResultDTO = { ok: false, reason: "signing_failed" };
+        return result;
+      } finally {
+        if (!consumed) pset.free();
         network.free();
       }
     }

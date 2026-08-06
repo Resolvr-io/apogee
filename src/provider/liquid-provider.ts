@@ -128,10 +128,12 @@ const ICON =
   // Methods that wait on a user approval get a long timeout; reads should return
   // promptly, so a hung read (e.g. an orphaned bridge that never replies) surfaces
   // as PROVIDER_DISCONNECTED in seconds instead of blocking for minutes.
-  const APPROVAL_METHODS = new Set(["connect", "send", "sendTransfer"]);
+  const APPROVAL_METHODS = new Set(["connect", "send", "sendTransfer", "signPset"]);
   function timeoutFor(method: string): number {
     if (method === "connect") return CONNECT_TIMEOUT_MS;
-    if (method === "send" || method === "sendTransfer") return SEND_TIMEOUT_MS;
+    if (method === "send" || method === "sendTransfer" || method === "signPset") {
+      return SEND_TIMEOUT_MS;
+    }
     if (method === "getBalance" || method === "getUTXOs") return 60_000; // includes a chain sync
     return 20_000; // fast reads
   }
