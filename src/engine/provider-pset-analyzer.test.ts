@@ -75,6 +75,7 @@ describe("provider PSET analyzer", () => {
 
     expect(result).toEqual({
       ok: true,
+      pset: "enriched-pset",
       analysis: {
         uniqueId: "aa".repeat(32),
         walletStatus: "42",
@@ -109,6 +110,7 @@ describe("provider PSET analyzer", () => {
       },
     });
     expect(fixture.pset.addDetails).toHaveBeenCalledWith(fixture.wollet);
+    expect(fixture.pset.toString).toHaveBeenCalledOnce();
     expect(fixture.unblinded.assetBlindingFactor).not.toHaveBeenCalled();
     expect(fixture.unblinded.valueBlindingFactor).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain("blind-factor-secret");
@@ -421,6 +423,7 @@ function makeFixture(options: FixtureOptions = {}) {
       return options.outputs ?? [mockOutput(), mockOutput({ script: "", amount: 1_000n })];
     },
     uniqueId: () => stringValue("aa".repeat(32)),
+    toString: vi.fn(() => "enriched-pset"),
   };
   const wollet = {
     utxos: () => utxos,

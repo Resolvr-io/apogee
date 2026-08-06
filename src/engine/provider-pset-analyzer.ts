@@ -221,6 +221,7 @@ export function analyzeProviderPset(
 
   return {
     ok: true,
+    pset: pset.toString(),
     analysis: {
       uniqueId: pset.uniqueId().toString(),
       walletStatus: wollet.status().toString(),

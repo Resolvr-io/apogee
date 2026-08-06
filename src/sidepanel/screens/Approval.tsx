@@ -65,6 +65,33 @@ function networkLabel(n: "mainnet" | "testnet" | "regtest"): string {
   return n === "mainnet" ? "Liquid" : n === "testnet" ? "Liquid Testnet" : "Regtest";
 }
 
+/**
+ * Side-panel host for the shared approval card. The panel root deliberately
+ * clips its ordinary content, so the overlay owns vertical scrolling. `my-auto`
+ * centers short approvals while collapsing to zero for a review taller than
+ * the viewport, keeping both its first row and final action buttons reachable.
+ */
+export function ApprovalOverlay({
+  request,
+  onClose,
+}: {
+  request: ApprovalRequest;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-40 overflow-y-auto bg-[color:var(--overlay)] p-4"
+      data-testid="approval-overlay"
+    >
+      <div className="flex min-h-full items-start justify-center">
+        <div className="my-auto w-full max-w-sm">
+          <Approval request={request} onClose={onClose} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Approval({ request, onClose }: { request: ApprovalRequest; onClose: () => void }) {
   const isConnect = request.kind === "connect";
   const isPset = request.kind === "signPset";
