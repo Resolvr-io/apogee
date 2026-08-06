@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Provider frame probe</title></head>
+  <body>
+    <script>
+      let announcements = 0;
+      window.addEventListener("liquid:announceProvider", () => announcements++);
+      window.dispatchEvent(new Event("liquid:requestProvider"));
+      window.setTimeout(() => {
+        const kind = new URLSearchParams(window.location.search).get("kind") ?? "unknown";
+        window.parent.postMessage({ source: "liquid-provider-frame-probe", kind, announcements }, "*");
+      }, 350);
+    </script>
+  </body>
+</html>

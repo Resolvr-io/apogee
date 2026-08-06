@@ -83,7 +83,7 @@ ever receive watch-only data and signing requests.
   on a starfield background.
 - Reveal-seed is hidden for Jade wallets, and Settings shows the signer type.
 
-### Dapp provider (`window.apogee`)
+### Dapp providers
 - A page connects via the injected provider → content bridge → service worker.
   Surface: `connect`, `getStatus`, `getNewAddress`, `getBalance`, `send` (the page
   passes address + amount; Apogee builds the PSET, reviews, signs, broadcasts),
@@ -103,10 +103,13 @@ ever receive watch-only data and signing requests.
 - **Serialized engine calls** so the dapp and the side panel can't
   re-entrantly alias a cached `lwk_wasm` `Wollet`.
 
-Any web app can integrate this provider. The extension exposes the standard
-**`window.liquid`** provider interface (EIP-1193 `request` + EIP-6963
-discovery); the implementation is in
-[`src/provider/liquid-provider.ts`](src/provider/liquid-provider.ts).
+New integrations discover the Liquid browser provider through
+`liquid:requestProvider` / `liquid:announceProvider`, then use its minimal
+`request` and `on` interface. The older `window.liquid` and `eip6963:*` surface
+remains available for compatibility but is not the standardized discovery path.
+The implementation is in [`src/provider/liquid-provider.ts`](src/provider/liquid-provider.ts).
+Developers can exercise the real injected boundary with the
+[Liquid provider playground](docs/liquid-provider-playground.md).
 
 ## Unreleased
 

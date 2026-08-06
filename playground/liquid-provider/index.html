@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Liquid Provider Playground</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <main>
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Apogee developer tools</p>
+          <h1>Liquid Provider Playground</h1>
+          <p class="lede">
+            A plain webpage for exercising an injected Liquid wallet through
+            <code>liquid:*</code> discovery, <code>request</code>, and <code>on</code>.
+          </p>
+        </div>
+        <div class="context-card">
+          <span class="status-light"></span>
+          <div>
+            <strong>Ordinary dapp context</strong>
+            <small id="origin"></small>
+          </div>
+        </div>
+      </header>
+
+      <section class="panel providers-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Discovery</p>
+            <h2>Available providers</h2>
+          </div>
+          <button id="rediscover" class="secondary">Request providers</button>
+        </div>
+        <div id="provider-empty" class="empty-state">
+          <span class="spinner"></span>
+          Waiting for <code>liquid:announceProvider</code>…
+        </div>
+        <div id="providers" class="provider-grid" data-testid="providers"></div>
+        <p class="microcopy">
+          Announcements are deduplicated by page-lifetime UUID. Conflicting announcements are ignored.
+        </p>
+      </section>
+
+      <div class="workspace">
+        <section class="panel actions-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Requests</p>
+              <h2>Provider actions</h2>
+            </div>
+            <span id="selection" class="selection">No provider selected</span>
+          </div>
+
+          <div class="button-grid">
+            <button id="capabilities">Get capabilities</button>
+            <button id="connect">Connect · getBalance</button>
+            <button id="connection">Get connection</button>
+            <button id="disconnect" class="danger">Disconnect</button>
+          </div>
+
+          <label class="asset-field">
+            <span>Asset ID <em>optional</em></span>
+            <input id="asset-id" autocomplete="off" placeholder="Defaults to the policy asset" />
+          </label>
+          <button id="balance" class="wide">Get balance</button>
+
+          <div class="result-shell">
+            <div class="result-heading">
+              <span>Latest result</span>
+              <span id="result-status" class="result-status">Idle</span>
+            </div>
+            <pre id="result" data-testid="result">Select an action to begin.</pre>
+          </div>
+        </section>
+
+        <section class="panel checks-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Safe checks</p>
+              <h2>Public contract</h2>
+            </div>
+            <button id="run-checks">Run checks</button>
+          </div>
+          <p class="section-copy">
+            These checks never prompt, connect, disclose wallet state, or request a signature.
+          </p>
+          <div id="check-summary" class="check-summary" data-testid="check-summary">
+            Not run
+          </div>
+          <ol id="checks" class="check-list"></ol>
+          <div class="frame-check">
+            <span>Child-frame announcements</span>
+            <strong id="frame-result" data-testid="frame-result">Checking…</strong>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel timeline-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Events</p>
+            <h2>Timeline</h2>
+          </div>
+          <button id="clear-log" class="secondary">Clear</button>
+        </div>
+        <ol id="timeline" class="timeline" data-testid="timeline"></ol>
+      </section>
+
+      <footer>
+        This page intentionally imports no wallet SDK and reads no Apogee internals.
+      </footer>
+    </main>
+
+    <iframe id="same-frame" class="probe-frame" src="./frame.html?kind=same-origin" title="same-origin frame probe"></iframe>
+    <iframe
+      id="opaque-frame"
+      class="probe-frame"
+      sandbox="allow-scripts"
+      src="./frame.html?kind=opaque"
+      title="opaque frame probe"
+    ></iframe>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

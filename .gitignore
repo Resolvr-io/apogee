@@ -5,6 +5,8 @@ dist-firefox/
 .DS_Store
 *.log
 .vite/
+playwright-report/
+test-results/
 
 # local-only env (enterprise API credentials for dev/test) — never commit
 .env.local

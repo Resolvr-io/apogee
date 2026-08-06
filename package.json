@@ -10,11 +10,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite build --mode development --watch",
+    "dev:provider": "vite --config vite.playground.config.ts",
     "prebuild": "if ls .env .env.local .env.production .env.production.local 2>/dev/null | grep -q .; then echo 'refusing to build: a .env file is present (credentials could ship in the bundle) \u2014 remove it or use the CI release build' >&2; exit 1; fi",
     "build": "vite build",
     "build:firefox": "node scripts/build-firefox.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.playground.json",
     "test": "vitest run",
+    "test:provider": "pnpm build && playwright test",
     "zip": "if ls .env .env.local .env.production .env.production.local 2>/dev/null | grep -q .; then echo 'refusing to zip: a .env file is present (credentials could ship in the bundle) \u2014 remove it or use the CI release zip' >&2; exit 1; fi && mkdir -p releases && rm -f releases/apogee-$npm_package_version.zip releases/apogee-$npm_package_version-chrome.zip releases/apogee-$npm_package_version-firefox.zip && vite build && (cd dist && zip -rX ../releases/apogee-$npm_package_version-chrome.zip . -x '*.DS_Store') && node scripts/build-firefox.ts && (cd dist-firefox && zip -rX ../releases/apogee-$npm_package_version-firefox.zip . -x '*.DS_Store')"
   },
   "dependencies": {
@@ -32,6 +34,7 @@
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.7.0",
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.3.1",
     "@types/chrome": "^0.1.43",
     "@types/node": "^22.19.21",
