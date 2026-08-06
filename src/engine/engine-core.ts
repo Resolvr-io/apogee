@@ -22,6 +22,10 @@ import {
 import { SCAN_STATE_DB } from "@/engine/protocol";
 import { exactRecipientAmount } from "./recipient-amount";
 import { collectProviderUtxos } from "./provider-utxos";
+import {
+  analyzeProviderPset,
+  type NormalizedProviderPsetSignInput,
+} from "./provider-pset-analyzer";
 import { publicWalletDescriptor } from "./public-wallet-descriptor";
 import { verifyDealerPset } from "@/engine/verify-dealer-pset";
 import type {
@@ -35,6 +39,7 @@ import type {
   PriceHistory,
   PriceRange,
   ProviderProbe,
+  ProviderPsetAnalysisResultDTO,
   PublicWalletDescriptorDTO,
   ProbeStatus,
   SendResult,
@@ -1198,6 +1203,62 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         return publicWalletDescriptor(descriptor.toString()) satisfies PublicWalletDescriptorDTO;
       } finally {
         descriptor.free();
+      }
+    }
+
+    case "analyzeProviderPset": {
+      let pset: Lwk.Pset;
+      try {
+        pset = new lwk.Pset(req.pset);
+      } catch {
+        const result: ProviderPsetAnalysisResultDTO = { ok: false, reason: "malformed_pset" };
+        return result;
+      }
+
+      const network = lwkNetwork(lwk, req.network);
+      try {
+        const signInputs: NormalizedProviderPsetSignInput[] = [];
+        for (const input of req.signInputs) {
+          try {
+            const address = lwk.Address.parse(input.address, network);
+            try {
+              const script = address.scriptPubkey();
+              try {
+                signInputs.push({
+                  index: input.index,
+                  address: address.toString(),
+                  scriptPubKey: script.toString(),
+                  ...(input.sighashTypes ? { sighashTypes: [...input.sighashTypes] } : {}),
+                });
+              } finally {
+                script.free();
+              }
+            } finally {
+              address.free();
+            }
+          } catch {
+            const result: ProviderPsetAnalysisResultDTO = {
+              ok: false,
+              reason: "invalid_address",
+              inputIndex: input.index,
+            };
+            return result;
+          }
+        }
+
+        const entry = await ensureWollet(lwk, req.descriptor, req.network);
+        const policyAsset = network.policyAsset();
+        try {
+          return analyzeProviderPset(pset, entry.wollet, policyAsset.toString(), signInputs);
+        } finally {
+          policyAsset.free();
+        }
+      } catch {
+        const result: ProviderPsetAnalysisResultDTO = { ok: false, reason: "analysis_failed" };
+        return result;
+      } finally {
+        pset.free();
+        network.free();
       }
     }
 

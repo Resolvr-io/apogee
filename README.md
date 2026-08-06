@@ -114,6 +114,8 @@ The standard provider currently implements `getBalance`, `getUTXOs`,
 `getWalletDescriptor`, and `sendTransfer`. Descriptor disclosure is a separate,
 explicit per-origin permission: Apogee returns only a checksummed ordinary
 public descriptor and never exports its SLIP-77 master blinding key.
+`signPset` is not advertised yet; its first internal security boundary is the
+[wallet-scoped PSET analyzer](docs/provider-pset-analyzer.md).
 
 ## Unreleased
 

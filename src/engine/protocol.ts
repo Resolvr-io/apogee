@@ -43,6 +43,15 @@ export type EngineRequest =
   // Privacy-safe ELIP descriptor projection. LWK validates and canonicalizes
   // the CT descriptor before the private SLIP-77 wrapper is removed.
   | { kind: "getPublicWalletDescriptor"; descriptor: string }
+  // Read-only preflight for the future ELIP signPset RPC. The caller must sync
+  // the Wollet first; this operation never sees a seed and never signs.
+  | {
+      kind: "analyzeProviderPset";
+      descriptor: string;
+      network: LiquidNetwork;
+      pset: string;
+      signInputs: ProviderPsetSignInputDTO[];
+    }
   // `drain` (send max): for LBTC, drain the wallet (fee deducted from the
   // amount); for a token (`asset` set), send the full token balance (the fee is
   // paid in LBTC, so no deduction). `sats` is in the asset's base units.
@@ -157,6 +166,70 @@ export interface ProviderUtxoDTO {
   txOut: string; // lowercase Elements TxOut consensus serialization, no witness
   confidential: boolean;
 }
+
+/** Input authorization requested by the ELIP signPset caller. */
+export interface ProviderPsetSignInputDTO {
+  index: number;
+  address: string;
+  sighashTypes?: number[];
+}
+
+export interface ProviderPsetInputReviewDTO {
+  index: number;
+  txid: string;
+  vout: number;
+  address: string;
+  assetId: string;
+  amount: string;
+  scriptPubKey: string;
+  confidential: boolean;
+  sighashType: number;
+}
+
+export interface ProviderPsetRecipientReviewDTO {
+  address: string;
+  assetId: string;
+  amount: string;
+  confidential: boolean;
+}
+
+/** Secret-free review material produced before a PSET can reach a signer. */
+export interface ProviderPsetAnalysisDTO {
+  uniqueId: string;
+  walletStatus: string;
+  inputCount: number;
+  outputCount: number;
+  policyAssetId: string;
+  inputs: ProviderPsetInputReviewDTO[];
+  recipients: ProviderPsetRecipientReviewDTO[];
+  balanceChanges: Record<string, string>;
+  fees: Record<string, string>;
+  hasConfidentialInputs: boolean;
+  hasConfidentialOutputs: boolean;
+}
+
+export type ProviderPsetAnalysisFailureReason =
+  | "analysis_failed"
+  | "duplicate_input"
+  | "input_address_mismatch"
+  | "input_not_current_utxo"
+  | "input_prevout_mismatch"
+  | "invalid_address"
+  | "invalid_request"
+  | "malformed_pset"
+  | "non_policy_fee"
+  | "private_or_unsupported_script"
+  | "pset_balance_mismatch"
+  | "pset_value_mismatch"
+  | "sighash_not_allowed"
+  | "unreviewable_output"
+  | "unrequested_wallet_input"
+  | "unsupported_sighash"
+  | "unsupported_issuance";
+
+export type ProviderPsetAnalysisResultDTO =
+  | { ok: true; analysis: ProviderPsetAnalysisDTO }
+  | { ok: false; reason: ProviderPsetAnalysisFailureReason; inputIndex?: number };
 
 /** Result of `descriptorInfo`: the master fingerprint embedded in a watch-only
  *  descriptor, and whether it targets mainnet (used to sanity-check the network). */
