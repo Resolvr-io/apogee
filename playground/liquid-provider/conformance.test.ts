@@ -21,9 +21,10 @@ const capabilities = {
     "wallet_disconnect",
     "getBalance",
     "getUTXOs",
+    "getWalletDescriptor",
     "sendTransfer",
   ],
-  events: ["wallet_connectionChanged"],
+  events: ["wallet_connectionChanged", "bip122_walletDescriptorChanged"],
 };
 
 describe("Liquid provider playground conformance checks", () => {
@@ -32,7 +33,7 @@ describe("Liquid provider playground conformance checks", () => {
     const controller = createLiquidProviderController(async ({ method }) => {
       if (method === "wallet_getCapabilities") return capabilities;
       if (method === "wallet_getConnection") return null;
-      if (method === "getWalletDescriptor") {
+      if (method === "getIdentityPublicKey") {
         throw new LiquidRpcError(
           4200,
           "unsupported",

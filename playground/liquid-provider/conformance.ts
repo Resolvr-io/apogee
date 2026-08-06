@@ -114,8 +114,13 @@ export async function runSafeConformanceChecks(
     }
     assert(raw.methods.includes("getBalance"), "Apogee does not advertise getBalance");
     assert(raw.methods.includes("getUTXOs"), "Apogee does not advertise getUTXOs");
+    assert(raw.methods.includes("getWalletDescriptor"), "Apogee does not advertise getWalletDescriptor");
     assert(raw.methods.includes("sendTransfer"), "Apogee does not advertise sendTransfer");
     assert(raw.events.includes("wallet_connectionChanged"), "missing connection event");
+    assert(
+      raw.events.includes("bip122_walletDescriptorChanged"),
+      "missing descriptor-change event",
+    );
     assert(!containsPrivateState(raw), "capabilities disclose account state");
     capabilities = raw as unknown as ProviderCapabilities;
   });

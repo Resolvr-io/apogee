@@ -205,6 +205,13 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
               this account. It does not reveal blinding keys or other wallet secrets.
             </p>
           )}
+          {!request.legacy && request.methods.includes("getWalletDescriptor") && (
+            <p className="mt-2 text-xs leading-relaxed text-[color:var(--warning-text)]">
+              Descriptor access lets this site derive and correlate this account&apos;s scripts and
+              unconfidential addresses. It does not reveal private spend keys, blinding keys, or
+              the ability to unblind outputs.
+            </p>
+          )}
           <dl className="mt-3 flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
             <Row label="Wallet" value={request.fingerprint.toUpperCase()} console />
             <Row label="Network" value={networkLabel(request.network)} />

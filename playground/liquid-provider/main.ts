@@ -12,7 +12,7 @@ type ProviderRecord = {
 const providers = new Map<string, ProviderRecord>();
 const frameReports = new Map<string, number>();
 let selectedUuid: string | null = null;
-let unsubscribeConnection: (() => void) | null = null;
+let unsubscribeEvents: Array<() => void> = [];
 
 const providerList = element("providers");
 const empty = element("provider-empty");
@@ -25,6 +25,8 @@ const checkSummary = element("check-summary");
 const frameResult = element("frame-result");
 const assetInput = element("asset-id") as HTMLInputElement;
 const utxoAssetInput = element("utxo-asset-id") as HTMLInputElement;
+const descriptorTypeInput = element("descriptor-type") as HTMLSelectElement;
+const descriptorFormatInput = element("descriptor-format") as HTMLSelectElement;
 const transferAddress = element("transfer-address") as HTMLInputElement;
 const transferAmount = element("transfer-amount") as HTMLInputElement;
 const transferAsset = element("transfer-asset") as HTMLInputElement;
@@ -60,6 +62,12 @@ element("connect-transfer").addEventListener("click", () =>
 element("connect-utxos").addEventListener("click", () =>
   void invoke("wallet_connect", { methods: ["getUTXOs"], events: [] }),
 );
+element("connect-descriptor").addEventListener("click", () =>
+  void invoke("wallet_connect", {
+    methods: ["getWalletDescriptor"],
+    events: ["bip122_walletDescriptorChanged"],
+  }),
+);
 element("connection").addEventListener("click", () => void invoke("wallet_getConnection", {}));
 element("disconnect").addEventListener("click", () => void invoke("wallet_disconnect", {}));
 element("balance").addEventListener("click", () => {
@@ -69,6 +77,14 @@ element("balance").addEventListener("click", () => {
 element("utxos").addEventListener("click", () => {
   const assetId = utxoAssetInput.value.trim();
   void invoke("getUTXOs", assetId ? { assetId } : {});
+});
+element("descriptor").addEventListener("click", () => {
+  const descriptorType = descriptorTypeInput.value;
+  const descriptorFormat = descriptorFormatInput.value;
+  void invoke("getWalletDescriptor", {
+    ...(descriptorType ? { descriptorType } : {}),
+    ...(descriptorFormat ? { descriptorFormat: [{ format: descriptorFormat }] } : {}),
+  });
 });
 element("transfer").addEventListener("click", () => {
   const recipientAddress = transferAddress.value.trim();
@@ -132,18 +148,24 @@ function rediscover(): PlaygroundProviderDetail[] {
 
 function selectProvider(uuid: string): void {
   if (selectedUuid === uuid) return;
-  unsubscribeConnection?.();
-  unsubscribeConnection = null;
+  for (const unsubscribe of unsubscribeEvents) unsubscribe();
+  unsubscribeEvents = [];
   selectedUuid = uuid;
   const record = providers.get(uuid);
   if (!record) return;
-  unsubscribeConnection = record.detail.provider.on({
-    event: "wallet_connectionChanged",
-    listener: (payload: unknown) => {
-      document.body.dataset.connection = payload === null ? "disconnected" : "connected";
-      log("wallet_connectionChanged", payload);
-    },
-  });
+  unsubscribeEvents.push(
+    record.detail.provider.on({
+      event: "wallet_connectionChanged",
+      listener: (payload: unknown) => {
+        document.body.dataset.connection = payload === null ? "disconnected" : "connected";
+        log("wallet_connectionChanged", payload);
+      },
+    }),
+    record.detail.provider.on({
+      event: "bip122_walletDescriptorChanged",
+      listener: (payload: unknown) => log("bip122_walletDescriptorChanged", payload),
+    }),
+  );
   selection.textContent = record.detail.info.name;
   renderProviders();
 }

@@ -40,6 +40,9 @@ export type EngineRequest =
   | { kind: "descriptorInfo"; descriptor: string }
   // ELIP-0144/0152 identity metadata for a browser-provider connection.
   | { kind: "walletIdentity"; descriptor: string; network: LiquidNetwork }
+  // Privacy-safe ELIP descriptor projection. LWK validates and canonicalizes
+  // the CT descriptor before the private SLIP-77 wrapper is removed.
+  | { kind: "getPublicWalletDescriptor"; descriptor: string }
   // `drain` (send max): for LBTC, drain the wallet (fee deducted from the
   // amount); for a token (`asset` set), send the full token balance (the fee is
   // paid in LBTC, so no deduction). `sats` is in the asset's base units.
@@ -220,6 +223,11 @@ export interface EngineEnvelope {
 export interface DerivedWallet {
   descriptor: string; // standard BIP84 ct(slip77(..),elwpkh([fp/84h/<coin>h/0h]xpub/<0;1>/*))
   fingerprint: string;
+}
+
+export interface PublicWalletDescriptorDTO {
+  descriptor: string;
+  standardsUsed: string[];
 }
 
 export interface AddressDTO {
