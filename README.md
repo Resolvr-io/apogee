@@ -4,14 +4,15 @@ A self-custodial **Liquid (LBTC)** wallet browser extension. Apogee holds the ke
 and signs; web apps connect to it as a dapp through an injected `window.liquid` /
 `window.apogee` provider. The app never exposes a seed to the page.
 
-<!-- Committed rather than linked to a github.com/user-attachments URL: those are
-     access-controlled, so an attachment uploaded from a private context returns 404
-     to logged-out visitors and the image silently breaks for everyone but the
-     uploader. A repo-relative path renders for anyone and survives a clone. -->
+<!-- A github.com/user-attachments URL inherits the access control of wherever it
+     was uploaded, so one minted from a private context 404s for logged-out visitors
+     and the image breaks for everyone but the uploader. This one was uploaded to an
+     issue on this repo, so it is public — verified by an unauthenticated fetch.
+     Re-upload the same way if it is ever replaced. -->
 
-![Five Apogee side-panel screens: the lock screen over an animated ocean, wallet
-creation, the balance with its price chart, tokens and activity, a receive address
-with QR, and settings](docs/images/apogee-screens.png)
+<img width="1280" height="800"
+     alt="Five Apogee side-panel screens: the lock screen over an animated ocean; wallet creation; the balance with its price chart, tokens and activity; a receive address with QR; and settings"
+     src="https://github.com/user-attachments/assets/508dff82-8292-4f57-bff9-f2afb22b71a1" />
 
 ## Run / build
 
