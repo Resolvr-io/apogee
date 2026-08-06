@@ -199,6 +199,12 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
               ? "This site wants to connect to your wallet. It will see your addresses and balance, but can't move funds without your approval."
               : "This site is requesting the wallet permissions shown below. Transaction and signing requests still require their own review."}
           </p>
+          {!request.legacy && request.methods.includes("getUTXOs") && (
+            <p className="mt-2 text-xs leading-relaxed text-[color:var(--warning-text)]">
+              UTXO access reveals individual coins, addresses, amounts, and transaction links for
+              this account. It does not reveal blinding keys or other wallet secrets.
+            </p>
+          )}
           <dl className="mt-3 flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
             <Row label="Wallet" value={request.fingerprint.toUpperCase()} console />
             <Row label="Network" value={networkLabel(request.network)} />

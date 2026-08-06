@@ -79,6 +79,15 @@ export type EngineRequest =
   // List the wallet's unspent outputs with their unblinding data (asset, value,
   // and both blinding factors) — what SideSwap's `start_quotes` needs per UTXO.
   | { kind: "getUtxos"; descriptor: string; network: LiquidNetwork }
+  // Privacy-safe ELIP browser-provider projection. Unlike `getUtxos`, this
+  // request never returns blinding factors; it includes the raw previous TxOut
+  // so a dapp can construct a PSET without receiving wallet view material.
+  | {
+      kind: "getProviderUtxos";
+      descriptor: string;
+      network: LiquidNetwork;
+      asset: string;
+    }
   // Verify a dealer-built swap PSET, then sign + finalize it atomically. The
   // verification gate (verifyDealerPset) runs first; if it fails the PSET is
   // never signed. Returns the finalized PSET for SideSwap's `taker_sign`.
@@ -131,6 +140,19 @@ export interface UtxoDTO {
   assetBf: string; // hex asset blinding factor
   value: string; // base-10
   valueBf: string; // hex value blinding factor
+}
+
+/** Public ELIP UTXO data safe to cross into a web page. Asset and amount are
+ * wallet-unblinded values, but no factor, nonce secret, or view key is exposed. */
+export interface ProviderUtxoDTO {
+  txid: string;
+  vout: number;
+  asset: string; // hex asset id
+  amount: string; // base-10 base-unit amount
+  address: string;
+  scriptPubKey: string; // lowercase consensus-script hex
+  txOut: string; // lowercase Elements TxOut consensus serialization, no witness
+  confidential: boolean;
 }
 
 /** Result of `descriptorInfo`: the master fingerprint embedded in a watch-only
