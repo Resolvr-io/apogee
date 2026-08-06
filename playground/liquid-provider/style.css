@@ -93,8 +93,11 @@ main { position: relative; z-index: 1; width: min(1180px, calc(100% - 2rem)); ma
 .request-field { display: block; margin-top: 0.6rem; }
 .request-field span { display: block; margin-bottom: 0.42rem; color: #9ab0bf; font-size: 0.73rem; font-weight: 650; }
 .request-field em { color: #607887; font-size: 0.66rem; font-style: normal; font-weight: 500; }
-.request-field input, .request-field select { width: 100%; height: 2.65rem; border: 1px solid #254052; border-radius: 0.6rem; padding: 0 0.75rem; outline: none; color: #dcecf6; background: #06111a; font-size: 0.74rem; }
-.request-field input:focus, .request-field select:focus { border-color: #329bd8; box-shadow: 0 0 0 2px rgba(50, 155, 216, 0.12); }
+.request-field input, .request-field select, .request-field textarea { width: 100%; border: 1px solid #254052; border-radius: 0.6rem; outline: none; color: #dcecf6; background: #06111a; font-size: 0.74rem; }
+.request-field input, .request-field select { height: 2.65rem; padding: 0 0.75rem; }
+.request-field textarea { resize: vertical; padding: 0.65rem 0.75rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45; }
+.request-field input:focus, .request-field select:focus, .request-field textarea:focus { border-color: #329bd8; box-shadow: 0 0 0 2px rgba(50, 155, 216, 0.12); }
+.check-field { display: flex; align-items: center; gap: 0.5rem; margin: 0.75rem 0; color: #8fa7b6; font-size: 0.7rem; }
 
 .result-shell { overflow: hidden; margin-top: 1rem; border: 1px solid #20394a; border-radius: 0.75rem; background: #030a10; }
 .result-heading { display: flex; justify-content: space-between; border-bottom: 1px solid #172c3b; padding: 0.55rem 0.75rem; color: #698394; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; }

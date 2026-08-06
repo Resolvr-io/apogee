@@ -23,6 +23,7 @@ const capabilities = {
     "getUTXOs",
     "getWalletDescriptor",
     "sendTransfer",
+    "signPset",
   ],
   events: ["wallet_connectionChanged", "bip122_walletDescriptorChanged"],
 };

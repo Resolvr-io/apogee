@@ -6,15 +6,16 @@
 //   • pairing  (default)     — Connect › Pair: read jade.wpkh() + fingerprint,
 //                              hand the watch-only descriptor to the side panel.
 //   • signing  (?sign=<id>)  — Connect › Review › Done: fetch the PSET + review
-//                              summary, sign on-device, the SW finalizes +
-//                              broadcasts and returns the txid for the Done card.
+//                              summary and sign on-device. Wallet sends are
+//                              finalized + broadcast; provider signPset calls
+//                              return the signed PSET without broadcasting.
 //
 // Device chooser: filtered to Blockstream chips first (clean list); a "show all"
 // fallback re-runs unfiltered for Jade revisions lwk's filter doesn't know.
 
 import type * as Lwk from "lwk_wasm";
 import type { LiquidNetwork } from "@/keystore/keystore";
-import type { SendReview } from "@/engine/protocol";
+import type { ProviderPsetApprovalReviewDTO, SendReview } from "@/engine/protocol";
 import { explorerTxUrl } from "@/lib/explorer";
 import { formatAssetAmountExact, formatBaseUnits } from "@/lib/format";
 import { isValidFingerprint, shortenHex } from "@/lib/utils";
@@ -114,6 +115,43 @@ function summaryHtml(s: SendReview): string {
     </div>`;
 }
 
+function providerPsetSummaryHtml(review: ProviderPsetApprovalReviewDTO): string {
+  const recipients = review.recipients
+    .map(
+      (recipient, index) => `
+        <div class="row"><span class="k">To ${index + 1}</span><span class="v mono exact">${esc(recipient.address)}</span></div>
+        <div class="row"><span class="k">Amount</span><span class="v">${esc(formatBaseUnits(recipient.amount))} ${recipient.assetId === review.policyAssetId ? "sats" : "base units"}</span></div>
+        <div class="row"><span class="k">Asset</span><span class="v mono exact">${recipient.assetId === review.policyAssetId ? `LBTC · ${esc(recipient.assetId)}` : esc(recipient.assetId)}</span></div>`,
+    )
+    .join("");
+  const effects = Object.entries(review.balanceChanges)
+    .map(
+      ([assetId, amount]) => `
+        <div class="row"><span class="k">Wallet change</span><span class="v">${esc(formatBaseUnits(amount))} ${assetId === review.policyAssetId ? "sats" : "base units"}</span></div>
+        <div class="row"><span class="k">Asset</span><span class="v mono exact">${assetId === review.policyAssetId ? `LBTC · ${esc(assetId)}` : esc(assetId)}</span></div>`,
+    )
+    .join("");
+  const fees = Object.entries(review.fees)
+    .filter(([, amount]) => BigInt(amount) !== 0n)
+    .map(
+      ([assetId, amount]) => `
+        <div class="row total"><span class="k">Network fee</span><span class="v">${esc(formatBaseUnits(amount))} ${assetId === review.policyAssetId ? "sats" : "base units"}</span></div>
+        <div class="row"><span class="k">Fee asset</span><span class="v mono exact">${assetId === review.policyAssetId ? `LBTC · ${esc(assetId)}` : esc(assetId)}</span></div>`,
+    )
+    .join("");
+  const sighashes = [...new Set(review.inputs.map((input) => input.sighashType))]
+    .map((value) => (value === 1 ? "ALL (0x01)" : "ALL|ANYONECANPAY (0x81)"))
+    .join(", ");
+  return `<div class="summary">
+      <div class="row"><span class="k">PSET</span><span class="v mono exact">${esc(review.uniqueId)}</span></div>
+      <div class="row"><span class="k">Inputs</span><span class="v">${review.inputCount}</span></div>
+      <div class="row"><span class="k">Sighash</span><span class="v mono">${esc(sighashes)}</span></div>
+      ${recipients || '<div class="row"><span class="k">Recipients</span><span class="v">None external</span></div>'}
+      ${effects}
+      ${fees}
+    </div>`;
+}
+
 // ---- connect (shared) ------------------------------------------------------
 
 interface ConnectOpts {
@@ -208,11 +246,30 @@ function showReview(summary: SendReview): void {
   `;
 }
 
+function showProviderPsetReview(review: ProviderPsetApprovalReviewDTO): void {
+  card.innerHTML = `
+    ${stepsHtml(SIGN_STEPS, 1)}
+    <h1>Review on your Jade</h1>
+    ${badgeHtml(network)}
+    <p class="sub">Sign only. This transaction will not be broadcast by Apogee.</p>
+    ${providerPsetSummaryHtml(review)}
+    <div class="wait"><span class="spin"></span> Approve the transaction on your Jade…</div>
+  `;
+}
+
 function showBroadcasting(): void {
   card.innerHTML = `
     ${stepsHtml(SIGN_STEPS, 2)}
     <h1>Broadcasting</h1>
     <div class="wait"><span class="spin"></span> Sending your transaction to the network…</div>
+  `;
+}
+
+function showReturningSignature(): void {
+  card.innerHTML = `
+    ${stepsHtml(SIGN_STEPS, 2)}
+    <h1>Checking signature</h1>
+    <div class="wait"><span class="spin"></span> Verifying the signed PSET before returning it…</div>
   `;
 }
 
@@ -240,6 +297,17 @@ function showSignDone(summary: SendReview, txid: string): void {
   });
 }
 
+function showProviderSignDone(): void {
+  card.innerHTML = `
+    ${stepsHtml(SIGN_STEPS, 3)}
+    <div class="status-icon ok">✓</div>
+    <h1>Signed</h1>
+    <p class="sub">The signed PSET was returned to the requesting app. Nothing was broadcast.</p>
+    <button class="ghost" id="close">Close tab</button>
+  `;
+  card.querySelector("#close")?.addEventListener("click", () => window.close());
+}
+
 function signOnConnected(id: string) {
   return async (lwk: typeof Lwk, jade: Lwk.Jade): Promise<void> => {
     try {
@@ -260,18 +328,35 @@ function signOnConnected(id: string) {
         );
       }
 
-      const summary = res.summary as SendReview;
-      showReview(summary);
+      const providerSign = res.mode === "signPset";
+      const summary = res.summary as SendReview | ProviderPsetApprovalReviewDTO;
+      if (providerSign) showProviderPsetReview(summary as ProviderPsetApprovalReviewDTO);
+      else showReview(summary as SendReview);
       const signed = await jade.sign(new lwk.Pset(String(res.pset)));
+      let signedPset: string;
+      try {
+        signedPset = signed.toString();
+      } finally {
+        signed.free();
+      }
 
-      showBroadcasting();
+      if (providerSign) showReturningSignature();
+      else showBroadcasting();
       const out = await browser.runtime.sendMessage({
         type: "apogee/jade-signed",
         id,
-        pset: signed.toString(),
+        pset: signedPset,
       });
-      if (!out?.ok) throw new Error(out?.error ?? "Couldn't broadcast the transaction.");
-      showSignDone(summary, String(out.txid));
+      if (!out?.ok) {
+        throw new Error(
+          out?.error ??
+            (providerSign
+              ? "Couldn't validate and return the signed PSET."
+              : "Couldn't broadcast the transaction."),
+        );
+      }
+      if (providerSign) showProviderSignDone();
+      else showSignDone(summary as SendReview, String(out.txid));
     } catch (e) {
       const message = friendlyJadeError(e);
       browser.runtime.sendMessage({ type: "apogee/jade-sign-failed", id, error: message }).catch(() => {});

@@ -1,4 +1,4 @@
-// Read-only security gate for the future ELIP signPset RPC.
+// Read-only security gate for the ELIP signPset RPC.
 //
 // LWK's signer signs every input it recognizes. Before a caller-controlled PSET
 // can ever reach that signer, this analyzer binds every input to a current
@@ -13,7 +13,10 @@ import type {
   ProviderPsetAnalysisResultDTO,
   ProviderPsetInputReviewDTO,
   ProviderPsetRecipientReviewDTO,
+  ProviderPsetSignResultDTO,
 } from "./protocol";
+import type { ProviderPsetAnalysisDTO } from "./protocol";
+import { providerPsetReviewsMatch } from "./provider-pset-review";
 
 export interface NormalizedProviderPsetSignInput {
   index: number;
@@ -232,6 +235,34 @@ export function analyzeProviderPset(
       hasConfidentialOutputs,
     },
   };
+}
+
+/** Re-run the complete analyzer and sign that exact parsed PSET only when its
+ * current effects still match the approval snapshot. The callback exists so
+ * local-key signing stays testable without putting a seed in analyzer tests. */
+export function analyzeAndSignProviderPset(
+  pset: Lwk.Pset,
+  wollet: Lwk.Wollet,
+  policyAssetId: string,
+  requestedInputs: readonly NormalizedProviderPsetSignInput[],
+  expectedAnalysis: ProviderPsetAnalysisDTO,
+  sign: (pset: Lwk.Pset) => Lwk.Pset,
+): ProviderPsetSignResultDTO {
+  const result = analyzeProviderPset(pset, wollet, policyAssetId, requestedInputs);
+  if (!result.ok) return result;
+  if (!providerPsetReviewsMatch(expectedAnalysis, result.analysis)) {
+    return { ok: false, reason: "review_changed" };
+  }
+  try {
+    const signed = sign(pset);
+    try {
+      return { ok: true, pset: signed.toString(), analysis: result.analysis };
+    } finally {
+      signed.free();
+    }
+  } catch {
+    return { ok: false, reason: "signing_failed" };
+  }
 }
 
 function failure(

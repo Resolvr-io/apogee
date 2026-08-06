@@ -31,6 +31,9 @@ const transferAddress = element("transfer-address") as HTMLInputElement;
 const transferAmount = element("transfer-amount") as HTMLInputElement;
 const transferAsset = element("transfer-asset") as HTMLInputElement;
 const transferMemo = element("transfer-memo") as HTMLInputElement;
+const signPset = element("sign-pset") as HTMLTextAreaElement;
+const signInputs = element("sign-inputs") as HTMLTextAreaElement;
+const signBroadcast = element("sign-broadcast") as HTMLInputElement;
 
 element("origin").textContent = window.location.origin;
 
@@ -58,6 +61,9 @@ element("connect").addEventListener("click", () =>
 );
 element("connect-transfer").addEventListener("click", () =>
   void invoke("wallet_connect", { methods: ["sendTransfer"], events: [] }),
+);
+element("connect-sign-pset").addEventListener("click", () =>
+  void invoke("wallet_connect", { methods: ["signPset"], events: [] }),
 );
 element("connect-utxos").addEventListener("click", () =>
   void invoke("wallet_connect", { methods: ["getUTXOs"], events: [] }),
@@ -100,6 +106,29 @@ element("transfer").addEventListener("click", () => {
     amount,
     ...(assetId ? { assetId } : {}),
     ...(memo ? { memo } : {}),
+  });
+});
+element("sign").addEventListener("click", () => {
+  const pset = signPset.value.trim();
+  if (!pset) {
+    showError(new Error("A base64 PSET is required."));
+    return;
+  }
+  let parsedInputs: unknown;
+  try {
+    parsedInputs = JSON.parse(signInputs.value);
+  } catch {
+    showError(new Error("Signing inputs must be a valid JSON array."));
+    return;
+  }
+  if (!Array.isArray(parsedInputs)) {
+    showError(new Error("Signing inputs must be a JSON array."));
+    return;
+  }
+  void invoke("signPset", {
+    pset,
+    signInputs: parsedInputs,
+    ...(signBroadcast.checked ? { broadcast: true } : {}),
   });
 });
 element("clear-log").addEventListener("click", () => {

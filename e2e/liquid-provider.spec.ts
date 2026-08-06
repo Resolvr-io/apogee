@@ -64,6 +64,10 @@ test.describe.serial("Liquid browser provider", () => {
     await page.locator("#transfer-amount").fill("1");
     await page.getByRole("button", { name: "Send transfer" }).click();
     await expect(page.getByTestId("result")).toContainText('"code": 4100');
+    await page.locator("#sign-pset").fill("cHNldA==");
+    await page.locator("#sign-inputs").fill('[{"index":0,"address":"tlq1qexample"}]');
+    await page.getByRole("button", { name: "Sign PSET", exact: true }).click();
+    await expect(page.getByTestId("result")).toContainText('"code": 4100');
     await page.close();
   });
 
@@ -104,6 +108,25 @@ test.describe.serial("Liquid browser provider", () => {
     await expect(transferApproval.locator("dd").filter({ hasText: "sendTransfer" })).toBeVisible();
     await transferApproval.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(page.getByTestId("result")).toContainText('"sendTransfer"');
+
+    const signApprovalPromise = context.waitForEvent("page", {
+      predicate: (candidate) => candidate.url().includes("/src/prompt/prompt.html"),
+    });
+    await page.getByRole("button", { name: "Enable · signPset" }).click();
+    const signApproval = await signApprovalPromise;
+    await expect(signApproval.locator("dd").filter({ hasText: "signPset" })).toBeVisible();
+    await expect(signApproval.getByText(/every request still shows/i)).toBeVisible();
+    await signApproval.getByRole("button", { name: "Connect", exact: true }).click();
+    await expect(page.getByTestId("result")).toContainText('"signPset"');
+
+    // Broadcasting is a deliberately separate boundary. It is rejected before
+    // parsing or syncing the pasted PSET, so this test remains network-free.
+    await page.locator("#sign-pset").fill("cHNldA==");
+    await page.locator("#sign-inputs").fill('[{"index":0,"address":"tlq1qexample"}]');
+    await page.locator("#sign-broadcast").check();
+    await page.getByRole("button", { name: "Sign PSET", exact: true }).click();
+    await expect(page.getByTestId("result")).toContainText('"code": 4200');
+    await expect(page.getByTestId("result")).toContainText('"capability": "broadcast"');
 
     const utxoApprovalPromise = context.waitForEvent("page", {
       predicate: (candidate) => candidate.url().includes("/src/prompt/prompt.html"),

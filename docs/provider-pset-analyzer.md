@@ -1,10 +1,9 @@
 # Provider PSET analyzer
 
-Apogee does not currently advertise or dispatch the Liquid Wallet RPC Profile's
-`signPset` method. The internal `analyzeProviderPset` engine operation is the
-first security boundary for that future RPC. It is read-only: it never loads a
-seed, asks a signer for a signature, mutates wallet state, or broadcasts a
-transaction.
+Apogee implements the Liquid Wallet RPC Profile's `signPset` method through the
+internal, read-only `analyzeProviderPset` engine operation. The analyzer never
+loads a seed, asks a signer for a signature, mutates wallet state, or broadcasts
+a transaction.
 
 The RPC types and request validation remain pinned to
 [ElementsProject/ELIPs#36](https://github.com/ElementsProject/ELIPs/pull/36) at
@@ -41,15 +40,17 @@ wallet-status snapshot, wallet input outpoints and amounts, recipients, balance
 changes, fees, and confidentiality flags. It never reads or serializes asset or
 value blinding factors.
 
-## Signing integration rule
+## Signing integration
 
-A successful analysis is not a reusable authorization token. The future public
-handler must sync first, analyze for the approval screen, and, after approval,
-re-run the same checks and sign the same parsed PSET in one engine operation.
-It must not pass the caller's PSET to the existing bare `signPset` engine case,
-because LWK's signer signs every input it recognizes. Jade and local signing
-must share this gate.
+A successful analysis is not a reusable authorization token. The public handler
+syncs first, analyzes for the approval screen, and, after approval, refreshes
+wallet state and reruns the same checks. Local wallets re-analyze and sign the
+same parsed PSET atomically in one engine operation. Jade requests bind the
+approved review and origin authorization across the device round-trip, then
+refresh and validate the returned signed PSET before releasing it to the app.
+Neither path passes a page-controlled PSET to the existing bare `signPset`
+engine case, because LWK's signer signs every input it recognizes.
 
-The first public `signPset` implementation will keep `broadcast: true`
-unsupported. Returning a signed PSET and broadcasting it are separate risk
-boundaries and should gain separate tests and approval language.
+`broadcast: true` is explicitly unsupported. Returning a signed PSET and
+broadcasting it are separate risk boundaries and require separate tests and
+approval language.
