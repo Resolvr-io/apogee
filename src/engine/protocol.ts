@@ -64,6 +64,14 @@ export type EngineRequest =
       signInputs: ProviderPsetSignInputDTO[];
       expectedAnalysis: ProviderPsetAnalysisDTO;
     }
+  // Complete an already-signed provider PSET without submitting it. Keeping
+  // this separate from broadcast lets the service worker re-check the origin's
+  // authorization after finalization and immediately before the irreversible
+  // network action.
+  | { kind: "finalizePset"; descriptor: string; network: LiquidNetwork; pset: string }
+  // Submit an already-finalized PSET. All transaction cryptography and
+  // extraction remain inside LWK; this request only selects the chain server.
+  | { kind: "broadcastPset"; network: LiquidNetwork; pset: string; esploraUrl?: string }
   // `drain` (send max): for LBTC, drain the wallet (fee deducted from the
   // amount); for a token (`asset` set), send the full token balance (the fee is
   // paid in LBTC, so no deduction). `sats` is in the asset's base units.
@@ -643,6 +651,8 @@ export type ApprovalRequest =
       network: DappNetwork;
       locked: boolean;
       signerKind: WalletSigner;
+      /** True only when approval also authorizes irreversible network submission. */
+      broadcast: boolean;
     };
 
 /** Uniform reply envelope for both channels. */

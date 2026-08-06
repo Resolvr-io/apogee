@@ -146,7 +146,8 @@
             <h3>Sign PSET</h3>
             <p class="request-note">
               Paste a base64 PSET and the exact wallet inputs to authorize. Apogee reviews every
-              transaction effect and returns a signed PSET without broadcasting it.
+              transaction effect, then either returns the signed PSET or broadcasts it when you
+              explicitly request and approve that action.
             </p>
             <label class="request-field">
               <span>PSET <em>base64</em></span>
@@ -158,7 +159,7 @@
             </label>
             <label class="check-field">
               <input id="sign-broadcast" type="checkbox" />
-              Request <code>broadcast: true</code> (currently rejected)
+              Request <code>broadcast: true</code>
             </label>
             <button id="sign" class="wide">Sign PSET</button>
           </div>

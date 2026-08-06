@@ -8,7 +8,8 @@
 //   • signing  (?sign=<id>)  — Connect › Review › Done: fetch the PSET + review
 //                              summary and sign on-device. Wallet sends are
 //                              finalized + broadcast; provider signPset calls
-//                              return the signed PSET without broadcasting.
+//                              either return the signed PSET or broadcast when
+//                              that intent was explicitly approved.
 //
 // Device chooser: filtered to Blockstream chips first (clean list); a "show all"
 // fallback re-runs unfiltered for Jade revisions lwk's filter doesn't know.
@@ -115,7 +116,10 @@ function summaryHtml(s: SendReview): string {
     </div>`;
 }
 
-function providerPsetSummaryHtml(review: ProviderPsetApprovalReviewDTO): string {
+function providerPsetSummaryHtml(
+  review: ProviderPsetApprovalReviewDTO,
+  broadcast: boolean,
+): string {
   const recipients = review.recipients
     .map(
       (recipient, index) => `
@@ -143,6 +147,9 @@ function providerPsetSummaryHtml(review: ProviderPsetApprovalReviewDTO): string 
     .map((value) => (value === 1 ? "ALL (0x01)" : "ALL|ANYONECANPAY (0x81)"))
     .join(", ");
   return `<div class="summary">
+      <div class="row"><span class="k">Action</span><span class="v">${
+        broadcast ? "Sign and broadcast" : "Sign only"
+      }</span></div>
       <div class="row"><span class="k">PSET</span><span class="v mono exact">${esc(review.uniqueId)}</span></div>
       <div class="row"><span class="k">Inputs</span><span class="v">${review.inputCount}</span></div>
       <div class="row"><span class="k">Sighash</span><span class="v mono">${esc(sighashes)}</span></div>
@@ -246,13 +253,20 @@ function showReview(summary: SendReview): void {
   `;
 }
 
-function showProviderPsetReview(review: ProviderPsetApprovalReviewDTO): void {
+function showProviderPsetReview(
+  review: ProviderPsetApprovalReviewDTO,
+  broadcast: boolean,
+): void {
   card.innerHTML = `
     ${stepsHtml(SIGN_STEPS, 1)}
     <h1>Review on your Jade</h1>
     ${badgeHtml(network)}
-    <p class="sub">Sign only. This transaction will not be broadcast by Apogee.</p>
-    ${providerPsetSummaryHtml(review)}
+    <p class="sub">${
+      broadcast
+        ? "After you sign, Apogee will validate and broadcast this transaction."
+        : "Sign only. This transaction will not be broadcast by Apogee."
+    }</p>
+    ${providerPsetSummaryHtml(review, broadcast)}
     <div class="wait"><span class="spin"></span> Approve the transaction on your Jade…</div>
   `;
 }
@@ -297,14 +311,30 @@ function showSignDone(summary: SendReview, txid: string): void {
   });
 }
 
-function showProviderSignDone(): void {
+function showProviderSignDone(txid?: string): void {
+  const explorer = txid ? explorerTxUrl(network, txid) : null;
   card.innerHTML = `
     ${stepsHtml(SIGN_STEPS, 3)}
     <div class="status-icon ok">✓</div>
-    <h1>Signed</h1>
-    <p class="sub">The signed PSET was returned to the requesting app. Nothing was broadcast.</p>
+    <h1>${txid ? "Sent" : "Signed"}</h1>
+    <p class="sub">${txid ? "The signed transaction was broadcast and returned to the requesting app." : "The signed PSET was returned to the requesting app. Nothing was broadcast."}</p>
+    ${
+      txid
+        ? `<div class="txrow">
+            <span class="mono">${esc(shortenHex(txid, 10, 8))}</span>
+            <button class="copybtn" id="copy">Copy</button>
+          </div>
+          ${explorer ? `<a class="explorer" href="${esc(explorer)}" target="_blank" rel="noreferrer">View transaction ↗</a>` : ""}`
+        : ""
+    }
     <button class="ghost" id="close">Close tab</button>
   `;
+  const copyBtn = card.querySelector<HTMLButtonElement>("#copy");
+  copyBtn?.addEventListener("click", () => {
+    void navigator.clipboard.writeText(txid as string).then(() => {
+      copyBtn.textContent = "Copied";
+    });
+  });
   card.querySelector("#close")?.addEventListener("click", () => window.close());
 }
 
@@ -329,9 +359,13 @@ function signOnConnected(id: string) {
       }
 
       const providerSign = res.mode === "signPset";
+      const providerBroadcast = providerSign && res.broadcast === true;
       const summary = res.summary as SendReview | ProviderPsetApprovalReviewDTO;
-      if (providerSign) showProviderPsetReview(summary as ProviderPsetApprovalReviewDTO);
-      else showReview(summary as SendReview);
+      if (providerSign) {
+        showProviderPsetReview(summary as ProviderPsetApprovalReviewDTO, providerBroadcast);
+      } else {
+        showReview(summary as SendReview);
+      }
       const signed = await jade.sign(new lwk.Pset(String(res.pset)));
       let signedPset: string;
       try {
@@ -340,7 +374,7 @@ function signOnConnected(id: string) {
         signed.free();
       }
 
-      if (providerSign) showReturningSignature();
+      if (providerSign && !providerBroadcast) showReturningSignature();
       else showBroadcasting();
       const out = await browser.runtime.sendMessage({
         type: "apogee/jade-signed",
@@ -350,16 +384,26 @@ function signOnConnected(id: string) {
       if (!out?.ok) {
         throw new Error(
           out?.error ??
-            (providerSign
+            (providerSign && !providerBroadcast
               ? "Couldn't validate and return the signed PSET."
               : "Couldn't broadcast the transaction."),
         );
       }
-      if (providerSign) showProviderSignDone();
-      else showSignDone(summary as SendReview, String(out.txid));
+      if (providerSign) {
+        if (providerBroadcast && typeof out.txid !== "string") {
+          throw new Error(
+            "The transaction was signed but no broadcast transaction id was returned.",
+          );
+        }
+        showProviderSignDone(providerBroadcast ? String(out.txid) : undefined);
+      } else {
+        showSignDone(summary as SendReview, String(out.txid));
+      }
     } catch (e) {
       const message = friendlyJadeError(e);
-      browser.runtime.sendMessage({ type: "apogee/jade-sign-failed", id, error: message }).catch(() => {});
+      browser.runtime
+        .sendMessage({ type: "apogee/jade-sign-failed", id, error: message })
+        .catch(() => {});
       showFailed(message);
     }
   };
