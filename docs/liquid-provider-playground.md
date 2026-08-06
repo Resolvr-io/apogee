@@ -4,14 +4,27 @@ The playground is a plain local dapp for inspecting Apogee's event-discovered Li
 
 ## Manual use
 
-1. Build and load Apogee as an unpacked extension.
-2. Start the playground:
+1. Enter the development shell and install dependencies:
+
+   ```sh
+   nix develop
+   pnpm install
+   ```
+
+2. Build Apogee:
+
+   ```sh
+   pnpm build
+   ```
+
+3. Load `dist/` as an unpacked extension in your browser and initialize or unlock Apogee.
+4. Start the playground:
 
    ```sh
    pnpm dev:provider
    ```
 
-3. Open <http://127.0.0.1:4173/>.
+5. Open <http://127.0.0.1:4173/>.
 
 The page discovers every `liquid:announceProvider` announcement, deduplicates providers by UUID, and lets the developer inspect capabilities, connect with `getBalance` permission, restore the current connection, request a balance, and disconnect. Its timeline shows provider requests, direct results, structured errors, and `wallet_connectionChanged` payloads.
 
