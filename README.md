@@ -117,7 +117,9 @@ public descriptor and never exports its SLIP-77 master blinding key.
 PSET signing is also separately permissioned and individually approved. Its
 [wallet-scoped analyzer](docs/provider-pset-analyzer.md) revalidates every
 transaction effect before local or Jade signing; Apogee returns the signed PSET
-and does not broadcast it.
+by default. A caller can explicitly request `broadcast: true`; the approval then
+states that Apogee will finalize and broadcast the transaction, and a successful
+result includes both the signed PSET and its transaction id.
 
 ## Unreleased
 

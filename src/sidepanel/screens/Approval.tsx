@@ -95,6 +95,7 @@ export function ApprovalOverlay({
 export function Approval({ request, onClose }: { request: ApprovalRequest; onClose: () => void }) {
   const isConnect = request.kind === "connect";
   const isPset = request.kind === "signPset";
+  const broadcastsPset = request.kind === "signPset" && request.broadcast;
   const sendReview = request.kind === "send" ? request.review : null;
   const tokenAmount = sendReview?.assetId
     ? `${formatAssetAmountExact(sendReview.recipientAmount, sendReview.assetPrecision ?? null)} ${sendReview.assetTicker ?? shortenHex(sendReview.assetId, 6, 6)}`
@@ -117,7 +118,8 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
   const [error, setError] = useState("");
   // Brief confirmation (checkmark) shown after a successful decision, before the
   // overlay closes. Kind-aware: connect → Connected, send → Sent, provider
-  // PSET → Signed, and Jade send → Approved while the device flow continues.
+  // PSET → Signed or Sent according to its approved broadcast flag, and Jade
+  // send → Approved while the device flow continues.
   const [done, setDone] = useState<"" | "connected" | "sent" | "approved" | "signed">("");
   const [autoLock, setAutoLock] = useState(15);
   const [sendPassword, setSendPassword] = useState("");
@@ -158,7 +160,17 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
       if (!res?.ok) {
         throw new Error(res?.error ?? (isConnect ? "Couldn't connect." : "The transaction failed."));
       }
-      setDone(isConnect ? "connected" : isPset ? "signed" : jade ? "approved" : "sent");
+      setDone(
+        isConnect
+          ? "connected"
+          : broadcastsPset
+            ? "sent"
+            : isPset
+              ? "signed"
+              : jade
+                ? "approved"
+                : "sent",
+      );
     } catch (err) {
       setError(errMessage(err));
     } finally {
@@ -221,7 +233,13 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
           <img src="/icons/apogee-icon.svg" alt="" className="relative h-10 w-auto" />
         </span>
         <h2 className="console-overline">
-          {isConnect ? "Connect" : isPset ? "Sign PSET" : "Approve transaction"}
+          {isConnect
+            ? "Connect"
+            : broadcastsPset
+              ? "Sign & broadcast PSET"
+              : isPset
+                ? "Sign PSET"
+                : "Approve transaction"}
         </h2>
         <p className="-mt-1 truncate text-xs text-[color:var(--text-subtle)]" title={request.origin}>
           {request.origin}
@@ -264,7 +282,11 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
           </dl>
         </>
       ) : request.kind === "signPset" ? (
-        <ProviderPsetReview review={request.review} network={request.network} />
+        <ProviderPsetReview
+          review={request.review}
+          network={request.network}
+          broadcast={request.broadcast}
+        />
       ) : (
         <>
           <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
@@ -355,7 +377,9 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
               {busy
                 ? "Approve the transaction on your Jade in the window that opened…"
                 : isPset
-                  ? "You'll sign on your Jade. The signed PSET returns to the app and is not broadcast."
+                  ? broadcastsPset
+                    ? "You'll sign on your Jade. After validation, Apogee will broadcast the transaction."
+                    : "You'll sign on your Jade. The signed PSET returns to the app and is not broadcast."
                   : "You'll sign on your Jade — a window opens after you approve."}
             </p>
           )}
@@ -379,7 +403,11 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
             ) : isConnect ? (
               "Connect"
             ) : isPset ? (
-              jade ? "Approve & sign on Jade" : "Approve & sign"
+              broadcastsPset
+                ? "Approve, sign & broadcast"
+                : jade
+                  ? "Approve & sign on Jade"
+                  : "Approve & sign"
             ) : jade ? (
               "Approve & sign on Jade"
             ) : (
@@ -400,9 +428,11 @@ type ProviderPsetReviewDTO = Extract<ApprovalRequest, { kind: "signPset" }>["rev
 function ProviderPsetReview({
   review,
   network,
+  broadcast,
 }: {
   review: ProviderPsetReviewDTO;
   network: "mainnet" | "testnet" | "regtest";
+  broadcast: boolean;
 }) {
   const sighashes = [...new Set(review.inputs.map((input) => input.sighashType))]
     .map(sighashLabel)
@@ -412,10 +442,12 @@ function ProviderPsetReview({
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-[color:var(--text-secondary)]">
-        This site is asking Apogee to sign—not broadcast—this transaction. Verify every asset and
-        recipient below.
+        {broadcast
+          ? "This site is asking Apogee to sign and broadcast this transaction. Verify every asset and recipient below."
+          : "This site is asking Apogee to sign—not broadcast—this transaction. Verify every asset and recipient below."}
       </p>
       <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
+        <Row label="Action" value={broadcast ? "Sign and broadcast" : "Sign only"} strong />
         <Row label="Network" value={networkLabel(network)} />
         <Row
           label="Account"

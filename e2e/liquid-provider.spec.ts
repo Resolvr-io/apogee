@@ -119,14 +119,14 @@ test.describe.serial("Liquid browser provider", () => {
     await signApproval.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(page.getByTestId("result")).toContainText('"signPset"');
 
-    // Broadcasting is a deliberately separate boundary. It is rejected before
-    // parsing or syncing the pasted PSET, so this test remains network-free.
-    await page.locator("#sign-pset").fill("cHNldA==");
-    await page.locator("#sign-inputs").fill('[{"index":0,"address":"tlq1qexample"}]');
+    // A successful broadcast needs a funded PSET and live chain service, so CI
+    // exercises the opt-in control without submitting an irreversible request.
+    await expect(
+      page.locator("label.check-field").filter({ hasText: "broadcast: true" }),
+    ).toBeVisible();
     await page.locator("#sign-broadcast").check();
-    await page.getByRole("button", { name: "Sign PSET", exact: true }).click();
-    await expect(page.getByTestId("result")).toContainText('"code": 4200');
-    await expect(page.getByTestId("result")).toContainText('"capability": "broadcast"');
+    await expect(page.locator("#sign-broadcast")).toBeChecked();
+    await page.locator("#sign-broadcast").uncheck();
 
     const utxoApprovalPromise = context.waitForEvent("page", {
       predicate: (candidate) => candidate.url().includes("/src/prompt/prompt.html"),

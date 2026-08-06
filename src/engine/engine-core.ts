@@ -1327,6 +1327,29 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       }
     }
 
+    case "finalizePset": {
+      const entry = await ensureWollet(lwk, req.descriptor, req.network);
+      const finalized = entry.wollet.finalize(new lwk.Pset(req.pset));
+      try {
+        return finalized.toString();
+      } finally {
+        finalized.free();
+      }
+    }
+
+    case "broadcastPset": {
+      const net = lwkNetwork(lwk, req.network);
+      const pset = new lwk.Pset(req.pset);
+      try {
+        const txid = await broadcastResilient(lwk, net, req.network, pset, req.esploraUrl);
+        const result: SendResult = { txid };
+        return result;
+      } finally {
+        pset.free();
+        net.free();
+      }
+    }
+
     case "prepareSend": {
       const net = lwkNetwork(lwk, req.network);
       const entry = await ensureWollet(lwk, req.descriptor, req.network);

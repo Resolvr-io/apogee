@@ -186,14 +186,14 @@ describe("parseLiquidRpcRequest", () => {
     expect(parseLiquidRpcRequest({ method, params })).toEqual({ method, params });
   });
 
-  it("accepts a selective signPset request", () => {
+  it("accepts a selective signPset request with explicit broadcast intent", () => {
     expect(
       parseLiquidRpcRequest({
         method: "signPset",
         params: {
           pset: "cHNldA==",
           signInputs: [{ index: 0, address: "ex1qexample", sighashTypes: [1, 129] }],
-          broadcast: false,
+          broadcast: true,
         },
       }),
     ).toEqual({
@@ -201,7 +201,7 @@ describe("parseLiquidRpcRequest", () => {
       params: {
         pset: "cHNldA==",
         signInputs: [{ index: 0, address: "ex1qexample", sighashTypes: [1, 129] }],
-        broadcast: false,
+        broadcast: true,
       },
     });
   });

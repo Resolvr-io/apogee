@@ -51,6 +51,11 @@ refresh and validate the returned signed PSET before releasing it to the app.
 Neither path passes a page-controlled PSET to the existing bare `signPset`
 engine case, because LWK's signer signs every input it recognizes.
 
-`broadcast: true` is explicitly unsupported. Returning a signed PSET and
-broadcasting it are separate risk boundaries and require separate tests and
-approval language.
+Without `broadcast`, Apogee returns the validated signed PSET and performs no
+network submission. `broadcast: true` extends that same approval with an
+explicit “sign and broadcast” action. After signing, Apogee finalizes the PSET,
+revalidates the origin, wallet, permission, and local-wallet lock state at the
+head of the serialized engine queue, and only then submits it through the
+configured chain server. Success returns the signed PSET and `txid`; incomplete
+transactions and broadcast failures reject without exposing the signed PSET in
+the error.
