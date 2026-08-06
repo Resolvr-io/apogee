@@ -46,11 +46,12 @@ export function Scene({
         <div className="apogee-moon-core" />
       </div>
       {animated ? <OceanVideo /> : <div className="apogee-ocean" />}
-      {/* The water dim finishes last (2.9s delay + 2.8s, against the moon's
-          5.7s and the UI's 5.5s), so its end is the timeline's end. Under
-          reduced motion the animation never runs, so animationend never fires
-          and the phase simply stays — harmless, because every reduced-motion
-          rule already resolves to the finished scene. */}
+      {/* The water dim finishes last (2.3s delay + 2.8s = 5.1s, against the
+          moon's 5.0s and the UI's 4.8s), so its end is the timeline's end.
+          KEEP IN SYNC with the timeline in theme.css and MOON_INTRO_MS in
+          App.tsx, whose fallback timer covers an animationend that never
+          arrives — under reduced motion App resolves to "no intro" before this
+          renders, but an interrupted animation can still swallow the event. */}
       {intro && (
         <div className="apogee-intro-dim" onAnimationEnd={() => onIntroEnd?.()} />
       )}

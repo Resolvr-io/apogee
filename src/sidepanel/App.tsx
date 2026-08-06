@@ -24,6 +24,44 @@ import type { ApprovalRequest } from "@/engine/protocol";
 // wallet/reset, which removes only its own keys.
 const MOON_INTRO_KEY = "apogee:moonIntroPlayed";
 
+/** Total timeline length. KEEP IN SYNC with the .apogee-scene--intro block in
+ *  theme.css, where the water dim currently ends last at 5.1s. */
+const MOON_INTRO_MS = 5_100;
+
+/** Longest the pre-decision hold may black out the panel. Generous next to a
+ *  service-worker round trip, short next to a user wondering if it crashed. */
+const HOLD_CAP_MS = 2_500;
+
+// localStorage throws rather than degrades: SecurityError when storage is
+// blocked (Firefox `dom.storage.enabled=false`, strict cookie settings), and
+// setItem can throw on quota. This flag is cosmetic, so it must never be able to
+// take the panel down — and it is read in a useState initializer, where a throw
+// escapes App's render entirely. A failed READ reports "already played", the
+// conservative answer: no cinematic beats a white screen.
+function introFlagRead(): boolean {
+  try {
+    return localStorage.getItem(MOON_INTRO_KEY) !== null;
+  } catch {
+    return true;
+  }
+}
+function introFlagWrite(played: boolean): void {
+  try {
+    if (played) localStorage.setItem(MOON_INTRO_KEY, "1");
+    else localStorage.removeItem(MOON_INTRO_KEY);
+  } catch {
+    /* cosmetic — a wallet that can't persist this still works */
+  }
+}
+
+/** The scene is decorative, so reduced motion resolves to "no intro" outright
+ *  rather than playing a timeline whose animations CSS has disabled. */
+function prefersReducedMotion(): boolean {
+  return typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    : false;
+}
+
 /**
  * Decide the intro phase. "hold" parks the scene (moon above the panel, UI
  * hidden) until the keystore state arrives, so a genuine first run never
@@ -41,35 +79,74 @@ const MOON_INTRO_KEY = "apogee:moonIntroPlayed";
  *
  * The phase is owned here rather than latched inside Scene so the debug replay
  * can re-arm it; `end` is called when the timeline finishes.
+ *
+ * `error` is here because the hold is a full-panel blackout: Body renders the
+ * load failure in its own `!state` branch, INSIDE the held wrapper, so holding
+ * through a failed getState() would show an empty panel with no error, no
+ * spinner and nothing to retry — most likely on exactly the open this runs for,
+ * the first one after an install while the service worker is still coming up.
  */
 function useMoonIntro(
   state: KeystoreState | null,
+  error: string,
   recovering: boolean,
   animated: boolean,
+  animationsLoaded: boolean,
 ): { intro: SceneIntro; end: () => void; replay: () => void } {
-  const [phase, setPhase] = useState<SceneIntro>(() =>
-    localStorage.getItem(MOON_INTRO_KEY) ? false : "hold",
-  );
+  const [phase, setPhase] = useState<SceneIntro>(() => (introFlagRead() ? false : "hold"));
   useEffect(() => {
     if (phase !== "hold") return;
-    if (state === null) return; // need the keystore state to decide eligibility
+    if (state === null) {
+      // Never hold over a failure. The flag stays UNWRITTEN so a genuine first
+      // run still gets its cinematic once the wallet state can actually load.
+      if (error) setPhase(false);
+      return;
+    }
+    // The preference is read asynchronously and starts at its optimistic
+    // default, so deciding before it lands can play the cinematic for someone
+    // who turned Background animation off.
+    if (!animationsLoaded) return;
     const onboarding = !state.initialized || state.wallets.length === 0;
-    localStorage.setItem(MOON_INTRO_KEY, "1");
+    introFlagWrite(true);
     // `animated` folds in the Background-animation preference: with it off the
     // scene is the static poster, and a cinematic over a still would half-play.
-    setPhase(onboarding && !recovering && animated ? "play" : false);
-  }, [phase, state, recovering, animated]);
+    setPhase(onboarding && !recovering && animated && !prefersReducedMotion() ? "play" : false);
+  }, [phase, state, error, recovering, animated, animationsLoaded]);
+
+  // Cap the hold. Everything above resolves it on a state OR an error, but the
+  // hold blacks out the whole panel, so any path that strands it — a
+  // sendMessage that never settles rather than rejecting — bricks the UI
+  // outright. Resolving to "no intro" costs a cinematic; not resolving costs
+  // the wallet. The flag stays unwritten, so the next open can still play it.
+  useEffect(() => {
+    if (phase !== "hold") return;
+    const t = window.setTimeout(() => setPhase(false), HOLD_CAP_MS);
+    return () => window.clearTimeout(t);
+  }, [phase]);
 
   const end = useCallback(() => setPhase(false), []);
+
+  // Safety net for a lost animationend — an interrupted animation, a node
+  // removed mid-flight. The phase is load-bearing beyond the CSS (it gates the
+  // version badge and the content fade), so a stuck "play" is not cosmetic.
+  useEffect(() => {
+    if (phase !== "play") return;
+    const t = window.setTimeout(() => setPhase(false), MOON_INTRO_MS + 250);
+    return () => window.clearTimeout(t);
+  }, [phase]);
+
   // Debug replay: clear the flag as well as re-arming the timeline, so the next
   // panel open replays too (subject to the same first-run eligibility) rather
   // than only this one showing it.
+  const rearm = useRef(0);
+  useEffect(() => () => cancelAnimationFrame(rearm.current), []);
   const replay = useCallback(() => {
-    localStorage.removeItem(MOON_INTRO_KEY);
+    introFlagWrite(false);
     setPhase(false);
     // One frame at `false` so a re-run restarts the CSS animations; setting
     // "play" while already "play" would leave them mid-flight.
-    requestAnimationFrame(() => setPhase("play"));
+    cancelAnimationFrame(rearm.current);
+    rearm.current = requestAnimationFrame(() => setPhase("play"));
   }, []);
 
   return { intro: phase, end, replay };
@@ -83,7 +160,7 @@ export function App() {
   const [state, setState] = useState<KeystoreState | null>(null);
   const [error, setError] = useState("");
   const [view, setView] = useState<View>("home");
-  const [animationsPref] = useAnimations();
+  const [animationsPref, , animationsLoaded] = useAnimations();
   // Forgot-password "Import wallet": show the restore form without wiping the
   // existing vault — the wipe happens only when a valid phrase is submitted.
   const [recovering, setRecovering] = useState(false);
@@ -160,8 +237,10 @@ export function App() {
   const animated = !unlocked && animationsPref;
   const { intro: moonIntro, end: endMoonIntro, replay: replayMoonIntro } = useMoonIntro(
     state,
+    error,
     recovering,
     animated,
+    animationsLoaded,
   );
   // Content hold/fade class — the UI arrives after the moon has settled.
   const introContentClass =
@@ -201,7 +280,13 @@ export function App() {
           filled before — VersionBadge's absolute anchor is unchanged. Toasts and
           the approval overlay stay outside: neither is decorative, and neither
           should ever wait on a cinematic. */}
-      <div className={`relative z-10 flex min-h-0 flex-1 flex-col ${introContentClass}`}>
+      <div
+        // Held at opacity 0 during the intro, which hides it from the eye but not
+        // from the tab order, a stray click or a screen reader. On the first-run
+        // screen the invisible controls are "Create wallet" and "Restore".
+        inert={Boolean(moonIntro)}
+        className={`relative z-10 flex min-h-0 flex-1 flex-col ${introContentClass}`}
+      >
         {unlocked && (
           <header className="relative z-10 flex h-14 shrink-0 items-center gap-2 px-4">
             <button
