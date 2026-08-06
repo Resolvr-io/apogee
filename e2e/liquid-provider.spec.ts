@@ -40,6 +40,7 @@ test.describe.serial("Liquid browser provider", () => {
     await page.goto(PLAYGROUND_127);
 
     await expect(page.getByTestId("provider-name")).toHaveText("Apogee");
+    await expect(page.locator("#provider-empty")).toBeHidden();
     await expect(page.getByTestId("providers").locator(".provider-card")).toHaveCount(1);
     await page.getByRole("button", { name: "Request providers" }).click();
     await expect(page.locator(".announcement-count")).toHaveText(/\d+×/);

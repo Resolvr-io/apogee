@@ -79,6 +79,7 @@ main { position: relative; z-index: 1; width: min(1180px, calc(100% - 2rem)); ma
 .provider-copy code { margin-top: 0.28rem; color: #536d7e; font-size: 0.62rem; letter-spacing: 0; }
 .announcement-count { align-self: start; border-radius: 999px; padding: 0.18rem 0.4rem; color: #79c7f4; background: #102a3a; font-family: monospace; font-size: 0.66rem; }
 .empty-state { display: flex; align-items: center; justify-content: center; gap: 0.65rem; min-height: 5rem; border: 1px dashed #263d4d; border-radius: 0.7rem; color: #829aaa; font-size: 0.83rem; }
+.empty-state[hidden] { display: none; }
 .spinner { width: 0.9rem; height: 0.9rem; border: 2px solid #2b4456; border-top-color: #59bdef; border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
