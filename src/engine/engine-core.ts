@@ -21,6 +21,7 @@ import {
 } from "@/lib/debug";
 import { SCAN_STATE_DB } from "@/engine/protocol";
 import { exactRecipientAmount } from "./recipient-amount";
+import { collectProviderUtxos } from "./provider-utxos";
 import { verifyDealerPset } from "@/engine/verify-dealer-pset";
 import type {
   AddressDTO,
@@ -222,8 +223,12 @@ async function scanStateDel(key: string): Promise<void> {
 
 async function scanStateKey(network: LiquidNetwork, descriptor: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(descriptor));
-  const hex = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  const hex = bytesToHex(new Uint8Array(digest));
   return `${SCAN_STATE_PREFIX}${network}:${hex.slice(0, 16)}`;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /** Append (or tip-replace) one serialized update and persist the array. The
@@ -1003,6 +1008,13 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           valueBf: sec.valueBlindingFactor().toString(),
         };
       });
+    }
+
+    case "getProviderUtxos": {
+      const entry = await ensureWollet(lwk, req.descriptor, req.network);
+      // Keep the existing SideSwap DTO separate: that internal integration
+      // needs ABF/VBF values, while the browser RPC must never expose them.
+      return collectProviderUtxos(entry.wollet, req.asset);
     }
 
     case "getRate": {

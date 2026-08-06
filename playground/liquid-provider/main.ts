@@ -24,6 +24,7 @@ const checks = element("checks");
 const checkSummary = element("check-summary");
 const frameResult = element("frame-result");
 const assetInput = element("asset-id") as HTMLInputElement;
+const utxoAssetInput = element("utxo-asset-id") as HTMLInputElement;
 const transferAddress = element("transfer-address") as HTMLInputElement;
 const transferAmount = element("transfer-amount") as HTMLInputElement;
 const transferAsset = element("transfer-asset") as HTMLInputElement;
@@ -56,11 +57,18 @@ element("connect").addEventListener("click", () =>
 element("connect-transfer").addEventListener("click", () =>
   void invoke("wallet_connect", { methods: ["sendTransfer"], events: [] }),
 );
+element("connect-utxos").addEventListener("click", () =>
+  void invoke("wallet_connect", { methods: ["getUTXOs"], events: [] }),
+);
 element("connection").addEventListener("click", () => void invoke("wallet_getConnection", {}));
 element("disconnect").addEventListener("click", () => void invoke("wallet_disconnect", {}));
 element("balance").addEventListener("click", () => {
   const assetId = assetInput.value.trim();
   void invoke("getBalance", assetId ? { assetId } : {});
+});
+element("utxos").addEventListener("click", () => {
+  const assetId = utxoAssetInput.value.trim();
+  void invoke("getUTXOs", assetId ? { assetId } : {});
 });
 element("transfer").addEventListener("click", () => {
   const recipientAddress = transferAddress.value.trim();

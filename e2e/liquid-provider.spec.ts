@@ -6,6 +6,8 @@ const EXTENSION_PATH = resolve("dist");
 const PLAYGROUND_127 = "http://127.0.0.1:4173/";
 const PLAYGROUND_LOCALHOST = "http://localhost:4173/";
 const TEST_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+const MAINNET_POLICY_ASSET =
+  "bip122:1466275836220db2944ca059a3a10ef6/elip144:6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d";
 
 test.describe.serial("Liquid browser provider", () => {
   let context: BrowserContext;
@@ -54,6 +56,8 @@ test.describe.serial("Liquid browser provider", () => {
     // calling origin obtains an explicit connection grant.
     await page.getByRole("button", { name: "Get balance" }).click();
     await expect(page.getByTestId("result")).toContainText('"code": 4100');
+    await page.getByRole("button", { name: "Get UTXOs" }).click();
+    await expect(page.getByTestId("result")).toContainText('"code": 4100');
     await page.locator("#transfer-address").fill("tlq1qconformance-address");
     await page.locator("#transfer-amount").fill("1");
     await page.getByRole("button", { name: "Send transfer" }).click();
@@ -89,6 +93,25 @@ test.describe.serial("Liquid browser provider", () => {
     await expect(transferApproval.locator("dd").filter({ hasText: "sendTransfer" })).toBeVisible();
     await transferApproval.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(page.getByTestId("result")).toContainText('"sendTransfer"');
+
+    const utxoApprovalPromise = context.waitForEvent("page", {
+      predicate: (candidate) => candidate.url().includes("/src/prompt/prompt.html"),
+    });
+    await page.getByRole("button", { name: "Enable · getUTXOs" }).click();
+    const utxoApproval = await utxoApprovalPromise;
+    await expect(utxoApproval.locator("dd").filter({ hasText: "getUTXOs" })).toBeVisible();
+    await expect(utxoApproval.getByText(/reveals individual coins/i)).toBeVisible();
+    await expect(utxoApproval.getByText(/does not reveal blinding keys/i)).toBeVisible();
+    await utxoApproval.getByRole("button", { name: "Connect", exact: true }).click();
+    await expect(page.getByTestId("result")).toContainText('"getUTXOs"');
+
+    // Reject a cross-chain filter before doing a network sync. This exercises
+    // the granted method through the real extension without making conformance
+    // depend on a public testnet indexer's availability.
+    await page.locator("#utxo-asset-id").fill(MAINNET_POLICY_ASSET);
+    await page.getByRole("button", { name: "Get UTXOs" }).click();
+    await expect(page.getByTestId("result")).toContainText('"code": -32602');
+    await expect(page.getByTestId("result")).toContainText('"path": "params.assetId"');
 
     // The current LWK builder cannot add an arbitrary zero-value output. The
     // ELIP makes memo support optional, so Apogee rejects it explicitly rather

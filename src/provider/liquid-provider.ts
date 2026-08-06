@@ -131,7 +131,7 @@ const ICON =
   function timeoutFor(method: string): number {
     if (method === "connect") return CONNECT_TIMEOUT_MS;
     if (method === "send" || method === "sendTransfer") return SEND_TIMEOUT_MS;
-    if (method === "getBalance") return 60_000; // includes a chain sync
+    if (method === "getBalance" || method === "getUTXOs") return 60_000; // includes a chain sync
     return 20_000; // fast reads
   }
 

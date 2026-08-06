@@ -47,6 +47,7 @@ import type {
   EngineRequest,
   PrepareSendResult,
   PriceHistory,
+  ProviderUtxoDTO,
   ProviderAccount,
   ProviderBalance,
   ProviderRequest,
@@ -68,7 +69,10 @@ import {
   type LiquidConnectParams,
 } from "@/provider/liquid-browser-provider";
 import { parseLiquidProviderRequest } from "@/provider/liquid-browser-provider-validation";
-import { LIQUID_WALLET_RPC_METHODS } from "@/provider/liquid-rpc";
+import {
+  LIQUID_WALLET_RPC_METHODS,
+  type LiquidGetUTXOsResult,
+} from "@/provider/liquid-rpc";
 import {
   LIQUID_RPC_ERROR_CODES,
   LIQUID_RPC_ERROR_REASONS,
@@ -905,6 +909,7 @@ function queueConnectionWrite<T>(operation: () => Promise<T>): Promise<T> {
 
 const SUPPORTED_PROFILE_METHODS = new Set<string>([
   LIQUID_WALLET_RPC_METHODS.GET_BALANCE,
+  LIQUID_WALLET_RPC_METHODS.GET_UTXOS,
   LIQUID_WALLET_RPC_METHODS.SEND_TRANSFER,
 ]);
 const SUPPORTED_PROFILE_EVENTS = new Set<string>();
@@ -1271,6 +1276,96 @@ async function handleStandardProvider(requestValue: unknown, origin: string | un
         chainId: connection.chainId,
         policyAssetId: connection.policyAssetId,
       };
+    }
+    case "getUTXOs": {
+      const connection = await migrateLegacyConnection(origin);
+      if (!connection || !connection.permissions.methods.includes(request.method)) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "This origin is not authorized to inspect the connected wallet's UTXOs.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      }
+      if (keystore.isLocked()) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "Unlock Apogee to inspect this wallet's UTXOs.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+          { cause: "locked" },
+        );
+      }
+
+      const revision = connectionRevision(origin);
+      const generation = connectionGeneration;
+      const assetId = request.params?.assetId ?? connection.policyAssetId;
+      if (!assetId.startsWith(`${connection.chainId}/elip144:`)) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.INVALID_PARAMS,
+          "The requested asset belongs to a different chain.",
+          LIQUID_RPC_ERROR_REASONS.INVALID_PARAMS,
+          { path: "params.assetId" },
+        );
+      }
+
+      const info = await walletInfo(connection.walletId).catch(async () => {
+        await removeConnectedSite(origin);
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "The connected wallet is no longer available.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      });
+      await engine<SyncResult>({
+        kind: "sync",
+        descriptor: info.descriptor,
+        network: info.network,
+        esploraUrl: await chainServer(info.network),
+      });
+      const assetHex = assetId.slice(assetId.lastIndexOf(":") + 1);
+      const publicUtxos = await engine<ProviderUtxoDTO[]>({
+        kind: "getProviderUtxos",
+        descriptor: info.descriptor,
+        network: info.network,
+        asset: assetHex,
+      });
+
+      // A sync can take long enough for the user to revoke the site or lock the
+      // wallet. Do not release account state under a stale authorization snapshot.
+      const current =
+        generation === connectionGeneration && revision === connectionRevision(origin)
+          ? (await getProviderConnections())[origin]
+          : undefined;
+      if (
+        keystore.isLocked() ||
+        !current ||
+        current.walletId !== connection.walletId ||
+        !current.permissions.methods.includes(request.method)
+      ) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "This origin is no longer authorized to inspect the connected wallet's UTXOs.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      }
+
+      const result: LiquidGetUTXOsResult = {
+        accountIdentifier: connection.accountIdentifier,
+        assetId,
+        chainId: connection.chainId,
+        policyAssetId: connection.policyAssetId,
+        utxos: publicUtxos.map((utxo) => ({
+          address: utxo.address,
+          amount: utxo.amount,
+          assetId: `${connection.chainId}/elip144:${utxo.asset}`,
+          confidential: utxo.confidential,
+          scriptPubKey: utxo.scriptPubKey,
+          spendable: info.signer !== "watch",
+          txid: utxo.txid,
+          txOut: utxo.txOut,
+          vout: utxo.vout,
+        })),
+      };
+      return result;
     }
     case "sendTransfer": {
       const connection = await migrateLegacyConnection(origin);
