@@ -134,7 +134,7 @@ function parseWalletDescriptor(value: unknown): LiquidGetWalletDescriptorParams 
 function parseSendTransfer(value: unknown): LiquidSendTransferParams {
   const params = record(value, "params");
   const out: LiquidSendTransferParams = {
-    amount: decimal(params.amount, "params.amount"),
+    amount: transferAmount(params.amount, "params.amount"),
     recipientAddress: nonEmptyString(params.recipientAddress, "params.recipientAddress"),
   };
   if (params.account !== undefined) {
@@ -302,6 +302,20 @@ function decimal(value: unknown, path: string): string {
   const result = string(value, path);
   if (!DECIMAL.test(result)) throw invalid(path, "Expected a non-negative decimal string.");
   return result;
+}
+
+function transferAmount(value: unknown, path: string): string {
+  const result = decimal(value, path);
+  const normalized = result.replace(/^0+(?=\d)/, "");
+  const maxU64 = "18446744073709551615";
+  if (
+    normalized === "0" ||
+    normalized.length > maxU64.length ||
+    (normalized.length === maxU64.length && normalized > maxU64)
+  ) {
+    throw invalid(path, "Expected a positive unsigned 64-bit base-unit amount.");
+  }
+  return normalized;
 }
 
 function hex(value: unknown, path: string): string {

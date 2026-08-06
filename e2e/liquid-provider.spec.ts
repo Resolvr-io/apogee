@@ -54,6 +54,10 @@ test.describe.serial("Liquid browser provider", () => {
     // calling origin obtains an explicit connection grant.
     await page.getByRole("button", { name: "Get balance" }).click();
     await expect(page.getByTestId("result")).toContainText('"code": 4100');
+    await page.locator("#transfer-address").fill("tlq1qconformance-address");
+    await page.locator("#transfer-amount").fill("1");
+    await page.getByRole("button", { name: "Send transfer" }).click();
+    await expect(page.getByTestId("result")).toContainText('"code": 4100');
     await page.close();
   });
 
@@ -76,6 +80,25 @@ test.describe.serial("Liquid browser provider", () => {
     await expect.poll(() => page.locator("body").getAttribute("data-connection")).toBe("connected");
     await expect(page.getByTestId("timeline")).toContainText("wallet_connectionChanged");
     const connectedAccount = await accountIdentifier(page);
+
+    const transferApprovalPromise = context.waitForEvent("page", {
+      predicate: (candidate) => candidate.url().includes("/src/prompt/prompt.html"),
+    });
+    await page.getByRole("button", { name: "Enable · sendTransfer" }).click();
+    const transferApproval = await transferApprovalPromise;
+    await expect(transferApproval.locator("dd").filter({ hasText: "sendTransfer" })).toBeVisible();
+    await transferApproval.getByRole("button", { name: "Connect", exact: true }).click();
+    await expect(page.getByTestId("result")).toContainText('"sendTransfer"');
+
+    // The current LWK builder cannot add an arbitrary zero-value output. The
+    // ELIP makes memo support optional, so Apogee rejects it explicitly rather
+    // than constructing and signing a transaction that silently drops bytes.
+    await page.locator("#transfer-address").fill("tlq1qconformance-address");
+    await page.locator("#transfer-amount").fill("1");
+    await page.locator("#transfer-memo").fill("00");
+    await page.getByRole("button", { name: "Send transfer" }).click();
+    await expect(page.getByTestId("result")).toContainText('"code": 4200');
+    await expect(page.getByTestId("result")).toContainText('"capability": "memo"');
 
     await page.reload();
     await expect(page.getByTestId("provider-name")).toHaveText("Apogee");

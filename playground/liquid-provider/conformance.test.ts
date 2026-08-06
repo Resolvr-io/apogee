@@ -20,6 +20,7 @@ const capabilities = {
     "wallet_getConnection",
     "wallet_disconnect",
     "getBalance",
+    "sendTransfer",
   ],
   events: ["wallet_connectionChanged"],
 };
