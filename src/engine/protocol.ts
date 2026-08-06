@@ -244,7 +244,16 @@ export type ProviderPsetAnalysisFailureReason =
   | "unsupported_issuance";
 
 export type ProviderPsetAnalysisResultDTO =
-  | { ok: true; analysis: ProviderPsetAnalysisDTO }
+  | {
+      ok: true;
+      analysis: ProviderPsetAnalysisDTO;
+      /**
+       * The same PSET after LWK added trusted wallet prevout and derivation
+       * details. Hardware signers must receive this serialization rather than
+       * the caller's potentially sparse input.
+       */
+      pset: string;
+    }
   | { ok: false; reason: ProviderPsetAnalysisFailureReason; inputIndex?: number };
 
 export type ProviderPsetSignResultDTO =

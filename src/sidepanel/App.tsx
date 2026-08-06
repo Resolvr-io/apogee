@@ -13,7 +13,7 @@ import { useIdleHeartbeat } from "@/sidepanel/use-idle-heartbeat";
 import { Onboarding } from "@/sidepanel/screens/Onboarding";
 import { Unlock } from "@/sidepanel/screens/Unlock";
 import { Wallet, type View } from "@/sidepanel/screens/Wallet";
-import { Approval } from "@/sidepanel/screens/Approval";
+import { ApprovalOverlay } from "@/sidepanel/screens/Approval";
 import type { ApprovalRequest } from "@/engine/protocol";
 
 // Root shell + router. The view is derived from the keystore state the service
@@ -174,17 +174,13 @@ export function App() {
       <VersionBadge />
       <ToastView toast={toast} />
       {approval && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-[color:var(--overlay)] p-4">
-          <div className="w-full max-w-sm">
-            <Approval
-              request={approval}
-              onClose={() => {
-                setApproval(null);
-                void refresh();
-              }}
-            />
-          </div>
-        </div>
+        <ApprovalOverlay
+          request={approval}
+          onClose={() => {
+            setApproval(null);
+            void refresh();
+          }}
+        />
       )}
     </div>
   );

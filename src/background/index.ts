@@ -2484,7 +2484,11 @@ async function handleApprovalDecision(
         if (!providerPsetReviewsMatch(pending.expectedAnalysis, analyzed.analysis)) {
           throw providerPsetSigningError({ ok: false, reason: "review_changed" });
         }
-        result = await signProviderPsetWithJade(pending, info.fingerprint);
+        result = await signProviderPsetWithJade(
+          pending,
+          info.fingerprint,
+          analyzed.pset,
+        );
       } else {
         const signed = await engine<ProviderPsetSignResultDTO>({
           kind: "signProviderPset",
@@ -2687,12 +2691,16 @@ async function signWithJade(
 async function signProviderPsetWithJade(
   approval: Extract<PendingApproval, { kind: "signPset" }>,
   fingerprint: string,
+  enrichedPset: string,
 ): Promise<LiquidSignPsetResult> {
   const id = `jsign-${jadeSignSeq++}-${Date.now()}`;
   const pset = await new Promise<string>((resolve, reject) => {
     const pending: PendingJadeSign = {
       kind: "signPset",
-      pset: approval.pset,
+      // analyzeProviderPset calls LWK addDetails() before returning this copy.
+      // Jade needs those trusted prevout and derivation fields to recognize and
+      // sign wallet inputs when the dapp supplied a minimal PSET.
+      pset: enrichedPset,
       descriptor: approval.descriptor,
       network: approval.network,
       fingerprint,
