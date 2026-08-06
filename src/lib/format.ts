@@ -1,6 +1,6 @@
 // Amount formatting. LBTC has 8 decimals like Bitcoin.
 
-const SATS_PER_BTC = 100_000_000;
+export const SATS_PER_BTC = 100_000_000;
 
 /** Group a sats integer with thousands separators, e.g. 1234567 → "1,234,567". */
 export function formatSats(sats: number): string {

@@ -1,9 +1,18 @@
 # Apogee
 
-A self-custodial **Liquid (LBTC)** wallet browser extension. Apogee holds the
-keys and signs; web apps connect to it as a dapp through an injected
-`window.liquid` / `window.apogee` provider, MetaMask-style. The app never
-exposes a seed to the page.
+A self-custodial **Liquid (LBTC)** wallet browser extension. Apogee holds the keys
+and signs; web apps connect to it as a dapp through an injected `window.liquid` /
+`window.apogee` provider. The app never exposes a seed to the page.
+
+<!-- A github.com/user-attachments URL inherits the access control of wherever it
+     was uploaded, so one minted from a private context 404s for logged-out visitors
+     and the image breaks for everyone but the uploader. This one was uploaded to an
+     issue on this repo, so it is public — verified by an unauthenticated fetch.
+     Re-upload the same way if it is ever replaced. -->
+
+<img width="1280" height="800"
+     alt="Five Apogee side-panel screens: the lock screen over an animated ocean; wallet creation; the balance with its price chart, tokens and activity; a receive address with QR; and settings"
+     src="https://github.com/user-attachments/assets/508dff82-8292-4f57-bff9-f2afb22b71a1" />
 
 ## Run / build
 
@@ -54,7 +63,8 @@ ever receive watch-only data and signing requests.
 - Onboarding makes hardware-vs-local a **one-time choice at init**, and picks the
   network (**Mainnet** or **Testnet**) for create, restore, and Jade pairing alike:
   create or restore a seed, **or** connect a hardware wallet.
-- Unlock, balance (sats / LBTC / fiat, hide-balance; defaults to sats), receive (branded address + QR),
+- Unlock, balance — the whole portfolio as one figure, rendered as sats / LBTC / fiat
+  with hide-balance; defaults to sats — receive (branded address + QR),
   send (build → review → sign → broadcast), Received / Sent **toasts**, a persistent
   **connection-status bar**, and settings (network, currency, denomination, auto-lock,
   background animation, reveal seed, connected apps).
@@ -97,6 +107,27 @@ Any web app can integrate this provider. The extension exposes the standard
 **`window.liquid`** provider interface (EIP-1193 `request` + EIP-6963
 discovery); the implementation is in
 [`src/provider/liquid-provider.ts`](src/provider/liquid-provider.ts).
+
+## Unreleased
+
+- **The balance is the whole portfolio, not just L-BTC.** A wallet holding USDt
+  and no L-BTC used to read "0 sats" at the top of the panel while the Tokens
+  list right below it showed a real balance. The headline figure now folds in
+  every USD-pegged token at the spot rate and calls itself a total, so the number
+  you see first is the one you actually hold. Sats, LBTC and fiat are three
+  renderings of a single figure rather than three separate sums, so they cannot
+  drift apart from each other.
+- **Nothing is guessed, and nothing is quietly dropped.** An asset with no price
+  source is left out of the total rather than counted as zero or scaled as though
+  it were a dollar — and the line beneath the figure says how many were left out,
+  so the total never silently understates what you hold. While a price is still
+  in flight the figure keeps the same "not final" pulse the wallet already uses
+  for an unconfirmed balance, and stops pulsing once the rate has definitively
+  failed rather than pulsing forever. A wallet holding only L-BTC sees no change
+  at all — same figure, same wording.
+- **Display only.** Send and Swap read per-asset balances straight from the chain,
+  so a wrong or missing rate can misprice this figure but can never change what
+  leaves the wallet. See [`docs/price-sources.md`](docs/price-sources.md).
 
 ## 0.6.0
 

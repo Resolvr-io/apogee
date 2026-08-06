@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { LiquidNetwork } from "@/keystore/keystore";
-import { explorerTxUrl } from "./explorer";
+import { explorerAssetUrl, explorerTxUrl } from "./explorer";
 
 const TXID = "cee35b449187a60929294f0478b4c819ae8a8aecf0c99e2d7aaf671dc36949c7";
 
@@ -89,6 +89,35 @@ describe("explorerTxUrl", () => {
     for (const network of networks) {
       const url = explorerTxUrl(network, TXID);
       expect(url === null || url.startsWith("https://liquid.network/")).toBe(true);
+    }
+  });
+});
+
+/**
+ * The asset route is `assets/asset/:id` — the single-asset view is a child of the
+ * assets section in mempool's Liquid frontend, not a top-level `asset/:id`. Pinned
+ * because the mistake is undetectable at runtime: a wrong route renders an empty
+ * page rather than a 404, for the same single-page-app reason described above.
+ */
+describe("explorerAssetUrl", () => {
+  const LBTC = "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d";
+
+  it("nests the asset page under /assets", () => {
+    expect(explorerAssetUrl("liquid", LBTC)).toBe(`https://liquid.network/assets/asset/${LBTC}`);
+    expect(explorerAssetUrl("liquidtestnet", LBTC)).toBe(
+      `https://liquid.network/testnet/assets/asset/${LBTC}`,
+    );
+  });
+
+  it("is not a top-level /asset/ path", () => {
+    expect(explorerAssetUrl("liquid", LBTC)).not.toBe(`https://liquid.network/asset/${LBTC}`);
+  });
+
+  it("applies the same network and id guards as the transaction link", () => {
+    expect(explorerAssetUrl("regtest", LBTC)).toBeNull();
+    expect(explorerAssetUrl("__proto__" as LiquidNetwork, LBTC)).toBeNull();
+    for (const bad of ["", "abc", `${LBTC}0`, "../../tx/foo"]) {
+      expect(explorerAssetUrl("liquid", bad)).toBeNull();
     }
   });
 });
