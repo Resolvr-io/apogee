@@ -113,6 +113,7 @@ export async function runSafeConformanceChecks(
       assert(raw.methods.includes(method), `missing lifecycle method ${method}`);
     }
     assert(raw.methods.includes("getBalance"), "Apogee does not advertise getBalance");
+    assert(raw.methods.includes("sendTransfer"), "Apogee does not advertise sendTransfer");
     assert(raw.events.includes("wallet_connectionChanged"), "missing connection event");
     assert(!containsPrivateState(raw), "capabilities disclose account state");
     capabilities = raw as unknown as ProviderCapabilities;

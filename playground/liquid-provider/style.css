@@ -86,11 +86,14 @@ main { position: relative; z-index: 1; width: min(1180px, calc(100% - 2rem)); ma
 .workspace { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(22rem, 0.95fr); gap: 1rem; margin-bottom: 1rem; }
 .selection { max-width: 12rem; overflow: hidden; border: 1px solid #244052; border-radius: 999px; padding: 0.3rem 0.6rem; color: #8fabbc; font-size: 0.68rem; text-overflow: ellipsis; white-space: nowrap; }
 .button-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
-.asset-field { display: block; margin-top: 1rem; }
-.asset-field span { display: block; margin-bottom: 0.42rem; color: #9ab0bf; font-size: 0.73rem; font-weight: 650; }
-.asset-field em { color: #607887; font-size: 0.66rem; font-style: normal; font-weight: 500; }
-.asset-field input { width: 100%; height: 2.65rem; border: 1px solid #254052; border-radius: 0.6rem; padding: 0 0.75rem; outline: none; color: #dcecf6; background: #06111a; font-size: 0.74rem; }
-.asset-field input:focus { border-color: #329bd8; box-shadow: 0 0 0 2px rgba(50, 155, 216, 0.12); }
+.request-group { margin-top: 1rem; border-top: 1px solid #1d3444; padding-top: 0.9rem; }
+.request-group h3 { margin: 0 0 0.7rem; color: #bfd3df; font-size: 0.78rem; letter-spacing: 0.04em; }
+.request-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+.request-field { display: block; margin-top: 0.6rem; }
+.request-field span { display: block; margin-bottom: 0.42rem; color: #9ab0bf; font-size: 0.73rem; font-weight: 650; }
+.request-field em { color: #607887; font-size: 0.66rem; font-style: normal; font-weight: 500; }
+.request-field input { width: 100%; height: 2.65rem; border: 1px solid #254052; border-radius: 0.6rem; padding: 0 0.75rem; outline: none; color: #dcecf6; background: #06111a; font-size: 0.74rem; }
+.request-field input:focus { border-color: #329bd8; box-shadow: 0 0 0 2px rgba(50, 155, 216, 0.12); }
 
 .result-shell { overflow: hidden; margin-top: 1rem; border: 1px solid #20394a; border-radius: 0.75rem; background: #030a10; }
 .result-heading { display: flex; justify-content: space-between; border-bottom: 1px solid #172c3b; padding: 0.55rem 0.75rem; color: #698394; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; }
@@ -138,6 +141,7 @@ footer { padding: 0.4rem 0 1rem; color: #496171; font-size: 0.7rem; text-align: 
   .panel { padding: 1rem; }
   .section-heading { align-items: flex-start; }
   .button-grid { grid-template-columns: 1fr; }
+  .request-fields { grid-template-columns: 1fr; }
   .provider-grid { grid-template-columns: 1fr; }
   .timeline li { grid-template-columns: 4.7rem 1fr; }
   .timeline pre { grid-column: 1 / -1; padding-left: 0; }

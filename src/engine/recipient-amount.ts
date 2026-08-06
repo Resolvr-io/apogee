@@ -36,44 +36,74 @@ export interface RecipientAmount {
   toSelf: boolean;
 }
 
-export function recipientAmount(input: RecipientAmountInput): RecipientAmount {
-  const netPolicy = input.deltas[input.policyAssetHex] ?? 0;
-  const tokenDelta = input.isToken ? (input.deltas[input.assetId ?? ""] ?? 0) : 0;
+/** String-valued counterpart used by the browser RPC path, where issued-asset
+ * amounts can exceed JavaScript's safe-integer range. */
+export interface ExactRecipientAmountInput {
+  deltas: Record<string, string>;
+  fee: string;
+  recipientsCount: number;
+  amount: string;
+  drain: boolean;
+  isToken: boolean;
+  assetId?: string;
+  policyAssetHex: string;
+  policyBalance: string;
+}
 
-  // Two independent signals must agree before we treat this as paying ourselves.
-  //
-  //  - No output falls outside the wallet. (`recipients()` excludes wallet-owned
-  //    outputs, so an empty list means nothing leaves.)
-  //  - The deltas show the exact signature of a pure self-send: the policy asset
-  //    moved by precisely the fee, and a token not at all.
-  //
-  // The second condition exists because the first one's dangerous failure mode is
-  // a FALSE POSITIVE — an output that really is external but that lwk didn't list.
-  // That would show "returns to you" over funds that are in fact gone. Any such
-  // outflow shows up as a delta beyond the fee, so requiring both makes the
-  // dangerous direction fail safe: we drop to the PSET-derived amount below,
-  // which is exactly what a normal external send uses.
+export interface ExactRecipientAmount {
+  amount: string;
+  toSelf: boolean;
+}
+
+export function exactRecipientAmount(input: ExactRecipientAmountInput): ExactRecipientAmount {
+  const fee = BigInt(input.fee);
+  const requested = BigInt(input.amount);
+  const policyBalance = BigInt(input.policyBalance);
+  const netPolicy = BigInt(input.deltas[input.policyAssetHex] ?? "0");
+  const tokenDelta = input.isToken
+    ? BigInt(input.deltas[input.assetId ?? ""] ?? "0")
+    : 0n;
+  // Both signals must agree before saying funds return to this wallet: LWK found
+  // no external recipient, and the net deltas show only the policy-asset fee.
+  // Requiring the deltas makes a missed external output fail safe as a normal
+  // outflow instead of presenting it as a harmless self-send.
   const toSelf =
     input.recipientsCount === 0 &&
-    netPolicy === -input.fee &&
-    (!input.isToken || tokenDelta === 0);
+    netPolicy === -fee &&
+    (!input.isToken || tokenDelta === 0n);
 
   if (toSelf) {
-    // An LBTC drain is the one path where `sats` says nothing — the builder
-    // chooses the amount, so the caller's value arrives as 0. A drain pays the
-    // destination every input it spends, less the fee. Clamped at 0: the balance
-    // read can come back empty if lwk's balance JSON fails, and `0 - fee` would
-    // otherwise render a negative amount on a signing screen.
+    // An LBTC drain's requested amount is intentionally zero; derive what the
+    // destination receives from the wallet balance less the prepared fee.
     const amount =
       input.isToken || !input.drain
-        ? input.sats
-        : Math.max(0, input.policyBalance - input.fee);
-    return { amount, toSelf: true };
+        ? requested
+        : policyBalance > fee
+          ? policyBalance - fee
+          : 0n;
+    return { amount: amount.toString(), toSelf: true };
   }
 
-  // Funds leave the wallet, so the deltas carry the real gross flow. For a token
-  // the fee sits entirely in the policy delta, so the token delta needs no fee
-  // term; for LBTC the policy delta's magnitude is recipient + fee.
-  const amount = input.isToken ? -tokenDelta : -netPolicy - input.fee;
-  return { amount, toSelf: false };
+  // External token movement is its asset delta. External LBTC movement includes
+  // the fee in the policy delta, so subtract it to get the recipient amount.
+  const amount = input.isToken ? -tokenDelta : -netPolicy - fee;
+  if (amount < 0n) throw new Error("The prepared transaction has an invalid recipient amount.");
+  return { amount: amount.toString(), toSelf: false };
+}
+
+export function recipientAmount(input: RecipientAmountInput): RecipientAmount {
+  const result = exactRecipientAmount({
+    deltas: Object.fromEntries(
+      Object.entries(input.deltas).map(([asset, amount]) => [asset, String(amount)]),
+    ),
+    fee: String(input.fee),
+    recipientsCount: input.recipientsCount,
+    amount: String(input.sats),
+    drain: input.drain,
+    isToken: input.isToken,
+    assetId: input.assetId,
+    policyAssetHex: input.policyAssetHex,
+    policyBalance: String(input.policyBalance),
+  });
+  return { amount: Number(result.amount), toSelf: result.toSelf };
 }

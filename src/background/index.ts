@@ -700,18 +700,19 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       // A Jade signs on the device in a tab; the jade-signed handler finalizes,
       // broadcasts, and fires balance-changed once the signature returns.
       if (info.signer === "jade") {
-        return signWithJade(msg.pset, info.descriptor, info.network, info.fingerprint, {
-          address: msg.review?.address ?? "",
-          recipientSats: msg.review?.recipientSats ?? 0,
-          fee: msg.review?.fee ?? 0,
-          drain: msg.review?.drain ?? false,
-          toSelf: msg.review?.toSelf ?? false,
-          // Token-send display fields (absent for LBTC) — the Jade tab renders
-          // the asset amount and id; the device itself is the signed truth.
-          assetId: msg.review?.assetId,
-          assetTicker: msg.review?.assetTicker,
-          assetPrecision: msg.review?.assetPrecision,
-        });
+        return signWithJade(
+          msg.pset,
+          info.descriptor,
+          info.network,
+          info.fingerprint,
+          msg.review ?? {
+            address: "",
+            recipientAmount: "0",
+            feeAmount: "0",
+            drain: false,
+            toSelf: false,
+          },
+        );
       }
       // A never-auto-locking wallet stays unlocked indefinitely, so step up auth.
       if ((await autoLockMinutes()) === 0) {
@@ -902,7 +903,10 @@ function queueConnectionWrite<T>(operation: () => Promise<T>): Promise<T> {
   return result;
 }
 
-const SUPPORTED_PROFILE_METHODS = new Set<string>([LIQUID_WALLET_RPC_METHODS.GET_BALANCE]);
+const SUPPORTED_PROFILE_METHODS = new Set<string>([
+  LIQUID_WALLET_RPC_METHODS.GET_BALANCE,
+  LIQUID_WALLET_RPC_METHODS.SEND_TRANSFER,
+]);
 const SUPPORTED_PROFILE_EVENTS = new Set<string>();
 const PROVIDER_CAPABILITIES = Object.freeze({
   browserProviderVersion: LIQUID_BROWSER_PROVIDER_VERSION,
@@ -1268,6 +1272,145 @@ async function handleStandardProvider(requestValue: unknown, origin: string | un
         policyAssetId: connection.policyAssetId,
       };
     }
+    case "sendTransfer": {
+      const connection = await migrateLegacyConnection(origin);
+      if (!connection || !connection.permissions.methods.includes(request.method)) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "This origin is not authorized to request transfers from the connected wallet.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      }
+      const revision = connectionRevision(origin);
+      const generation = connectionGeneration;
+      if (request.params.account && request.params.account !== connection.accountIdentifier) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.INVALID_PARAMS,
+          "The requested account does not match this origin's connected account.",
+          LIQUID_RPC_ERROR_REASONS.INVALID_PARAMS,
+          { path: "params.account" },
+        );
+      }
+      if (request.params.memo !== undefined) {
+        // LWK's transaction builder cannot add a zero-value arbitrary script
+        // output. The profile makes memo support optional, so reject explicitly
+        // instead of silently omitting page-supplied bytes from the transaction.
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+          "Apogee does not currently support sendTransfer memos.",
+          LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+          { method: request.method, capability: "memo", path: "params.memo" },
+        );
+      }
+
+      const amount = BigInt(request.params.amount);
+      if (amount <= 0n || amount > (1n << 64n) - 1n) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.INVALID_PARAMS,
+          "The transfer amount must be between 1 and 18446744073709551615 base units.",
+          LIQUID_RPC_ERROR_REASONS.INVALID_PARAMS,
+          { path: "params.amount" },
+        );
+      }
+      const assetId = request.params.assetId ?? connection.policyAssetId;
+      if (!assetId.startsWith(`${connection.chainId}/elip144:`)) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.INVALID_PARAMS,
+          "The transfer asset belongs to a different chain.",
+          LIQUID_RPC_ERROR_REASONS.INVALID_PARAMS,
+          { path: "params.assetId" },
+        );
+      }
+      const info = await walletInfo(connection.walletId).catch(async () => {
+        await removeConnectedSite(origin);
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "The connected wallet is no longer available.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      });
+      if (info.signer === "watch") {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+          "The connected wallet is watch-only and cannot send transfers.",
+          LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+          { method: request.method, cause: "watch_only" },
+        );
+      }
+
+      const assetHex = assetId.slice(assetId.lastIndexOf(":") + 1);
+      let prepared: PrepareSendResult;
+      try {
+        prepared = await engine<PrepareSendResult>({
+          kind: "prepareSend",
+          descriptor: info.descriptor,
+          network: info.network,
+          address: request.params.recipientAddress,
+          sats: request.params.amount,
+          asset: assetHex,
+        });
+      } catch (error) {
+        throw standardTransferPreparationError(error);
+      }
+
+      const metadata =
+        assetId === connection.policyAssetId
+          ? null
+          : await engine<AssetInfo>({
+              kind: "getAsset",
+              assetId: assetHex,
+              network: info.network,
+            }).catch(() => null);
+      const review: SendReview = {
+        address: request.params.recipientAddress,
+        recipientAmount: prepared.recipientAmount,
+        feeAmount: prepared.feeAmount,
+        drain: false,
+        toSelf: prepared.toSelf,
+        accountIdentifier: connection.accountIdentifier,
+        ...(assetId === connection.policyAssetId
+          ? {}
+          : {
+              assetId,
+              assetTicker: metadata?.ticker ?? null,
+              assetPrecision: metadata?.precision ?? null,
+            }),
+      };
+      if (revision !== connectionRevision(origin) || generation !== connectionGeneration) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "This site's wallet connection changed while Apogee prepared the transfer.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      }
+      const id = `appr-${approvalSeq++}-${Date.now()}`;
+      const approval: ApprovalRequest = {
+        kind: "send",
+        id,
+        origin,
+        review,
+        network: toDappNetwork(info.network),
+        locked: info.signer === "jade" ? false : keystore.isLocked(),
+        signerKind: info.signer,
+      };
+      return await new Promise<SendResult>((resolve, reject) => {
+        parkApproval(id, {
+          kind: "send",
+          request: approval,
+          origin,
+          walletId: info.id,
+          descriptor: info.descriptor,
+          network: info.network,
+          pset: prepared.pset,
+          permissionMethod: request.method,
+          revision,
+          generation,
+          resolve: resolve as (result: unknown) => void,
+          reject,
+        });
+        void routeApproval(approval);
+      });
+    }
     default:
       throw providerError(
         LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
@@ -1276,6 +1419,40 @@ async function handleStandardProvider(requestValue: unknown, origin: string | un
         { method: request.method },
       );
   }
+}
+
+function standardTransferPreparationError(error: unknown): LiquidRpcError {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/insufficient|not enough|need lbtc/i.test(message)) {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
+      "The connected wallet has insufficient funds for this transfer and its network fee.",
+      LIQUID_RPC_ERROR_REASONS.INTERNAL_ERROR,
+      { cause: "insufficient_funds" },
+    );
+  }
+  if (/unconfidential address/i.test(message)) {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.INVALID_PARAMS,
+      "Apogee requires a confidential recipient address.",
+      LIQUID_RPC_ERROR_REASONS.INVALID_PARAMS,
+      { path: "params.recipientAddress" },
+    );
+  }
+  if (/address|network/i.test(message)) {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.INVALID_PARAMS,
+      "The recipient address is invalid or belongs to a different network.",
+      LIQUID_RPC_ERROR_REASONS.INVALID_PARAMS,
+      { path: "params.recipientAddress" },
+    );
+  }
+  console.debug("[apogee] sendTransfer preparation failed:", message);
+  return providerError(
+    LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
+    "Apogee could not prepare this transfer.",
+    LIQUID_RPC_ERROR_REASONS.INTERNAL_ERROR,
+  );
 }
 
 /**
@@ -1444,11 +1621,13 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
         kind: "send",
         id,
         origin: origin ?? "an unknown site",
-        address: msg.address,
-        recipientSats: prepared.recipientSats,
-        fee: prepared.fee,
-        drain: Boolean(msg.drain),
-        toSelf: prepared.toSelf,
+        review: {
+          address: msg.address,
+          recipientAmount: prepared.recipientAmount,
+          feeAmount: prepared.feeAmount,
+          drain: Boolean(msg.drain),
+          toSelf: prepared.toSelf,
+        },
         network: toDappNetwork(info.network),
         // A Jade signs on-device, so there's no unlock-to-sign for it.
         locked: info.signer === "jade" ? false : keystore.isLocked(),
@@ -1464,6 +1643,8 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
           descriptor: info.descriptor,
           network: info.network,
           pset: prepared.pset,
+          revision: origin ? connectionRevision(origin) : 0,
+          generation: connectionGeneration,
           resolve: resolve as (r: unknown) => void,
           reject,
         });
@@ -1484,7 +1665,7 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
 type PendingApproval =
   | {
       kind: "connect";
-      request: ApprovalRequest;
+      request: Extract<ApprovalRequest, { kind: "connect" }>;
       origin: string | undefined;
       connection: StoredProviderConnection;
       result: unknown;
@@ -1497,12 +1678,16 @@ type PendingApproval =
     }
   | {
       kind: "send";
-      request: ApprovalRequest;
+      request: Extract<ApprovalRequest, { kind: "send" }>;
       origin: string | undefined;
       walletId: string;
       descriptor: string;
       network: LiquidNetwork;
       pset: string;
+      /** Present for standard RPC sends; legacy sends require a legacy connection. */
+      permissionMethod?: string;
+      revision: number;
+      generation: number;
       resolve: (result: unknown) => void;
       reject: (err: Error) => void;
       timer?: ReturnType<typeof setTimeout>;
@@ -1554,7 +1739,13 @@ function rejectPendingApprovals(origin: string | undefined, reason: string): voi
               reason,
               LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
             )
-          : new Error(reason),
+          : p.permissionMethod
+            ? providerError(
+                LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+                reason,
+                LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+              )
+            : new Error(reason),
       );
       browser.runtime.sendMessage({ type: "apogee/approval-expired", id }).catch(() => {});
       if (p.windowId !== undefined) browser.windows.remove(p.windowId).catch(() => {});
@@ -1594,14 +1785,21 @@ async function routeApproval(request: ApprovalRequest): Promise<void> {
     const p = pendingApprovals.get(request.id);
     if (p) {
       pendingApprovals.delete(request.id);
+      clearTimeout(p.timer);
       p.reject(
-        request.kind === "connect"
+        p.kind === "connect"
           ? providerError(
               LIQUID_RPC_ERROR_CODES.USER_REJECTED,
               "You rejected the connection.",
               LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
             )
-          : new Error("You rejected the transaction."),
+          : p.permissionMethod
+            ? providerError(
+                LIQUID_RPC_ERROR_CODES.USER_REJECTED,
+                "You rejected the transfer.",
+                LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
+              )
+            : new Error("You rejected the transaction."),
       );
     }
   };
@@ -1626,7 +1824,13 @@ async function handleApprovalDecision(
             "You rejected the connection.",
             LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
           )
-        : new Error("You rejected the transaction."),
+        : pending.permissionMethod
+          ? providerError(
+              LIQUID_RPC_ERROR_CODES.USER_REJECTED,
+              "You rejected the transfer.",
+              LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
+            )
+          : new Error("You rejected the transaction."),
     );
     return { rejected: true };
   }
@@ -1674,9 +1878,26 @@ async function handleApprovalDecision(
   // Re-validate the session at decision time: the site may have been revoked
   // while this send approval sat open. removeConnectedSite/reset also proactively
   // reject pending approvals; this closes the approve-vs-revoke race.
-  const connection = await requireLegacyConnection(pending.origin).catch(() => null);
-  if (!connection || connection.walletId !== pending.walletId) {
-    const err = new Error("This site is no longer connected.");
+  const revisionMatches =
+    pending.generation === connectionGeneration &&
+    (pending.origin === undefined || pending.revision === connectionRevision(pending.origin));
+  const connection = !revisionMatches
+    ? null
+    : pending.permissionMethod && pending.origin
+      ? (await getProviderConnections())[pending.origin] ?? null
+      : await requireLegacyConnection(pending.origin).catch(() => null);
+  const authorized =
+    connection &&
+    connection.walletId === pending.walletId &&
+    (!pending.permissionMethod || connection.permissions.methods.includes(pending.permissionMethod));
+  if (!authorized) {
+    const err = pending.permissionMethod
+      ? providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "This site is no longer authorized to send this transfer.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        )
+      : new Error("This site is no longer connected.");
     pending.reject(err);
     throw err;
   }
@@ -1686,23 +1907,19 @@ async function handleApprovalDecision(
   const info = await walletInfo(pending.walletId);
   // Watch-only wallets can't sign — refuse the spend outright.
   if (info.signer === "watch") {
-    const err = new Error("Watch-only wallets can't sign or send.");
+    const err = pending.permissionMethod
+      ? providerError(
+          LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+          "The connected wallet is watch-only and cannot send transfers.",
+          LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+          { method: pending.permissionMethod, cause: "watch_only" },
+        )
+      : new Error("Watch-only wallets can't sign or send.");
     pending.reject(err);
     throw err;
   }
   if (info.signer === "jade") {
-    // `pending` is always the send variant here, so request.kind is "send"; the
-    // else is an unreachable fallback kept only to satisfy the broad request type.
-    const summary: SendReview =
-      pending.request.kind === "send"
-        ? {
-            address: pending.request.address,
-            recipientSats: pending.request.recipientSats,
-            fee: pending.request.fee,
-            drain: pending.request.drain,
-            toSelf: pending.request.toSelf,
-          }
-        : { address: "", recipientSats: 0, fee: 0, drain: false, toSelf: false };
+    const summary: SendReview = pending.request.review;
     try {
       const result = await signWithJade(
         pending.pset,
@@ -1720,7 +1937,14 @@ async function handleApprovalDecision(
     }
   }
   if (keystore.isLocked()) {
-    const err = new Error("Unlock Apogee to approve this transaction.");
+    const err = pending.permissionMethod
+      ? providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "Unlock Apogee to approve this transfer.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+          { cause: "locked" },
+        )
+      : new Error("Unlock Apogee to approve this transaction.");
     pending.reject(err);
     throw err;
   }
@@ -1728,7 +1952,14 @@ async function handleApprovalDecision(
   // sends (Jade signs on-device, handled above).
   if ((await autoLockMinutes()) === 0) {
     if (!password || !(await keystore.verifyPassword(password))) {
-      const err = new Error("Enter your password to approve this send.");
+      const err = pending.permissionMethod
+        ? providerError(
+            LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+            "Enter your password to approve this transfer.",
+            LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+            { cause: "step_up_required" },
+          )
+        : new Error("Enter your password to approve this send.");
       pending.reject(err);
       throw err;
     }

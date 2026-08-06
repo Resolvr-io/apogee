@@ -61,15 +61,42 @@
           <div class="button-grid">
             <button id="capabilities">Get capabilities</button>
             <button id="connect">Connect · getBalance</button>
+            <button id="connect-transfer">Enable · sendTransfer</button>
             <button id="connection">Get connection</button>
             <button id="disconnect" class="danger">Disconnect</button>
           </div>
 
-          <label class="asset-field">
-            <span>Asset ID <em>optional</em></span>
-            <input id="asset-id" autocomplete="off" placeholder="Defaults to the policy asset" />
-          </label>
-          <button id="balance" class="wide">Get balance</button>
+          <div class="request-group">
+            <h3>Balance</h3>
+            <label class="request-field">
+              <span>Asset ID <em>optional</em></span>
+              <input id="asset-id" autocomplete="off" placeholder="Defaults to the policy asset" />
+            </label>
+            <button id="balance" class="wide">Get balance</button>
+          </div>
+
+          <div class="request-group">
+            <h3>Transfer</h3>
+            <label class="request-field">
+              <span>Recipient address</span>
+              <input id="transfer-address" autocomplete="off" placeholder="Confidential Liquid address" />
+            </label>
+            <div class="request-fields">
+              <label class="request-field">
+                <span>Amount <em>base units</em></span>
+                <input id="transfer-amount" inputmode="numeric" autocomplete="off" placeholder="1" />
+              </label>
+              <label class="request-field">
+                <span>Asset ID <em>optional</em></span>
+                <input id="transfer-asset" autocomplete="off" placeholder="Policy asset" />
+              </label>
+            </div>
+            <label class="request-field">
+              <span>Memo <em>optional hex; currently rejected by Apogee</em></span>
+              <input id="transfer-memo" autocomplete="off" placeholder="4c6971756964" />
+            </label>
+            <button id="transfer" class="wide">Send transfer</button>
+          </div>
 
           <div class="result-shell">
             <div class="result-heading">

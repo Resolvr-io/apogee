@@ -20,7 +20,7 @@ import {
   ENTERPRISE_TOKEN_URL,
 } from "@/lib/debug";
 import { SCAN_STATE_DB } from "@/engine/protocol";
-import { recipientAmount } from "./recipient-amount";
+import { exactRecipientAmount } from "./recipient-amount";
 import { verifyDealerPset } from "@/engine/verify-dealer-pset";
 import type {
   AddressDTO,
@@ -1214,8 +1214,8 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         // Fee-affordability preflight: a wallet flush with tokens but empty of
         // LBTC can't pay the network fee — say so instead of surfacing lwk's
         // raw insufficient-funds error for an asset the user has plenty of.
-        const balances = balanceToRecord(entry.wollet.balance());
-        if ((balances[entry.policyAssetHex] ?? 0) <= 0) {
+        const balances = balanceToStringRecord(entry.wollet.balance());
+        if (BigInt(balances[entry.policyAssetHex] ?? "0") <= 0n) {
           throw new Error("You need LBTC to pay the network fee — this wallet has none.");
         }
       }
@@ -1225,15 +1225,26 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       // sending the entire token balance is an ordinary fixed send). Resolve the
       // amount here from the live wallet balance rather than trusting the UI's
       // possibly-stale figure.
-      let sats = req.sats;
+      let sats: bigint;
+      try {
+        sats =
+          typeof req.sats === "string"
+            ? BigInt(req.sats)
+            : Number.isSafeInteger(req.sats)
+              ? BigInt(req.sats)
+              : -1n;
+      } catch {
+        sats = -1n;
+      }
       if (isToken && req.drain) {
-        sats = balanceToRecord(entry.wollet.balance())[req.asset as string] ?? 0;
+        const balance = balanceToStringRecord(entry.wollet.balance())[req.asset as string] ?? "0";
+        sats = BigInt(balance);
       }
 
-      // Guard the fixed-amount path so a non-integer/negative amount can't reach
-      // BigInt() and throw raw. (LBTC drain skips this — the builder sets the
-      // amount.)
-      if ((isToken || !req.drain) && (!Number.isSafeInteger(sats) || sats <= 0)) {
+      // LWK's builder accepts an unsigned 64-bit base-unit amount. Keep the RPC
+      // decimal string exact until this conversion and reject rather than round.
+      const maxU64 = (1n << 64n) - 1n;
+      if ((isToken || !req.drain) && (sats <= 0n || sats > maxU64)) {
         throw new Error("Invalid send amount.");
       }
 
@@ -1241,18 +1252,18 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       try {
         pset = isToken
           ? new lwk.TxBuilder(net)
-              .addRecipient(addr, BigInt(sats), assetId as Lwk.AssetId)
+              .addRecipient(addr, sats, assetId as Lwk.AssetId)
               .finish(entry.wollet)
           : req.drain
             ? new lwk.TxBuilder(net).drainLbtcWallet().drainLbtcTo(addr).finish(entry.wollet)
-            : new lwk.TxBuilder(net).addLbtcRecipient(addr, BigInt(sats)).finish(entry.wollet);
+            : new lwk.TxBuilder(net).addLbtcRecipient(addr, sats).finish(entry.wollet);
       } catch (e) {
         // A token send with ample token balance can still fail on the LBTC fee;
         // translate lwk's generic insufficient-funds into the actionable cause.
         const m = e instanceof Error ? e.message.toLowerCase() : "";
         if (isToken && m.includes("insufficient")) {
-          const balances = balanceToRecord(entry.wollet.balance());
-          if ((balances[req.asset as string] ?? 0) >= sats) {
+          const balances = balanceToStringRecord(entry.wollet.balance());
+          if (BigInt(balances[req.asset as string] ?? "0") >= sats) {
             throw new Error("Not enough LBTC to pay the network fee.");
           }
         }
@@ -1260,25 +1271,25 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       }
 
       // Read the fee and the wallet's net per-asset deltas off the PSET we
-      // actually built, then hand them to `recipientAmount` — which lives in its
+      // actually built, then hand them to `exactRecipientAmount` — which lives in its
       // own module because everything here is behind loadLwk() + a live Wollet
       // and so can't be reached from a test. See recipient-amount.ts for why the
       // amount is PSET-derived rather than taken from the caller, and for the
       // one case (paying ourselves) where the PSET has nothing left to read.
       const psetBalance = entry.wollet.psetDetails(pset).balance();
-      const fee = Number(psetBalance.feesIn(net.policyAsset()));
-      const deltas = balanceToRecord(psetBalance.balances());
+      const feeAmount = psetBalance.feesIn(net.policyAsset()).toString();
+      const deltas = balanceToStringRecord(psetBalance.balances());
       // Only an LBTC drain needs the wallet balance (see recipient-amount.ts), so
       // don't pay for the extra lwk read on an ordinary send.
       const policyBalance =
         !isToken && req.drain
-          ? (balanceToRecord(entry.wollet.balance())[entry.policyAssetHex] ?? 0)
-          : 0;
-      const { amount, toSelf } = recipientAmount({
+          ? (balanceToStringRecord(entry.wollet.balance())[entry.policyAssetHex] ?? "0")
+          : "0";
+      const { amount: recipientAmount, toSelf } = exactRecipientAmount({
         deltas,
-        fee,
+        fee: feeAmount,
         recipientsCount: psetBalance.recipients().length,
-        sats,
+        amount: sats.toString(),
         drain: Boolean(req.drain),
         isToken,
         assetId: req.asset,
@@ -1288,8 +1299,10 @@ export async function handle(req: EngineRequest): Promise<unknown> {
 
       const result: PrepareSendResult = {
         pset: pset.toString(),
-        fee,
-        recipientSats: amount,
+        fee: Number(feeAmount),
+        recipientSats: Number(recipientAmount),
+        feeAmount,
+        recipientAmount,
         assetId: isToken ? (req.asset as string) : entry.policyAssetHex,
         toSelf,
       };

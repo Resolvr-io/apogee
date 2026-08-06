@@ -48,7 +48,8 @@ export type EngineRequest =
       descriptor: string;
       network: LiquidNetwork;
       address: string;
-      sats: number;
+      /** Base-unit amount. Decimal strings preserve ELIP RPC values above 2^53. */
+      sats: number | string;
       drain?: boolean;
       asset?: string; // asset id hex; absent → LBTC (policy asset)
     }
@@ -349,6 +350,9 @@ export interface PrepareSendResult {
   pset: string;
   fee: number; // network fee, always in LBTC sats
   recipientSats: number; // what the recipient actually receives, in BASE UNITS of `assetId`
+  /** Exact base-10 values for browser RPC callers; the numeric fields are legacy UI compatibility. */
+  feeAmount: string;
+  recipientAmount: string;
   assetId: string; // which asset moves — the policy asset hex for LBTC sends
   // The destination belongs to this wallet, so the funds come straight back and
   // the fee is the whole cost. Say so on review screens: otherwise a self-send
@@ -390,8 +394,8 @@ export interface SwapQuotePreview {
 /** Human-readable spend details for the Jade signing tab's review summary. */
 export interface SendReview {
   address: string;
-  recipientSats: number; // base units of the sent asset (sats for LBTC)
-  fee: number; // LBTC sats
+  recipientAmount: string; // base units of the sent asset (sats for LBTC)
+  feeAmount: string; // LBTC sats
   drain: boolean;
   // Destination is one of this wallet's own addresses — the amount returns, so
   // the fee is the only cost. Display-only, like the rest of this summary.
@@ -403,6 +407,8 @@ export interface SendReview {
   assetId?: string;
   assetTicker?: string | null;
   assetPrecision?: number | null;
+  /** Present for standard browser-provider transfers so the selected account is reviewable. */
+  accountIdentifier?: string;
 }
 
 // ---- page provider (dapp) → content bridge → service worker ----------------
@@ -488,11 +494,7 @@ export type ApprovalRequest =
       kind: "send";
       id: string;
       origin: string; // requesting dapp origin
-      address: string; // destination
-      recipientSats: number; // what the recipient receives
-      fee: number; // network fee, sats
-      drain: boolean; // "send max"
-      toSelf: boolean; // destination is ours — the amount returns, fee is the cost
+      review: SendReview;
       network: DappNetwork;
       locked: boolean; // wallet was locked at request time → the UI must unlock first
       signerKind: WalletSigner; // "local" | "jade" — jade signs on-device in a tab

@@ -24,6 +24,10 @@ const checks = element("checks");
 const checkSummary = element("check-summary");
 const frameResult = element("frame-result");
 const assetInput = element("asset-id") as HTMLInputElement;
+const transferAddress = element("transfer-address") as HTMLInputElement;
+const transferAmount = element("transfer-amount") as HTMLInputElement;
+const transferAsset = element("transfer-asset") as HTMLInputElement;
+const transferMemo = element("transfer-memo") as HTMLInputElement;
 
 element("origin").textContent = window.location.origin;
 
@@ -49,11 +53,30 @@ element("capabilities").addEventListener("click", () =>
 element("connect").addEventListener("click", () =>
   void invoke("wallet_connect", { methods: ["getBalance"], events: [] }),
 );
+element("connect-transfer").addEventListener("click", () =>
+  void invoke("wallet_connect", { methods: ["sendTransfer"], events: [] }),
+);
 element("connection").addEventListener("click", () => void invoke("wallet_getConnection", {}));
 element("disconnect").addEventListener("click", () => void invoke("wallet_disconnect", {}));
 element("balance").addEventListener("click", () => {
   const assetId = assetInput.value.trim();
   void invoke("getBalance", assetId ? { assetId } : {});
+});
+element("transfer").addEventListener("click", () => {
+  const recipientAddress = transferAddress.value.trim();
+  const amount = transferAmount.value.trim();
+  if (!recipientAddress || !amount) {
+    showError(new Error("Recipient address and amount are required."));
+    return;
+  }
+  const assetId = transferAsset.value.trim();
+  const memo = transferMemo.value.trim();
+  void invoke("sendTransfer", {
+    recipientAddress,
+    amount,
+    ...(assetId ? { assetId } : {}),
+    ...(memo ? { memo } : {}),
+  });
 });
 element("clear-log").addEventListener("click", () => {
   timeline.replaceChildren();

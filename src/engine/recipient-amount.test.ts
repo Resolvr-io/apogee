@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { recipientAmount, type RecipientAmountInput } from "./recipient-amount";
+import {
+  exactRecipientAmount,
+  recipientAmount,
+  type RecipientAmountInput,
+} from "./recipient-amount";
 
 const POLICY = "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d";
 const TOKEN = "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2";
@@ -127,5 +131,38 @@ describe("the self-send predicate fails safe", () => {
     const deltas = { [POLICY]: -33 };
     expect(recipientAmount(base({ deltas, recipientsCount: 0 })).toSelf).toBe(true);
     expect(recipientAmount(base({ deltas, recipientsCount: 1 })).toSelf).toBe(false);
+  });
+});
+
+describe("exact browser-RPC amounts", () => {
+  it("preserves issued-asset amounts above Number.MAX_SAFE_INTEGER", () => {
+    expect(
+      exactRecipientAmount({
+        deltas: { [POLICY]: "-33", [TOKEN]: "-18446744073709551615" },
+        fee: "33",
+        recipientsCount: 1,
+        amount: "18446744073709551615",
+        drain: false,
+        isToken: true,
+        assetId: TOKEN,
+        policyAssetHex: POLICY,
+        policyBalance: "1000",
+      }),
+    ).toEqual({ amount: "18446744073709551615", toSelf: false });
+  });
+
+  it("derives an exact policy-asset amount and fee from the prepared transaction", () => {
+    expect(
+      exactRecipientAmount({
+        deltas: { [POLICY]: "-9007199254741024" },
+        fee: "33",
+        recipientsCount: 1,
+        amount: "1",
+        drain: false,
+        isToken: false,
+        policyAssetHex: POLICY,
+        policyBalance: "9007199254741024",
+      }),
+    ).toEqual({ amount: "9007199254740991", toSelf: false });
   });
 });

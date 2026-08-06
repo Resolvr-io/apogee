@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
 import type { ApprovalRequest } from "@/engine/protocol";
-import { formatSats } from "@/lib/format";
+import { formatAssetAmountExact, formatBaseUnits } from "@/lib/format";
 import { shortenHex } from "@/lib/utils";
 import {
   Button,
@@ -67,6 +67,16 @@ function networkLabel(n: "mainnet" | "testnet" | "regtest"): string {
 
 export function Approval({ request, onClose }: { request: ApprovalRequest; onClose: () => void }) {
   const isConnect = request.kind === "connect";
+  const review = request.kind === "send" ? request.review : null;
+  const tokenAmount = review?.assetId
+    ? `${formatAssetAmountExact(review.recipientAmount, review.assetPrecision ?? null)} ${review.assetTicker ?? shortenHex(review.assetId, 6, 6)}`
+    : review
+      ? `${formatBaseUnits(review.recipientAmount)} sats`
+      : "";
+  const lbtcTotal =
+    review && !review.assetId
+      ? formatBaseUnits((BigInt(review.recipientAmount) + BigInt(review.feeAmount)).toString())
+      : "";
   // A Jade send is signed on the device (in a tab) after approval, not here.
   const jade = request.kind === "send" && request.signerKind === "jade";
   // A locked wallet must be unlocked before connecting or sending — the SW
@@ -201,23 +211,60 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
       ) : (
         <>
           <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
-            <Row label="To" value={shortenHex(request.address, 10, 8)} mono />
-            <Row label="Network" value={networkLabel(request.network)} />
             <Row
-              label={request.drain ? "Amount (max)" : "Amount"}
-              value={`${formatSats(request.recipientSats)} sats`}
+              label="To"
+              value={shortenHex(review?.address ?? "", 10, 8)}
+              title={review?.address}
+              mono
+            />
+            <Row label="Network" value={networkLabel(request.network)} />
+            {review?.accountIdentifier && (
+              <Row
+                label="Account"
+                value={shortenHex(review.accountIdentifier, 18, 12)}
+                title={review.accountIdentifier}
+                mono
+              />
+            )}
+            {review?.assetId && (
+              <Row
+                label="Asset"
+                value={shortenHex(review.assetId, 18, 12)}
+                title={review.assetId}
+                mono
+              />
+            )}
+            <Row
+              label={review?.drain ? "Amount (max)" : "Amount"}
+              value={tokenAmount}
               amount
             />
-            <Row label="Network fee" value={`${formatSats(request.fee)} sats`} amount />
+            {review?.assetId && review.assetPrecision != null && (
+              <Row
+                label="Base units"
+                value={formatBaseUnits(review.recipientAmount)}
+                mono
+              />
+            )}
+            <Row
+              label="Network fee"
+              value={`${formatBaseUnits(review?.feeAmount ?? "0")} sats`}
+              amount
+            />
             {/* Paying one of our own addresses: the amount returns, so the fee is
                 the whole cost and a sum of the two would overstate the spend. */}
-            {request.toSelf ? (
-              <Row label="Net cost" value={`${formatSats(request.fee)} sats`} strong amount />
-            ) : (
-              <Row label="Total" value={`${formatSats(request.recipientSats + request.fee)} sats`} strong amount />
+            {review?.toSelf ? (
+              <Row
+                label="Net cost"
+                value={`${formatBaseUnits(review.feeAmount)} sats`}
+                strong
+                amount
+              />
+            ) : review?.assetId ? null : (
+              <Row label="Total" value={`${lbtcTotal} sats`} strong amount />
             )}
           </dl>
-          {request.toSelf && (
+          {review?.toSelf && (
             <p className="mt-1.5 text-xs text-[color:var(--text-subtle)]">
               This address belongs to this wallet — the amount returns to you.
             </p>
@@ -286,6 +333,7 @@ function Row({
   strong,
   amount,
   console: consoleValue,
+  title,
 }: {
   label: string;
   value: string;
@@ -298,6 +346,7 @@ function Row({
   // — the wallet fingerprint. TelemetryNumber would read its trailing letters as
   // a ticker and set them in the body face, so this keeps the whole string.
   console?: boolean;
+  title?: string;
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
@@ -314,6 +363,7 @@ function Row({
         {label}
       </dt>
       <dd
+        title={title}
         className={[
           "truncate",
           mono ? "font-mono" : "",

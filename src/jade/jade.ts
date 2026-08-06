@@ -16,7 +16,7 @@ import type * as Lwk from "lwk_wasm";
 import type { LiquidNetwork } from "@/keystore/keystore";
 import type { SendReview } from "@/engine/protocol";
 import { explorerTxUrl } from "@/lib/explorer";
-import { formatAssetAmount, formatSats } from "@/lib/format";
+import { formatAssetAmountExact, formatBaseUnits } from "@/lib/format";
 import { isValidFingerprint, shortenHex } from "@/lib/utils";
 import { browser } from "@/lib/ext";
 
@@ -92,21 +92,23 @@ function summaryHtml(s: SendReview): string {
   // meaningless so the Total row is LBTC-only.
   const isToken = Boolean(s.assetId);
   const amount = isToken
-    ? `${formatAssetAmount(s.recipientSats, s.assetPrecision ?? null)} ${esc(s.assetTicker ?? shortenHex(s.assetId ?? "", 6, 6))}`
-    : `${formatSats(s.recipientSats)} sats`;
+    ? `${formatAssetAmountExact(s.recipientAmount, s.assetPrecision ?? null)} ${esc(s.assetTicker ?? shortenHex(s.assetId ?? "", 6, 6))}`
+    : `${formatBaseUnits(s.recipientAmount)} sats`;
   return `<div class="summary">
       <div class="row"><span class="k">To</span><span class="v mono">${esc(shortenHex(s.address, 10, 8))}</span></div>
+      ${s.accountIdentifier ? `<div class="row"><span class="k">Account</span><span class="v mono">${esc(shortenHex(s.accountIdentifier, 18, 12))}</span></div>` : ""}
       <div class="row"><span class="k">${s.drain ? "Amount (max)" : "Amount"}</span><span class="v">${amount}</span></div>
+      ${isToken && s.assetPrecision != null ? `<div class="row"><span class="k">Base units</span><span class="v mono">${formatBaseUnits(s.recipientAmount)}</span></div>` : ""}
       ${isToken ? `<div class="row"><span class="k">Asset</span><span class="v mono">${esc(shortenHex(s.assetId ?? "", 8, 8))}</span></div>` : ""}
-      <div class="row"><span class="k">Network fee</span><span class="v">${formatSats(s.fee)} sats</span></div>
+      <div class="row"><span class="k">Network fee</span><span class="v">${formatBaseUnits(s.feeAmount)} sats</span></div>
       ${
         isToken
           ? ""
           : s.toSelf
             ? // Paying ourselves: the amount returns, so the fee is the whole
               // cost and adding the two would overstate the spend.
-              `<div class="row total"><span class="k">Net cost</span><span class="v">${formatSats(s.fee)} sats</span></div>`
-            : `<div class="row total"><span class="k">Total</span><span class="v">${formatSats(s.recipientSats + s.fee)} sats</span></div>`
+              `<div class="row total"><span class="k">Net cost</span><span class="v">${formatBaseUnits(s.feeAmount)} sats</span></div>`
+            : `<div class="row total"><span class="k">Total</span><span class="v">${formatBaseUnits((BigInt(s.recipientAmount) + BigInt(s.feeAmount)).toString())} sats</span></div>`
       }
       ${s.toSelf ? `<div class="row"><span class="k"></span><span class="v">To your own wallet</span></div>` : ""}
     </div>`;
@@ -216,11 +218,14 @@ function showBroadcasting(): void {
 
 function showSignDone(summary: SendReview, txid: string): void {
   const explorer = explorerTxUrl(network, txid);
+  const amount = summary.assetId
+    ? `${formatAssetAmountExact(summary.recipientAmount, summary.assetPrecision ?? null)} ${summary.assetTicker ?? shortenHex(summary.assetId, 6, 6)}`
+    : `${formatBaseUnits(summary.recipientAmount)} sats`;
   card.innerHTML = `
     ${stepsHtml(SIGN_STEPS, 3)}
     <div class="status-icon ok">✓</div>
     <h1>Sent</h1>
-    <p class="sub">${formatSats(summary.recipientSats)} sats on their way. You can close this tab.</p>
+    <p class="sub">${esc(amount)} on their way. You can close this tab.</p>
     <div class="txrow">
       <span class="mono">${esc(shortenHex(txid, 10, 8))}</span>
       <button class="copybtn" id="copy">Copy</button>

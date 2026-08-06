@@ -122,6 +122,18 @@ describe("parseLiquidRpcRequest", () => {
     });
   });
 
+  it("canonicalizes transfer amounts before they reach the wallet engine", () => {
+    expect(
+      parseLiquidRpcRequest({
+        method: "sendTransfer",
+        params: { recipientAddress: "ex1qexample", amount: `${"0".repeat(1_000)}1` },
+      }),
+    ).toEqual({
+      method: "sendTransfer",
+      params: { recipientAddress: "ex1qexample", amount: "1" },
+    });
+  });
+
   it("accepts and copies identity requests", () => {
     expect(
       parseLiquidRpcRequest({
@@ -232,6 +244,22 @@ describe("parseLiquidRpcRequest", () => {
       request: {
         method: "sendTransfer",
         params: { recipientAddress: "ex1qexample", amount: 10 },
+      },
+      path: "params.amount",
+    },
+    {
+      name: "zero transfer amount",
+      request: {
+        method: "sendTransfer",
+        params: { recipientAddress: "ex1qexample", amount: "0" },
+      },
+      path: "params.amount",
+    },
+    {
+      name: "transfer amount above u64",
+      request: {
+        method: "sendTransfer",
+        params: { recipientAddress: "ex1qexample", amount: "18446744073709551616" },
       },
       path: "params.amount",
     },

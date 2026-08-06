@@ -278,8 +278,8 @@ export function Send({
       // Pass the review so a Jade send can show the summary in its signing tab.
       const review = {
         address: address.trim(),
-        recipientSats: prepared.recipientSats,
-        fee: prepared.fee,
+        recipientAmount: prepared.recipientAmount,
+        feeAmount: prepared.feeAmount,
         drain,
         toSelf: prepared.toSelf,
         ...(isLbtc

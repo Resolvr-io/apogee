@@ -7,6 +7,36 @@ export function formatSats(sats: number): string {
   return Math.trunc(sats).toLocaleString("en-US");
 }
 
+/** Group an exact base-10 integer without converting through Number. */
+export function formatBaseUnits(amount: string): string {
+  try {
+    return BigInt(amount).toLocaleString("en-US");
+  } catch {
+    return amount;
+  }
+}
+
+/** Render an exact base-unit string with registry precision and no rounding. */
+export function formatAssetAmountExact(amount: string, precision: number | null): string {
+  const p = precision && precision > 0 ? precision : 0;
+  if (p === 0) return formatBaseUnits(amount);
+  try {
+    const value = BigInt(amount);
+    const negative = value < 0n;
+    const digits = (negative ? -value : value).toString().padStart(p + 1, "0");
+    const whole = digits.slice(0, -p);
+    const minimumFraction = Math.min(2, p);
+    let fraction = digits.slice(-p);
+    while (fraction.length > minimumFraction && fraction.endsWith("0")) {
+      fraction = fraction.slice(0, -1);
+    }
+    const grouped = BigInt(whole).toLocaleString("en-US");
+    return `${negative ? "-" : ""}${grouped}${fraction ? `.${fraction}` : ""}`;
+  } catch {
+    return amount;
+  }
+}
+
 /** Render sats as a fixed-8 LBTC string, e.g. 123456 → "0.00123456". */
 export function formatBtc(sats: number): string {
   return (sats / SATS_PER_BTC).toLocaleString("en-US", {
