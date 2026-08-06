@@ -39,7 +39,7 @@ import { APP_VERSION_DISPLAY } from "@/version";
 import { STORE_LISTING_URL } from "@/lib/store-links";
 import type { UpdateCheck } from "@/lib/version-check";
 import { KNOWN_ASSETS } from "@/lib/asset-registry";
-import { type Denom, heroSubtitle, portfolioTotal } from "@/lib/portfolio";
+import { type Denom, assetRows, heroSubtitle, portfolioTotal } from "@/lib/portfolio";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY } from "@/lib/debug";
 import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS } from "@/lib/demo-funds";
 import { cn, shortenHex } from "@/lib/utils";
@@ -103,6 +103,21 @@ function useHideBalance(): [boolean, () => void] {
 /** Debug builds: the Settings > Debug "Demo funds" toggle. Live-updating so
  *  flipping it applies without leaving the wallet screen. Always false outside
  *  debug builds. */
+/**
+ * A rate is only usable if it is a finite positive number.
+ *
+ * `priceFailed` is what gives the balance's "not final" pulse a terminal state,
+ * and it was only ever set from `.catch` — so a `getRate` that *resolves* NaN or
+ * 0 left `pricePending` true with nothing to end it, and the figure pulsed
+ * forever. That is the exact failure the terminal state was added to prevent.
+ * Not reachable through today's rate path, which throws rather than resolving
+ * junk, but the guard costs nothing and the assumption is not enforced anywhere
+ * upstream.
+ */
+function usableRate(r: number | null): number | null {
+  return typeof r === "number" && Number.isFinite(r) && r > 0 ? r : null;
+}
+
 function useDemoFunds(): boolean {
   const [on, setOn] = useState(false);
   useEffect(() => {
@@ -228,7 +243,12 @@ export function Wallet({
     setRateFailed(false);
     wallet
       .getRate(fiat)
-      .then((r) => alive && setRate(r))
+      .then((r) => {
+        if (!alive) return;
+        const usable = usableRate(r);
+        if (usable === null) return setRateFailed(true);
+        setRate(usable);
+      })
       .catch(() => alive && setRateFailed(true));
     return () => {
       alive = false;
@@ -300,7 +320,12 @@ export function Wallet({
     setRateUsdFailed(false);
     wallet
       .getRate("USD")
-      .then((r) => alive && setRateUsd(r))
+      .then((r) => {
+        if (!alive) return;
+        const usable = usableRate(r);
+        if (usable === null) return setRateUsdFailed(true);
+        setRateUsd(usable);
+      })
       .catch(() => alive && setRateUsdFailed(true));
     return () => {
       alive = false;
@@ -775,6 +800,7 @@ export function Wallet({
           // headline is.
           itemizePolicyAsset={total.tokensIncluded}
           rate={rate}
+          denom={denom}
           onSend={
             watchOnly
               ? null
@@ -865,6 +891,7 @@ function Tokens({
   usdToFiat,
   itemizePolicyAsset,
   rate,
+  denom,
   onSend,
   onSwap,
 }: {
@@ -876,31 +903,35 @@ function Tokens({
   usdToFiat: number | null; // 1 USD in the display currency (null = unknown)
   itemizePolicyAsset: boolean; // include L-BTC as a row — see the call site
   rate: number | null; // BTC in the display currency, for the L-BTC row's value
+  denom: Denom; // L-BTC rows follow it; tokens stay in their own precision
   onSend: ((assetId: string) => void) | null; // null → no send affordance (watch-only)
   onSwap: ((assetId: string) => void) | null; // null → no swap affordance (watch-only)
 }) {
-  /**
-   * L-BTC is listed only when the hero above is a portfolio total.
-   *
-   * The policy asset was excluded outright while the hero simply *was* the L-BTC
-   * balance — a row restating it would have been pure duplication. Now that the
-   * hero can be a total, that exclusion leaves the one holding you cannot see
-   * anywhere: a wallet with 2,043 sats and some USDt showed the USDt exactly, the
-   * total in the hero, and the L-BTC nowhere but the Send screen. So the rule is
-   * that the list itemizes the hero whenever the hero is a sum, and stays out of
-   * the way when it isn't.
-   */
-  const rows = sync
-    ? Object.entries(sync.balance)
-        .filter(([a, amt]) => amt > 0 && (itemizePolicyAsset || a !== sync.policyAssetHex))
-        // L-BTC first: it is the fee asset and the denomination everything else
-        // is being converted into, so it reads as the anchor rather than as one
-        // token among several.
-        .sort(([a], [b]) =>
-          a === sync.policyAssetHex ? -1 : b === sync.policyAssetHex ? 1 : 0,
-        )
-    : [];
+  // Selection and order live in lib/portfolio.ts so the rule that keeps the hero
+  // and this list in agreement is covered by tests. See `assetRows`.
+  const rows = assetRows(sync, itemizePolicyAsset);
   if (rows.length === 0) return null;
+
+  /**
+   * L-BTC follows the denomination; tokens stay in their own precision.
+   *
+   * The whole point of the L-BTC row is that the hero can be read against its
+   * parts, so rendering it in LBTC while the hero counts sats defeats it. Every
+   * other L-BTC figure in the panel already honors the setting — `TxRow` takes
+   * `denom`, Send and Swap take `unit={denom === "btc" ? "btc" : "sats"}` with
+   * "Applies to LBTC only — tokens enter in their own precision". This matches
+   * `TxRow` rather than Send/Swap, including fiat: those two collapse fiat to
+   * sats because they are *input* fields and fiat entry is not supported, a
+   * constraint a display list does not have.
+   */
+  const policyAmount = (amt: number): string =>
+    denom === "btc"
+      ? formatBtc(amt)
+      : denom === "fiat"
+        ? rate != null
+          ? formatFiat(satsToFiat(amt, rate), fiat)
+          : "—"
+        : formatSats(amt);
   return (
     <div className="mt-1">
       {/* "Assets", not "Tokens": L-BTC is the policy asset rather than a token,
@@ -919,7 +950,7 @@ function Tokens({
           // precision-3 TEST balance of 1000 → "1.000"); unknown precision falls
           // back to the raw integer.
           const precision = KNOWN_ASSETS[asset]?.precision ?? info?.precision ?? null;
-          const amountLabel = formatAssetAmount(amt, precision);
+          const amountLabel = isPolicy ? policyAmount(amt) : formatAssetAmount(amt, precision);
           // USD-pegged stablecoins have an approximate fiat value (1 unit ≈ $1,
           // converted into the display currency). Anything else has no price
           // source, so no figure is shown — honest over guessed.
@@ -999,7 +1030,7 @@ function Tokens({
                     `cursor-help`'s question mark read as an offer of documentation
                     rather than of a value. */}
                 <div className="flex items-center justify-between gap-3">
-                  <span title={asset} className="cursor-pointer text-[color:var(--text-subtle)]">
+                  <span tabIndex={0} title={asset} className="cursor-pointer text-[color:var(--text-subtle)]">
                     Asset ID
                   </span>
                   <span className="flex items-center gap-0.5">
@@ -1191,7 +1222,7 @@ function TxRow({
             row, so the two identifiers in this panel read alike: the full value on
             the label's tooltip, copy and explorer as icons. */}
         <div className="flex items-center justify-between gap-3">
-          <span title={tx.txid} className="cursor-pointer text-[color:var(--text-subtle)]">
+          <span tabIndex={0} title={tx.txid} className="cursor-pointer text-[color:var(--text-subtle)]">
             Txid
           </span>
           <span className="flex items-center gap-0.5">

@@ -100,9 +100,55 @@ user reads a total, then Send says "Amount exceeds your available balance". That
 is why the word "total" appears in all three denominations rather than only in
 fiat mode.
 
+## The list itemizes the hero
+
+The list below the balance was named **Tokens** and excluded the policy asset,
+which was right while the hero simply *was* the L-BTC balance: a row restating it
+would have been duplication. Once the hero became a total that exclusion left the
+one holding visible nowhere. A real wallet holding 4.87 USDt and 2,043 sats read
+`$6.19 / TOTAL USD · 9,579 SATS` in the hero and `4.87079522` in the list — the
+L-BTC figure appeared only on the Send screen, and was otherwise recoverable only
+by subtracting.
+
+So the rule is: **the list itemizes the hero exactly when the hero is a sum.**
+It is driven by `PortfolioTotal.tokensIncluded`, the same flag that makes the
+subtitle say "total", so the headline and the list cannot disagree about what the
+headline is. An L-BTC-only wallet still sees no list at all.
+
+Three consequences:
+
+- L-BTC sorts first. It is the fee asset and the denomination everything else is
+  converted into, so it reads as the anchor rather than one token among several.
+- Its row follows the **denomination**, like every other L-BTC figure in the
+  panel (`TxRow` takes `denom`; Send and Swap take `unit`). Rendering it in LBTC
+  while the hero counts sats would defeat the row's only purpose. Tokens stay in
+  their own precision — the established split.
+- Its drawer shows a fiat value derived from the display rate. `pegUsd` is false
+  for L-BTC, so the stablecoin branch would have left it blank, which is absurd
+  for the one asset whose price the panel already has.
+
+The heading is now **Assets**: L-BTC is the policy asset, not a token, and the
+heading has to stay true in both modes.
+
+Selection and ordering live in `lib/portfolio.ts` as `assetRows`, not in the
+component — this rule is what keeps the hero and the list in agreement, and
+vitest only collects `src/**` tests, so leaving it in the component would have
+left the load-bearing piece uncovered.
+
+## Identifier rows
+
+Both drawers rendered 20 of an identifier's 64 hex characters. That is enough to
+verify an id against a known value at a glance — a real need, for developers and
+nobody else — and it was the widest element in the drawer. The id moved to the
+label's `title`: no width, and the *whole* value rather than a truncation. Copy
+stays, and the asset row gained the explorer link it never had.
+
+The label carries `tabIndex={0}` so the tooltip is reachable without a mouse. A
+`title` on a non-interactive span is otherwise invisible to keyboard users, which
+would have traded a visible truncation for nothing at all.
+
 ## Deliberately not done
 
-No token subtotal anywhere. The Tokens list is already the breakdown, and each
-row's drawer already carries its own `Value (<fiat>)`. Token row *summaries*
-still show no fiat line — a body-font fiat figure under a telemetry-font amount
-read as a typeface mix.
+No token subtotal anywhere. Each row's drawer already carries its own
+`Value (<fiat>)`. Token row *summaries* still show no fiat line — a body-font
+fiat figure under a telemetry-font amount read as a typeface mix.

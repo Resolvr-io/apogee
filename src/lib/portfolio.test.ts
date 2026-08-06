@@ -15,7 +15,7 @@ import {
   USDT_TESTNET_ASSET_ID,
 } from "./asset-registry";
 import { satsToFiat } from "./format";
-import { heroSubtitle, portfolioTotal, type PortfolioSync } from "./portfolio";
+import { assetRows, heroSubtitle, portfolioTotal, type PortfolioSync } from "./portfolio";
 
 const BTC_USD = 64_500;
 const LBTC = 2_157_431; // sats — the demo dataset's LBTC balance
@@ -228,6 +228,64 @@ describe("portfolioTotal", () => {
     expect(t.lbtcSats).toBe(0);
     expect(t.totalSats).toBe(775);
     expect(t.tokensIncluded).toBe(true);
+  });
+});
+
+/**
+ * The rule that keeps the hero and the list beneath it in agreement, which is why
+ * it lives in this module rather than in the component: it is the one piece of
+ * this feature a component test would otherwise have to cover.
+ */
+describe("assetRows", () => {
+  it("omits L-BTC while the hero is just the L-BTC balance", () => {
+    // An L-BTC-only wallet: nothing to itemize, so the section disappears
+    // entirely rather than restating the hero in a one-row list.
+    expect(assetRows(sync(), false)).toEqual([]);
+  });
+
+  it("lists L-BTC first once the hero is a total", () => {
+    const rows = assetRows(sync({ [USDT_LIQUID_ASSET_ID]: USDT_UNITS }), true);
+    expect(rows.map(([asset]) => asset)).toEqual([LBTC_MAINNET_ASSET_ID, USDT_LIQUID_ASSET_ID]);
+    expect(rows).toEqual([
+      [LBTC_MAINNET_ASSET_ID, LBTC],
+      [USDT_LIQUID_ASSET_ID, USDT_UNITS],
+    ]);
+  });
+
+  it("keeps L-BTC first regardless of the order the balance map arrives in", () => {
+    // Object key order follows insertion, and the sync result is not sorted, so
+    // the anchor position has to be enforced rather than assumed.
+    const out = assetRows(
+      {
+        lbtcSats: LBTC,
+        balance: { [USDT_LIQUID_ASSET_ID]: USDT_UNITS, [LBTC_MAINNET_ASSET_ID]: LBTC },
+        policyAssetHex: LBTC_MAINNET_ASSET_ID,
+      },
+      true,
+    );
+    expect(out[0][0]).toBe(LBTC_MAINNET_ASSET_ID);
+  });
+
+  it("still lists other assets when the hero is not a total", () => {
+    // An unpriceable holding contributes nothing, so the hero stays the plain
+    // L-BTC balance — but the asset is still held and still shown.
+    const rows = assetRows(sync({ [UNKNOWN_ASSET]: 1_000 }), false);
+    expect(rows).toEqual([[UNKNOWN_ASSET, 1_000]]);
+  });
+
+  it("drops zero balances so a spent-out asset leaves no empty row", () => {
+    expect(assetRows(sync({ [USDT_LIQUID_ASSET_ID]: 0 }), true).map(([a]) => a)).toEqual([
+      LBTC_MAINNET_ASSET_ID,
+    ]);
+  });
+
+  it("omits a zero L-BTC balance even when itemizing", () => {
+    const rows = assetRows(sync({ [USDT_LIQUID_ASSET_ID]: USDT_UNITS }, 0), true);
+    expect(rows).toEqual([[USDT_LIQUID_ASSET_ID, USDT_UNITS]]);
+  });
+
+  it("has nothing to show while unsynced", () => {
+    expect(assetRows(null, true)).toEqual([]);
   });
 });
 

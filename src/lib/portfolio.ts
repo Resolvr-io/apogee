@@ -135,6 +135,32 @@ export function portfolioTotal({
 }
 
 /**
+ * Which balances the Assets list shows, in display order.
+ *
+ * Extracted from the component for one reason: this rule is what keeps the hero
+ * and the list beneath it from disagreeing, and vitest only collects
+ * `src/**` tests — a rule that load-bearing should not be the one piece with no
+ * coverage. The decision lives here; the rendering stays in the component.
+ *
+ * `itemizePolicyAsset` should be `PortfolioTotal.tokensIncluded`, the same flag
+ * that makes the subtitle say "total". L-BTC is listed only when the hero is a
+ * sum: while the hero simply *is* the L-BTC balance, a row restating it is
+ * duplication, and once the hero is a total, leaving it out makes the fee asset
+ * the one holding visible nowhere in the panel.
+ */
+export function assetRows(
+  sync: PortfolioSync | null,
+  itemizePolicyAsset: boolean,
+): [string, number][] {
+  if (!sync) return [];
+  return Object.entries(sync.balance)
+    .filter(([asset, amt]) => amt > 0 && (itemizePolicyAsset || asset !== sync.policyAssetHex))
+    // L-BTC first: it is the fee asset and the denomination everything else is
+    // converted into, so it reads as the anchor rather than one token among many.
+    .sort(([a], [b]) => (a === sync.policyAssetHex ? -1 : b === sync.policyAssetHex ? 1 : 0));
+}
+
+/**
  * The line under the hero figure. Source strings are lowercase except tickers
  * and currency codes — the span carries `uppercase`.
  *
