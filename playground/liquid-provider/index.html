@@ -62,6 +62,7 @@
             <button id="capabilities">Get capabilities</button>
             <button id="connect">Connect · getBalance</button>
             <button id="connect-utxos">Enable · getUTXOs</button>
+            <button id="connect-descriptor">Enable · descriptor + event</button>
             <button id="connect-transfer">Enable · sendTransfer</button>
             <button id="connection">Get connection</button>
             <button id="disconnect" class="danger">Disconnect</button>
@@ -87,6 +88,34 @@
               <input id="utxo-asset-id" autocomplete="off" placeholder="Defaults to the policy asset" />
             </label>
             <button id="utxos" class="wide">Get UTXOs</button>
+          </div>
+
+          <div class="request-group">
+            <h3>Wallet descriptor</h3>
+            <p class="request-note">
+              Returns only the ordinary public spend descriptor. Apogee never returns its private
+              SLIP-77 blinding key or any material that can unblind outputs.
+            </p>
+            <div class="request-fields">
+              <label class="request-field">
+                <span>Descriptor type <em>optional</em></span>
+                <select id="descriptor-type">
+                  <option value="">Default</option>
+                  <option value="publicWalletDescriptor">Public wallet descriptor</option>
+                  <option value="publicConfidentialDescriptor">Public confidential descriptor</option>
+                </select>
+              </label>
+              <label class="request-field">
+                <span>Format <em>optional</em></span>
+                <select id="descriptor-format">
+                  <option value="">Wallet default</option>
+                  <option value="bip380-bip389-multipath">BIP-380/BIP-389 multipath</option>
+                  <option value="bip380-split-branches">BIP-380 split branches</option>
+                  <option value="elip150-public-ct-bip389-multipath">ELIP-150 public CT multipath</option>
+                </select>
+              </label>
+            </div>
+            <button id="descriptor" class="wide">Get wallet descriptor</button>
           </div>
 
           <div class="request-group">

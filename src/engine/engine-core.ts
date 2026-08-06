@@ -22,6 +22,7 @@ import {
 import { SCAN_STATE_DB } from "@/engine/protocol";
 import { exactRecipientAmount } from "./recipient-amount";
 import { collectProviderUtxos } from "./provider-utxos";
+import { publicWalletDescriptor } from "./public-wallet-descriptor";
 import { verifyDealerPset } from "@/engine/verify-dealer-pset";
 import type {
   AddressDTO,
@@ -34,6 +35,7 @@ import type {
   PriceHistory,
   PriceRange,
   ProviderProbe,
+  PublicWalletDescriptorDTO,
   ProbeStatus,
   SendResult,
   SignSwapPsetWireResult,
@@ -1184,6 +1186,18 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         wollet.free();
         descriptor.free();
         network.free();
+      }
+    }
+
+    case "getPublicWalletDescriptor": {
+      // Parsing through LWK is the authoritative syntax/policy validation. Work
+      // from its canonical string so the projection helper never interprets a
+      // malformed caller-controlled descriptor.
+      const descriptor = new lwk.WolletDescriptor(req.descriptor);
+      try {
+        return publicWalletDescriptor(descriptor.toString()) satisfies PublicWalletDescriptorDTO;
+      } finally {
+        descriptor.free();
       }
     }
 

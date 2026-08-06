@@ -48,6 +48,7 @@ import type {
   PrepareSendResult,
   PriceHistory,
   ProviderUtxoDTO,
+  PublicWalletDescriptorDTO,
   ProviderAccount,
   ProviderBalance,
   ProviderRequest,
@@ -70,8 +71,12 @@ import {
 } from "@/provider/liquid-browser-provider";
 import { parseLiquidProviderRequest } from "@/provider/liquid-browser-provider-validation";
 import {
+  LIQUID_DESCRIPTOR_FORMATS,
+  LIQUID_DESCRIPTOR_TYPES,
+  LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT,
   LIQUID_WALLET_RPC_METHODS,
   type LiquidGetUTXOsResult,
+  type LiquidGetWalletDescriptorResult,
 } from "@/provider/liquid-rpc";
 import {
   LIQUID_RPC_ERROR_CODES,
@@ -910,9 +915,10 @@ function queueConnectionWrite<T>(operation: () => Promise<T>): Promise<T> {
 const SUPPORTED_PROFILE_METHODS = new Set<string>([
   LIQUID_WALLET_RPC_METHODS.GET_BALANCE,
   LIQUID_WALLET_RPC_METHODS.GET_UTXOS,
+  LIQUID_WALLET_RPC_METHODS.GET_WALLET_DESCRIPTOR,
   LIQUID_WALLET_RPC_METHODS.SEND_TRANSFER,
 ]);
-const SUPPORTED_PROFILE_EVENTS = new Set<string>();
+const SUPPORTED_PROFILE_EVENTS = new Set<string>([LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT]);
 const PROVIDER_CAPABILITIES = Object.freeze({
   browserProviderVersion: LIQUID_BROWSER_PROVIDER_VERSION,
   methods: Object.freeze([
@@ -976,6 +982,56 @@ async function notifyConnectionChanged(
   );
 }
 
+async function notifyWalletDescriptorChanged(
+  origin: string,
+  connection: StoredProviderConnection,
+): Promise<void> {
+  if (
+    keystore.isLocked() ||
+    !connection.permissions.methods.includes(LIQUID_WALLET_RPC_METHODS.GET_WALLET_DESCRIPTOR) ||
+    !connection.permissions.events.includes(LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT)
+  ) {
+    return;
+  }
+
+  const revision = connectionRevision(origin);
+  try {
+    const info = await walletInfo(connection.walletId);
+    const result = await buildPublicWalletDescriptorResult(connection, info.descriptor);
+    const current =
+      revision === connectionRevision(origin) ? (await getProviderConnections())[origin] : undefined;
+    if (
+      keystore.isLocked() ||
+      !current ||
+      current.walletId !== connection.walletId ||
+      !current.permissions.methods.includes(LIQUID_WALLET_RPC_METHODS.GET_WALLET_DESCRIPTOR) ||
+      !current.permissions.events.includes(LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT)
+    ) {
+      return;
+    }
+
+    const tabs = await browser.tabs.query({});
+    await Promise.allSettled(
+      tabs.flatMap((tab) =>
+        tab.id === undefined
+          ? []
+          : [
+              browser.tabs.sendMessage(tab.id, {
+                type: "apogee/provider-event",
+                origin,
+                event: LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT,
+                payload: result,
+              }),
+            ],
+      ),
+    );
+  } catch {
+    // Event delivery is best-effort. A descriptor that cannot pass the public
+    // projection boundary must not break an otherwise valid connection.
+    console.debug("[apogee] descriptor-change event skipped: public projection unavailable");
+  }
+}
+
 async function setProviderConnection(
   origin: string,
   connection: StoredProviderConnection,
@@ -990,6 +1046,7 @@ async function setProviderConnection(
       return false;
     }
     const connections = await getProviderConnections();
+    const previous = connections[origin];
     connections[origin] = connection;
     const storedSites = (await browser.storage.session.get(SITES_KEY))[SITES_KEY];
     const legacySites = Array.isArray(storedSites) ? (storedSites as string[]) : [];
@@ -1000,6 +1057,11 @@ async function setProviderConnection(
     connectionRevisions.set(origin, expectedRevision + 1);
     broadcastSitesChanged();
     await notifyConnectionChanged(origin, connection);
+    const descriptorIdentityChanged =
+      !previous ||
+      previous.accountIdentifier !== connection.accountIdentifier ||
+      previous.policyAssetId !== connection.policyAssetId;
+    if (descriptorIdentityChanged) await notifyWalletDescriptorChanged(origin, connection);
     return true;
   });
 }
@@ -1062,6 +1124,37 @@ async function buildConnection(
     accountIdentifier: `${identity.chainId}:${identity.dwid}`,
     policyAssetId: identity.policyAssetId,
     permissions: { methods: [...methods], events: [...events] },
+  };
+}
+
+async function buildPublicWalletDescriptorResult(
+  connection: StoredProviderConnection,
+  descriptor: string,
+): Promise<LiquidGetWalletDescriptorResult> {
+  const projected = await engine<PublicWalletDescriptorDTO>({
+    kind: "getPublicWalletDescriptor",
+    descriptor,
+  });
+  return {
+    accountIdentifier: connection.accountIdentifier,
+    chainId: connection.chainId,
+    policyAssetId: connection.policyAssetId,
+    descriptors: [
+      {
+        descriptorType: LIQUID_DESCRIPTOR_TYPES.PUBLIC_WALLET_DESCRIPTOR,
+        format: LIQUID_DESCRIPTOR_FORMATS.BIP380_BIP389_MULTIPATH,
+        branchLayout: "multipath",
+        descriptor: projected.descriptor,
+        branches: [
+          { branch: "external", change: 0, addressIndex: "*" },
+          { branch: "internal", change: 1, addressIndex: "*" },
+        ],
+        standardsUsed: projected.standardsUsed,
+        canDeriveScriptPubKeys: true,
+        canDeriveConfidentialAddresses: false,
+        canUnblindOutputs: false,
+      },
+    ],
   };
 }
 
@@ -1150,6 +1243,20 @@ async function requestStandardConnection(
   const selected = existing ?? (await selectConnectionWallet(params.chains));
   const methods = [...new Set([...selected.permissions.methods, ...requestedMethods])];
   const events = [...new Set([...selected.permissions.events, ...requestedEvents])];
+  if (
+    events.includes(LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT) &&
+    !methods.includes(LIQUID_WALLET_RPC_METHODS.GET_WALLET_DESCRIPTOR)
+  ) {
+    throw providerError(
+      LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+      `${LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT} requires getWalletDescriptor permission.`,
+      LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+      {
+        event: LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT,
+        requiredMethod: LIQUID_WALLET_RPC_METHODS.GET_WALLET_DESCRIPTOR,
+      },
+    );
+  }
   const alreadyGranted =
     existing !== null &&
     requestedMethods.every((method) => existing.permissions.methods.includes(method)) &&
@@ -1228,6 +1335,92 @@ async function handleStandardProvider(requestValue: unknown, origin: string | un
       return null;
     case "wallet_connect":
       return requestStandardConnection(origin, request.params);
+    case "getWalletDescriptor": {
+      const connection = await migrateLegacyConnection(origin);
+      if (!connection || !connection.permissions.methods.includes(request.method)) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "This origin is not authorized to read the connected wallet descriptor.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      }
+      if (keystore.isLocked()) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "Unlock Apogee to read this wallet descriptor.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+          { cause: "locked" },
+        );
+      }
+
+      const descriptorType =
+        request.params?.descriptorType ?? LIQUID_DESCRIPTOR_TYPES.PUBLIC_WALLET_DESCRIPTOR;
+      if (descriptorType !== LIQUID_DESCRIPTOR_TYPES.PUBLIC_WALLET_DESCRIPTOR) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+          "Apogee does not expose public confidential descriptors.",
+          LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+          { descriptorType },
+        );
+      }
+      const supportedFormat = LIQUID_DESCRIPTOR_FORMATS.BIP380_BIP389_MULTIPATH;
+      if (
+        request.params?.descriptorFormat &&
+        !request.params.descriptorFormat.some(({ format }) => format === supportedFormat)
+      ) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+          "Apogee cannot return any of the requested descriptor formats.",
+          LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_DESCRIPTOR_FORMAT,
+          {
+            requestedFormats: request.params.descriptorFormat.map(({ format }) => format),
+            supportedFormats: [supportedFormat],
+          },
+        );
+      }
+
+      const revision = connectionRevision(origin);
+      const generation = connectionGeneration;
+      const info = await walletInfo(connection.walletId).catch(async () => {
+        await removeConnectedSite(origin);
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "The connected wallet is no longer available.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      });
+      let result: LiquidGetWalletDescriptorResult;
+      try {
+        result = await buildPublicWalletDescriptorResult(connection, info.descriptor);
+      } catch {
+        // Do not forward parser errors: an upstream error could quote the
+        // private CT descriptor it was asked to parse.
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+          "This wallet descriptor cannot be safely represented in a supported public format.",
+          LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_DESCRIPTOR_FORMAT,
+          { supportedFormats: [supportedFormat] },
+        );
+      }
+
+      const current =
+        generation === connectionGeneration && revision === connectionRevision(origin)
+          ? (await getProviderConnections())[origin]
+          : undefined;
+      if (
+        keystore.isLocked() ||
+        !current ||
+        current.walletId !== connection.walletId ||
+        !current.permissions.methods.includes(request.method)
+      ) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "This origin is no longer authorized to read the connected wallet descriptor.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        );
+      }
+      return result;
+    }
     case "getBalance": {
       const connection = await migrateLegacyConnection(origin);
       if (!connection || !connection.permissions.methods.includes(request.method)) {

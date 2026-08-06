@@ -10,6 +10,7 @@ import { LBTC_MAINNET_ASSET_ID, LBTC_TESTNET_ASSET_ID } from "@/lib/asset-regist
 import {
   LIQUID_CONNECTION_CHANGED_EVENT,
 } from "./liquid-browser-provider";
+import { LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT } from "./liquid-rpc";
 import {
   createLiquidProviderController,
   installLiquidProviderDiscovery,
@@ -315,7 +316,7 @@ const ICON =
   if (window.isSecureContext && window.top === window && window.location.origin !== "null") {
     const standard = createLiquidProviderController(
       (request) => call("rpc", { request }, request.method),
-      [LIQUID_CONNECTION_CHANGED_EVENT],
+      [LIQUID_CONNECTION_CHANGED_EVENT, LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT],
       (error) => console.error("[apogee] Liquid provider listener failed", error),
     );
 
@@ -327,7 +328,8 @@ const ICON =
       if (
         !data ||
         data.source !== "apogee-content-event" ||
-        data.event !== LIQUID_CONNECTION_CHANGED_EVENT
+        data.event !== LIQUID_CONNECTION_CHANGED_EVENT &&
+        data.event !== LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT
       ) {
         return;
       }

@@ -58,6 +58,8 @@ test.describe.serial("Liquid browser provider", () => {
     await expect(page.getByTestId("result")).toContainText('"code": 4100');
     await page.getByRole("button", { name: "Get UTXOs" }).click();
     await expect(page.getByTestId("result")).toContainText('"code": 4100');
+    await page.getByRole("button", { name: "Get wallet descriptor" }).click();
+    await expect(page.getByTestId("result")).toContainText('"code": 4100');
     await page.locator("#transfer-address").fill("tlq1qconformance-address");
     await page.locator("#transfer-amount").fill("1");
     await page.getByRole("button", { name: "Send transfer" }).click();
@@ -83,7 +85,16 @@ test.describe.serial("Liquid browser provider", () => {
     await expect(page.getByTestId("result")).toContainText('"accountIdentifier"');
     await expect.poll(() => page.locator("body").getAttribute("data-connection")).toBe("connected");
     await expect(page.getByTestId("timeline")).toContainText("wallet_connectionChanged");
+    await expect(page.getByTestId("timeline")).not.toContainText(
+      "bip122_walletDescriptorChanged",
+    );
     const connectedAccount = await accountIdentifier(page);
+
+    const eventWithoutMethod = await requestDescriptorEventWithoutMethod(page);
+    expect(eventWithoutMethod).toMatchObject({
+      code: 4200,
+      data: { requiredMethod: "getWalletDescriptor" },
+    });
 
     const transferApprovalPromise = context.waitForEvent("page", {
       predicate: (candidate) => candidate.url().includes("/src/prompt/prompt.html"),
@@ -136,6 +147,53 @@ test.describe.serial("Liquid browser provider", () => {
     await otherOrigin.getByRole("button", { name: "Get balance" }).click();
     await expect(otherOrigin.getByTestId("result")).toContainText('"code": 4100');
 
+    const descriptorApprovalPromise = context.waitForEvent("page", {
+      predicate: (candidate) => candidate.url().includes("/src/prompt/prompt.html"),
+    });
+    await otherOrigin.getByRole("button", { name: "Enable · descriptor + event" }).click();
+    const descriptorApproval = await descriptorApprovalPromise;
+    await expect(
+      descriptorApproval.locator("dd").filter({ hasText: "getWalletDescriptor" }),
+    ).toBeVisible();
+    await expect(
+      descriptorApproval.locator("dd").filter({ hasText: "bip122_walletDescriptorChanged" }),
+    ).toBeVisible();
+    await expect(descriptorApproval.getByText(/derive and correlate/i)).toBeVisible();
+    await expect(descriptorApproval.getByText(/does not reveal private spend keys/i)).toBeVisible();
+    await descriptorApproval.getByRole("button", { name: "Connect", exact: true }).click();
+    await expect(otherOrigin.getByTestId("result")).toContainText('"getWalletDescriptor"');
+    await expect(otherOrigin.getByTestId("timeline")).toContainText(
+      "bip122_walletDescriptorChanged",
+    );
+
+    await otherOrigin.getByRole("button", { name: "Get wallet descriptor" }).click();
+    await expect(otherOrigin.getByTestId("result")).toContainText(
+      '"descriptorType": "publicWalletDescriptor"',
+    );
+    await expect(otherOrigin.getByTestId("result")).toContainText(
+      '"format": "bip380-bip389-multipath"',
+    );
+    const publicDescriptorResult = await otherOrigin.getByTestId("result").textContent();
+    expect(publicDescriptorResult).not.toContain("ct(");
+    expect(publicDescriptorResult).not.toContain("slip77(");
+    expect(publicDescriptorResult).not.toMatch(/(?:xprv|tprv)/);
+    expect(publicDescriptorResult).toContain('"canUnblindOutputs": false');
+
+    await otherOrigin.locator("#descriptor-format").selectOption("bip380-split-branches");
+    await otherOrigin.getByRole("button", { name: "Get wallet descriptor" }).click();
+    await expect(otherOrigin.getByTestId("result")).toContainText('"code": 4200');
+    await expect(otherOrigin.getByTestId("result")).toContainText(
+      '"reason": "unsupported_descriptor_format"',
+    );
+
+    await otherOrigin.locator("#descriptor-format").selectOption("");
+    await otherOrigin.locator("#descriptor-type").selectOption("publicConfidentialDescriptor");
+    await otherOrigin.getByRole("button", { name: "Get wallet descriptor" }).click();
+    await expect(otherOrigin.getByTestId("result")).toContainText('"code": 4200');
+    await expect(otherOrigin.getByTestId("result")).toContainText(
+      '"descriptorType": "publicConfidentialDescriptor"',
+    );
+
     await page.getByRole("button", { name: "Disconnect" }).click();
     await expect(page.getByTestId("result")).toHaveText("null");
     await expect.poll(() => page.locator("body").getAttribute("data-connection")).toBe("disconnected");
@@ -143,6 +201,8 @@ test.describe.serial("Liquid browser provider", () => {
 
     await page.getByRole("button", { name: "Get connection" }).click();
     await expect(page.getByTestId("result")).toHaveText("null");
+    await otherOrigin.getByRole("button", { name: "Disconnect" }).click();
+    await expect(otherOrigin.getByTestId("result")).toHaveText("null");
     await otherOrigin.close();
     await page.close();
   });
@@ -179,4 +239,39 @@ async function accountIdentifier(page: Page): Promise<string> {
   const parsed = JSON.parse(result ?? "null") as { accountIdentifier?: unknown };
   expect(typeof parsed.accountIdentifier).toBe("string");
   return String(parsed.accountIdentifier);
+}
+
+async function requestDescriptorEventWithoutMethod(page: Page): Promise<unknown> {
+  return page.evaluate(async () => {
+    const pageWindow = globalThis as typeof globalThis & {
+      addEventListener(type: string, listener: (event: Event) => void): void;
+      dispatchEvent(event: Event): boolean;
+      removeEventListener(type: string, listener: (event: Event) => void): void;
+    };
+    const detail = await new Promise<{
+      provider: {
+        request(args: unknown): Promise<unknown>;
+      };
+    }>((resolve) => {
+      const receive = (event: Event) => {
+        pageWindow.removeEventListener("liquid:announceProvider", receive);
+        resolve((event as CustomEvent).detail);
+      };
+      pageWindow.addEventListener("liquid:announceProvider", receive);
+      pageWindow.dispatchEvent(new Event("liquid:requestProvider"));
+    });
+    try {
+      await detail.provider.request({
+        method: "wallet_connect",
+        params: {
+          methods: ["getBalance"],
+          events: ["bip122_walletDescriptorChanged"],
+        },
+      });
+      return null;
+    } catch (error) {
+      const providerError = error as Error & { code?: unknown; data?: unknown };
+      return { code: providerError.code, data: providerError.data };
+    }
+  });
 }

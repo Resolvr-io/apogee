@@ -110,6 +110,10 @@ remains available for compatibility but is not the standardized discovery path.
 The implementation is in [`src/provider/liquid-provider.ts`](src/provider/liquid-provider.ts).
 Developers can exercise the real injected boundary with the
 [Liquid provider playground](docs/liquid-provider-playground.md).
+The standard provider currently implements `getBalance`, `getUTXOs`,
+`getWalletDescriptor`, and `sendTransfer`. Descriptor disclosure is a separate,
+explicit per-origin permission: Apogee returns only a checksummed ordinary
+public descriptor and never exports its SLIP-77 master blinding key.
 
 ## Unreleased
 

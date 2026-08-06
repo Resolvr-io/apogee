@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { LIQUID_CONNECTION_CHANGED_EVENT } from "./liquid-browser-provider";
+import { LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT } from "./liquid-rpc";
 import {
   createLiquidProviderController,
   installLiquidProviderDiscovery,
@@ -120,6 +121,26 @@ describe("Liquid browser provider runtime", () => {
     offSecond();
 
     expect(listener).toHaveBeenCalledTimes(3);
+  });
+
+  it("delivers descriptor changes only to descriptor-event listeners", () => {
+    const { provider, emit } = createLiquidProviderController(async () => null, [
+      LIQUID_CONNECTION_CHANGED_EVENT,
+      LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT,
+    ]);
+    const connectionListener = vi.fn();
+    const descriptorListener = vi.fn();
+    provider.on({ event: LIQUID_CONNECTION_CHANGED_EVENT, listener: connectionListener });
+    provider.on({
+      event: LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT,
+      listener: descriptorListener,
+    });
+
+    const payload = { descriptors: [{ descriptor: "elwpkh(...)#checksum" }] };
+    emit(LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT, payload);
+
+    expect(descriptorListener).toHaveBeenCalledWith(payload);
+    expect(connectionListener).not.toHaveBeenCalled();
   });
 
   it("isolates listener exceptions and rejects unsupported events synchronously", () => {
