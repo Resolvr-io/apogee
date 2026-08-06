@@ -4,14 +4,38 @@
 // mp4 (OceanVideo, with a loop-seam crossfade) by default, or the static poster
 // JPG when the "Background animation" setting is off. While animated, occasional
 // shooting stars streak the upper sky (ShootingStars). Purely decorative.
+//
+// `intro` drives the one-time first-run cinematic (see useMoonIntro in App.tsx
+// and the .apogee-scene--intro rules in theme.css): "hold" parks the moon above
+// the panel while the played-once flag is read, "play" runs the descend-and-
+// reveal timeline once. The phase is owned by App, not latched here, so the
+// debug control can replay it; `onIntroEnd` reports the timeline's end and App
+// drops the phase. Every fill state ends on the static styles, so the swap is
+// invisible.
 
 import { Starfield } from "./Starfield";
 import { ShootingStars } from "./ShootingStars";
 import { OceanVideo } from "./OceanVideo";
 
-export function Scene({ animated = true }: { animated?: boolean }) {
+export type SceneIntro = "hold" | "play" | false;
+
+export function Scene({
+  animated = true,
+  intro = false,
+  onIntroEnd,
+}: {
+  animated?: boolean;
+  intro?: SceneIntro;
+  onIntroEnd?: () => void;
+}) {
+  const sceneClass =
+    intro === "play"
+      ? "apogee-scene apogee-scene--intro"
+      : intro === "hold"
+        ? "apogee-scene apogee-scene--intro-hold"
+        : "apogee-scene";
   return (
-    <div className="apogee-scene" aria-hidden="true">
+    <div className={sceneClass} aria-hidden="true">
       <div className="apogee-sky" />
       <Starfield />
       {animated && <ShootingStars />}
@@ -22,6 +46,14 @@ export function Scene({ animated = true }: { animated?: boolean }) {
         <div className="apogee-moon-core" />
       </div>
       {animated ? <OceanVideo /> : <div className="apogee-ocean" />}
+      {/* The water dim finishes last (2.9s delay + 2.8s, against the moon's
+          5.7s and the UI's 5.5s), so its end is the timeline's end. Under
+          reduced motion the animation never runs, so animationend never fires
+          and the phase simply stays — harmless, because every reduced-motion
+          rule already resolves to the finished scene. */}
+      {intro && (
+        <div className="apogee-intro-dim" onAnimationEnd={() => onIntroEnd?.()} />
+      )}
     </div>
   );
 }
