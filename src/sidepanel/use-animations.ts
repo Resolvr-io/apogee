@@ -7,13 +7,27 @@ import { browser } from "@/lib/ext";
 
 const ANIM_KEY = "apogee:animations";
 
-/** `[animated, setAnimated]` — `true` (animated) until storage says otherwise. */
-export function useAnimations(): [boolean, (value: boolean) => void] {
+/**
+ * `[animated, setAnimated, loaded]` — `true` (animated) until storage says
+ * otherwise. `loaded` reports whether the stored preference has actually been
+ * read yet; before then `animated` is only the optimistic default. Callers that
+ * merely render can ignore it, but anything making a ONE-SHOT decision off the
+ * preference has to wait for it, or it races the read and can act on the
+ * default (see useMoonIntro in App.tsx).
+ */
+export function useAnimations(): [boolean, (value: boolean) => void, boolean] {
   const [animated, setAnimated] = useState(true);
+  const [loaded, setLoaded] = useState(false);
   useEffect(() => {
-    void browser.storage.local.get(ANIM_KEY).then((o) => {
-      if (ANIM_KEY in o) setAnimated(Boolean(o[ANIM_KEY]));
-    });
+    void browser.storage.local.get(ANIM_KEY).then(
+      (o) => {
+        if (ANIM_KEY in o) setAnimated(Boolean(o[ANIM_KEY]));
+        setLoaded(true);
+      },
+      // A failed read leaves the default in place; still "loaded", so a waiting
+      // caller proceeds rather than hanging on storage that will never answer.
+      () => setLoaded(true),
+    );
     const onChanged = (
       changes: { [key: string]: chrome.storage.StorageChange },
       area: string,
@@ -29,5 +43,5 @@ export function useAnimations(): [boolean, (value: boolean) => void] {
     setAnimated(value);
     void browser.storage.local.set({ [ANIM_KEY]: value });
   }, []);
-  return [animated, set];
+  return [animated, set, loaded];
 }

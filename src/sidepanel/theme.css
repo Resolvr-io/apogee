@@ -315,6 +315,181 @@
     );
   }
 
+  /* ── First-run intro (Scene `intro`): the moon descends from above the panel
+     and settles at its apogee; the water lights up under it as it arrives, and
+     the UI fades in last.
+     The moon comes from ABOVE, not up from the horizon, and that choice is what
+     keeps the water honest. Rising from below meant the ocean band had to be an
+     opaque black cover — it was the only thing occluding a moon parked under
+     the waterline — which read as a black bar sitting against the starfield for
+     the first two seconds. Nothing has to hide a moon that starts off the top,
+     so the water only has to DIM and come up, never black out.
+     -185px start: the moon is pinned in px from the top (top: 40px, width 56px
+     → center 68px) and its halo is 340% of the moon, so the halo's bottom edge
+     sits at ~163px. Clearing that clears the whole moon on every viewport,
+     which a vh offset could not promise on a short panel. Kept as tight to 163
+     as the margin allows, because every px above it is travel the eye cannot
+     see — dead time that reads as a delay before the animation "starts".
+     Two phases:
+       --intro-hold  pre-decision parking state (no animation): moon above the
+                     panel, glow dark, water dimmed. Held for the couple of
+                     frames it takes to read the played-once flag, so a first
+                     run never flashes the finished scene first.
+       --intro       plays the one-shot timeline. Every `both` fill state ends
+                     exactly on the static styles, so dropping the class after
+                     the last animationend causes no visible jump.
+     Timeline (the dim is last to finish, so its animationend IS the end):
+       moon    0s   → 5s        glow   2.3s → 4.9s
+       water   2.3s → 5.1s      UI     3.5s → 4.8s
+     The moon has no delay of its own: the phase only flips to "play" once the
+     keystore state has arrived, so there is already a beat before this runs and
+     a second one on top read as a dead frame at the top of the cinematic.
+     The curve MUST carry real velocity from the first frame. An ease-in start
+     (cubic-bezier(0.35, 0, 0.25, 1)) was the whole reason this still felt
+     delayed after the CSS delay was removed: the moon begins off-screen, so it
+     has ~12% of its travel to cover before one pixel of it is visible, and a
+     curve that starts at zero velocity spends nearly two seconds on that
+     invisible stretch. Front-loaded but not thrown — the settle is still long
+     enough that it does not read as a fall. */
+  .apogee-scene--intro-hold .apogee-moon {
+    transform: translate(-50%, -185px);
+  }
+  .apogee-scene--intro-hold .apogee-glow {
+    opacity: 0;
+  }
+  .apogee-scene--intro-hold .apogee-intro-dim {
+    opacity: 0.68;
+  }
+  .apogee-scene--intro .apogee-moon {
+    animation: apogee-moon-descend 5s cubic-bezier(0.2, 0.6, 0.3, 1) both;
+  }
+  .apogee-scene--intro .apogee-glow {
+    animation: apogee-glow-rise 2.6s ease-out 2.3s both;
+  }
+  /* Dims the water band while the moon is still on its way down — same box and
+     waterline feather as the ocean beneath it. Tinted into the sky's own range
+     rather than near-black — #060e1c sits between its 56% stop (#050b18) and its
+     bottom (#07101f), which suits a band covering 72-100% — and never fully
+     opaque, so the sea keeps its texture and the horizon doesn't read as a hard
+     black bar under the stars.
+     Base opacity 0: the visible states come from the hold class or the
+     keyframes, so reduced-motion (which disables the animation) leaves it
+     invisible rather than stuck down. */
+  .apogee-intro-dim {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 28%;
+    z-index: 3;
+    opacity: 0;
+    background: #060e1c;
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 5px);
+    mask-image: linear-gradient(to bottom, transparent 0, #000 5px);
+  }
+  .apogee-scene--intro .apogee-intro-dim {
+    animation: apogee-water-lift 2.8s ease-out 2.3s both;
+  }
+  @keyframes apogee-moon-descend {
+    from {
+      transform: translate(-50%, -185px);
+    }
+    to {
+      transform: translate(-50%, 0);
+    }
+  }
+  @keyframes apogee-glow-rise {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 0.7;
+    }
+  }
+  @keyframes apogee-water-lift {
+    from {
+      opacity: 0.68;
+    }
+    to {
+      opacity: 0;
+    }
+  }
+  /* Content hold/fade. Lives on the header+main wrapper, which is a SIBLING of
+     the scene, so it can't be scoped under .apogee-scene--intro and carries its
+     own state classes. Base opacity 1: with no intro, or under reduced motion
+     where the animation never runs, the UI is simply there. */
+  .apogee-intro-content {
+    opacity: 1;
+  }
+  /* pointer-events, not `inert`: the wrapper is invisible here, so a stray or
+     queued click must not land — but `inert` would also swallow the imperative
+     focus React fires for `autoFocus` at mount, and nothing re-fires it when
+     the hold lifts. App applies `inert` to the play phase and to any hold that
+     is showing the onboarding chooser, and deliberately NOT to a hold that can
+     be showing Unlock — which is the one this rule exists for.
+     This defends against POINTERS ALONE. A focused invisible control can still
+     be activated with Enter/Space, and the held content stays in the
+     accessibility tree — which is why App additionally applies `inert` to an
+     ONBOARDING hold, the only one that can last (see the wrapper comment there).
+     What is left for this rule alone is the hold that must stay live so
+     Unlock's autoFocus lands, and the reordered decision makes that one commit
+     long. */
+  .apogee-intro-content--hold {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .apogee-intro-content--play {
+    animation: apogee-content-in 1.3s ease-out 3.5s both;
+  }
+  @keyframes apogee-content-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  /* Reduced motion: no cinematic — the static scene and the UI, immediately.
+     DEFENCE IN DEPTH rather than the active mechanism, with one exception: App
+     resolves reduced motion in useMoonIntro's initializer and ends any phase
+     mid-flight when the preference turns on, but BOTH of those go through
+     `matchMedia`. In a browser that honors the media query without it, every JS
+     guard reports "no reduced motion" and this block is the only mechanism there
+     is — theoretical on the Chrome/Firefox targets, but it is why the block
+     covers whole phases rather than only the gap below. What it CANNOT do there
+     is lift `inert`: that is an attribute keyed on the phase those same failing
+     guards never end, and no CSS overrides it. So in that branch this block
+     restores the scene and the UI's visibility while the phase runs opaque and
+     inert to its JS bound — the cap at 2.5s for a hold, the backstop at 5.35s
+     for a play, since `animation: none` leaves no animationend to flip
+     contentReady. Bounded and one-off: the cap writes the flag.
+     Otherwise what is left for it is the frames between the query matching and
+     the listener's setPhase committing: --intro-hold and the content wrapper's
+     hold rule for a hold, `animation: none` for a play. One caveat in that
+     window — the hold rule's `pointer-events: auto` cannot take effect on an
+     ONBOARDING hold, because App applies `inert` to it until the commit lands. */
+  @media (prefers-reduced-motion: reduce) {
+    .apogee-scene--intro .apogee-moon,
+    .apogee-scene--intro .apogee-glow,
+    .apogee-scene--intro .apogee-intro-dim,
+    .apogee-intro-content--play {
+      animation: none;
+    }
+    .apogee-scene--intro-hold .apogee-moon {
+      transform: translate(-50%, 0);
+    }
+    .apogee-scene--intro-hold .apogee-glow {
+      opacity: 0.7;
+    }
+    .apogee-scene--intro-hold .apogee-intro-dim {
+      opacity: 0;
+    }
+    .apogee-intro-content--hold {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
+
   /* Translucent surfaces so the celestial scene shows crisply through the
      content. No backdrop blur: the activity list sits inside the feather mask,
      which nullifies backdrop-filter, so it already reads crisp — dropping the
