@@ -268,8 +268,10 @@ export function App() {
     animated,
     animationsLoaded,
   );
-  // Cleared whenever a phase begins so a debug replay re-arms the guard; set
-  // again by the wrapper's own animationend.
+  // Defence in depth only: the replay handler clears this before re-arming the
+  // phase, which is what actually closes the stale-`true` frame, and no other
+  // path reaches "play" with it set. Kept so a future second caller of `replay`
+  // cannot reopen that window by forgetting to clear it.
   const [contentReady, setContentReady] = useState(false);
   useEffect(() => {
     if (moonIntro) setContentReady(false);
@@ -314,8 +316,8 @@ export function App() {
           should ever wait on a cinematic. */}
       <div
         // Faded out during the intro, which hides it from the eye but not from
-        // the tab order, a stray click or a screen reader. On the first-run
-        // screen the muted controls are "Create wallet" and "Restore".
+        // the tab order or a screen reader. On the first-run screen the muted
+        // controls are "Create wallet" and "Restore".
         //
         // Keyed on the CONTENT fade, not on the phase: the phase ends with the
         // water dim at 5.1s but this finishes at 4.8s, so keying on the phase
@@ -326,10 +328,29 @@ export function App() {
         // "play" only, never "hold". `inert` blocks the imperative focus React
         // fires for `autoFocus` at mount, and nothing re-fires it when inert
         // lifts — so holding over the render that mounts Unlock cost its
-        // password field the focus it has always had. That is a certain loss on
-        // every upgrade open, traded against a speculative stray click on
-        // content nobody can see; the hold takes `pointer-events: none` instead
-        // (theme.css), which stops the click without touching focus.
+        // password field the focus it has always had, on every upgrade open.
+        // Not a race: `setPhase` runs in an effect, so the commit that mounts
+        // Unlock is ALWAYS under "hold", however fast getState() answers.
+        //
+        // The trade is forced, not chosen. That one commit is simultaneously
+        // the only moment `autoFocus` can fire and the only moment focusable
+        // content is invisible, so `inert` cannot be off for the first and on
+        // for the second. The hold takes `pointer-events: none` (theme.css)
+        // instead, which is HALF a defence: it stops a pointer, not Enter/Space
+        // on a focused invisible control, and not the accessibility tree. That
+        // residual exposure is accepted because it is tightly bounded — while
+        // `state` is null Body renders only a spinner, so the hold holds nothing
+        // focusable, and every path that makes the hold LONG (HOLD_CAP_MS, a
+        // sendMessage that never settles) is a path where `state` stays null.
+        // The interactive hold is ~one commit.
+        //
+        // `play` keeping `inert` is safe on an invariant worth stating: it
+        // requires `onboarding && !recovering`, so Body can only render
+        // Onboarding at its default "choose" step, which has no `autoFocus`.
+        // Onboarding's five other `autoFocus` sites sit on steps reachable only
+        // by a click `inert` itself prevents. Give the chooser an `autoFocus`,
+        // or extend the intro to the unlock screen, and this regresses silently
+        // on first run only — change the phase gate too, or drop `inert` here.
         inert={moonIntro === "play" && !contentReady}
         onAnimationEnd={(e) => {
           if (e.target === e.currentTarget) setContentReady(true);

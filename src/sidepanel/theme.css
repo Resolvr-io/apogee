@@ -424,7 +424,12 @@
   /* pointer-events, not `inert`: the wrapper is invisible here, so a stray or
      queued click must not land — but `inert` would also swallow the imperative
      focus React fires for `autoFocus` at mount, and nothing re-fires it when
-     the hold lifts. App applies `inert` for the play phase only. */
+     the hold lifts. App applies `inert` for the play phase only.
+     This defends against POINTERS ALONE. A focused invisible control can still
+     be activated with Enter/Space, and the held content stays in the
+     accessibility tree. Accepted, and bounded: see the wrapper comment in
+     App.tsx — the hold contains nothing focusable until `state` arrives, and
+     every long-hold path is one where `state` never does. */
   .apogee-intro-content--hold {
     opacity: 0;
     pointer-events: none;
