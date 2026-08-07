@@ -50,8 +50,9 @@ export function Scene({
           moon's 5.0s and the UI's 4.8s), so its end is the timeline's end.
           KEEP IN SYNC with the timeline in theme.css and MOON_INTRO_MS in
           App.tsx, whose fallback timer covers an animationend that never
-          arrives — under reduced motion App resolves to "no intro" before this
-          renders, but an interrupted animation can still swallow the event. */}
+          arrives. Under reduced motion App never reaches "play", so this node
+          only ever renders in its (animation-free) hold state — but an
+          interrupted animation can still swallow the event. */}
       {intro && (
         <div className="apogee-intro-dim" onAnimationEnd={() => onIntroEnd?.()} />
       )}

@@ -93,7 +93,15 @@ function useMoonIntro(
   animated: boolean,
   animationsLoaded: boolean,
 ): { intro: SceneIntro; end: () => void; replay: () => void } {
-  const [phase, setPhase] = useState<SceneIntro>(() => (introFlagRead() ? false : "hold"));
+  // Reduced motion is settled HERE, not at decision time. The hold has to be
+  // skipped, not just the play: the reduced-motion rules deliberately leave the
+  // held content at opacity 1, so a phase that merely blocks input would show a
+  // complete, opaque onboarding screen whose buttons silently do nothing. A
+  // user who cannot see that anything is happening is exactly the user who
+  // clicks. Deciding at init means such a user never has an intro phase at all.
+  const [phase, setPhase] = useState<SceneIntro>(() =>
+    introFlagRead() || prefersReducedMotion() ? false : "hold",
+  );
   useEffect(() => {
     if (phase !== "hold") return;
     if (state === null) {
@@ -110,6 +118,8 @@ function useMoonIntro(
     introFlagWrite(true);
     // `animated` folds in the Background-animation preference: with it off the
     // scene is the static poster, and a cinematic over a still would half-play.
+    // The reduced-motion re-check is not redundant with the initializer: the
+    // hold can last seconds, and the preference can be toggled inside it.
     setPhase(onboarding && !recovering && animated && !prefersReducedMotion() ? "play" : false);
   }, [phase, state, error, recovering, animated, animationsLoaded]);
 
@@ -117,10 +127,21 @@ function useMoonIntro(
   // hold blacks out the whole panel, so any path that strands it — a
   // sendMessage that never settles rather than rejecting — bricks the UI
   // outright. Resolving to "no intro" costs a cinematic; not resolving costs
-  // the wallet. The flag stays unwritten, so the next open can still play it.
+  // the wallet.
+  //
+  // The flag IS written here, which loses the cinematic for good on this
+  // install. That is the point: leaving it unwritten made the degradation
+  // recurring rather than one-off, so a machine where getState() is reliably
+  // slower than the cap blacked out for the full cap on every single open — and
+  // silently, since Body's LoadingPill renders inside the held wrapper. A box
+  // that cannot produce wallet state in HOLD_CAP_MS has no business running a
+  // five-second cinematic anyway.
   useEffect(() => {
     if (phase !== "hold") return;
-    const t = window.setTimeout(() => setPhase(false), HOLD_CAP_MS);
+    const t = window.setTimeout(() => {
+      introFlagWrite(true);
+      setPhase(false);
+    }, HOLD_CAP_MS);
     return () => window.clearTimeout(t);
   }, [phase]);
 
@@ -143,6 +164,11 @@ function useMoonIntro(
   const replay = useCallback(() => {
     introFlagWrite(false);
     setPhase(false);
+    // Reduced motion gets no phase here either, for the same reason it gets
+    // none at init: CSS would disable every animation, so "play" would park the
+    // UI behind a timeline that never runs and never ends. Clearing the flag is
+    // the whole of the replay for such a user — there is no cinematic to see.
+    if (prefersReducedMotion()) return;
     // One frame at `false` so a re-run restarts the CSS animations; setting
     // "play" while already "play" would leave them mid-flight.
     cancelAnimationFrame(rearm.current);
@@ -242,6 +268,12 @@ export function App() {
     animated,
     animationsLoaded,
   );
+  // Cleared whenever a phase begins so a debug replay re-arms the guard; set
+  // again by the wrapper's own animationend.
+  const [contentReady, setContentReady] = useState(false);
+  useEffect(() => {
+    if (moonIntro) setContentReady(false);
+  }, [moonIntro]);
   // Content hold/fade class — the UI arrives after the moon has settled.
   const introContentClass =
     moonIntro === "play"
@@ -281,10 +313,19 @@ export function App() {
           the approval overlay stay outside: neither is decorative, and neither
           should ever wait on a cinematic. */}
       <div
-        // Held at opacity 0 during the intro, which hides it from the eye but not
-        // from the tab order, a stray click or a screen reader. On the first-run
-        // screen the invisible controls are "Create wallet" and "Restore".
-        inert={Boolean(moonIntro)}
+        // Faded out during the intro, which hides it from the eye but not from
+        // the tab order, a stray click or a screen reader. On the first-run
+        // screen the muted controls are "Create wallet" and "Restore".
+        //
+        // Keyed on the CONTENT fade, not on the phase: the phase ends with the
+        // water dim at 5.1s but this finishes at 4.8s, so keying on the phase
+        // left the UI fully opaque and apparently ready for ~300ms while still
+        // swallowing input. `target === currentTarget` because animationend
+        // bubbles — a child's animation must not count as this one's.
+        inert={Boolean(moonIntro) && !contentReady}
+        onAnimationEnd={(e) => {
+          if (e.target === e.currentTarget) setContentReady(true);
+        }}
         className={`relative z-10 flex min-h-0 flex-1 flex-col ${introContentClass}`}
       >
         {unlocked && (
@@ -350,7 +391,10 @@ export function App() {
       {/* Local debug builds only (see lib/debug.ts — needs .env.local): replay
           the first-run intro without reinstalling. Bottom RIGHT to stay clear of
           the dev overlay in the opposite corner, and outside the fade wrapper so
-          it stays reachable while the cinematic is holding the UI back. */}
+          it stays reachable while the cinematic plays. Not during the hold —
+          `preWallet` needs a loaded state and the hold is precisely the window
+          before one arrives — which costs nothing, since the hold is the part
+          with nothing to watch. */}
       {DEBUG_ENTERPRISE_BUILD && preWallet && (
         <button
           type="button"
