@@ -424,7 +424,9 @@
   /* pointer-events, not `inert`: the wrapper is invisible here, so a stray or
      queued click must not land — but `inert` would also swallow the imperative
      focus React fires for `autoFocus` at mount, and nothing re-fires it when
-     the hold lifts. App applies `inert` for the play phase only.
+     the hold lifts. App applies `inert` to the play phase and to any hold that
+     is showing the onboarding chooser, and deliberately NOT to a hold that can
+     be showing Unlock — which is the one this rule exists for.
      This defends against POINTERS ALONE. A focused invisible control can still
      be activated with Enter/Space, and the held content stays in the
      accessibility tree — which is why App additionally applies `inert` to an

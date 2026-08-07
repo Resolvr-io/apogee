@@ -158,6 +158,25 @@ function useMoonIntro(
     return () => window.clearTimeout(t);
   }, [phase]);
 
+  // Reduced motion turned on DURING a hold ends it. Without this the preference
+  // was honored at init and again at decision time but not in between, and the
+  // gap had teeth: the reduced-motion rules un-hide a held wrapper, while the
+  // wrapper is `inert` for an onboarding hold — so toggling mid-hold produced a
+  // fully opaque chooser with four dead controls, the visible-but-dead shape
+  // this whole feature keeps treating as the worst one. Nothing else re-runs the
+  // decision on a media-query change, so it would have sat there until
+  // animationsLoaded or the cap. The flag stays unwritten, matching the init
+  // path: a reduced-motion user hasn't had their first run.
+  useEffect(() => {
+    if (phase !== "hold" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const onChange = () => {
+      if (mq.matches) setPhase(false);
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [phase]);
+
   const end = useCallback(() => setPhase(false), []);
 
   // Safety net for a lost animationend — an interrupted animation, a node
@@ -328,10 +347,11 @@ export function App() {
           the approval overlay stay outside: neither is decorative, and neither
           should ever wait on a cinematic. */}
       <div
-        // Faded out during the intro, which hides it from the eye but not from
-        // the tab order or a screen reader. On the first-run screen that is all
-        // four chooser controls — create, restore, watch-only and hardware — the
-        // last two being text buttons, equally tabbable and Enter-activatable.
+        // Faded out during the intro. Where `inert` below does not also apply —
+        // the one-commit Unlock/Wallet hold — that hides the content from the
+        // eye but not from the tab order or a screen reader, so Unlock's
+        // password field is focused and typeable while invisible for that
+        // commit. The first-run chooser is NOT in that set: it is inert.
         //
         // Keyed on the CONTENT fade, not on the phase: the phase ends with the
         // water dim at 5.1s but this finishes at 4.8s, so keying on the phase
