@@ -429,7 +429,8 @@
      be activated with Enter/Space, and the held content stays in the
      accessibility tree. Accepted, and bounded: see the wrapper comment in
      App.tsx — the hold contains nothing focusable until `state` arrives, and
-     every long-hold path is one where `state` never does. */
+     once it has, only the onboarding chooser can stay held, which has no
+     autoFocus and no field to type into. */
   .apogee-intro-content--hold {
     opacity: 0;
     pointer-events: none;

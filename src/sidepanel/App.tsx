@@ -110,17 +110,30 @@ function useMoonIntro(
       if (error) setPhase(false);
       return;
     }
+    // Settle everything that does NOT depend on the animation preference first,
+    // and only wait on that preference for the one answer it can change. This
+    // ordering is load-bearing, not tidiness: waiting first held a non-onboarding
+    // user — Unlock, Wallet — behind a storage read whose result could not
+    // affect them, invisible and not `inert`, with Unlock's autoFocus landing in
+    // a password field they cannot see. Deciding here means the only screen that
+    // can outlive `state` inside the hold is the onboarding chooser, which is
+    // the screen the cinematic is for and carries no autoFocus.
+    const onboarding = !state.initialized || state.wallets.length === 0;
+    if (!onboarding || recovering) {
+      introFlagWrite(true);
+      setPhase(false);
+      return;
+    }
     // The preference is read asynchronously and starts at its optimistic
     // default, so deciding before it lands can play the cinematic for someone
     // who turned Background animation off.
     if (!animationsLoaded) return;
-    const onboarding = !state.initialized || state.wallets.length === 0;
     introFlagWrite(true);
     // `animated` folds in the Background-animation preference: with it off the
     // scene is the static poster, and a cinematic over a still would half-play.
     // The reduced-motion re-check is not redundant with the initializer: the
     // hold can last seconds, and the preference can be toggled inside it.
-    setPhase(onboarding && !recovering && animated && !prefersReducedMotion() ? "play" : false);
+    setPhase(animated && !prefersReducedMotion() ? "play" : false);
   }, [phase, state, error, recovering, animated, animationsLoaded]);
 
   // Cap the hold. Everything above resolves it on a state OR an error, but the
@@ -316,8 +329,9 @@ export function App() {
           should ever wait on a cinematic. */}
       <div
         // Faded out during the intro, which hides it from the eye but not from
-        // the tab order or a screen reader. On the first-run screen the muted
-        // controls are "Create wallet" and "Restore".
+        // the tab order or a screen reader. On the first-run screen that is all
+        // four chooser controls — create, restore, watch-only and hardware — the
+        // last two being text buttons, equally tabbable and Enter-activatable.
         //
         // Keyed on the CONTENT fade, not on the phase: the phase ends with the
         // water dim at 5.1s but this finishes at 4.8s, so keying on the phase
@@ -338,17 +352,22 @@ export function App() {
         // for the second. The hold takes `pointer-events: none` (theme.css)
         // instead, which is HALF a defence: it stops a pointer, not Enter/Space
         // on a focused invisible control, and not the accessibility tree. That
-        // residual exposure is accepted because it is tightly bounded — while
-        // `state` is null Body renders only a spinner, so the hold holds nothing
-        // focusable, and every path that makes the hold LONG (HOLD_CAP_MS, a
-        // sendMessage that never settles) is a path where `state` stays null.
-        // The interactive hold is ~one commit.
+        // residual exposure is accepted because it is tightly bounded. While
+        // `state` is null Body renders a spinner or an error, neither focusable,
+        // and the error branch lasts about a frame because the same effect drops
+        // the phase on it. Once `state` arrives the decision is made in that same
+        // effect pass unless the wallet is ONBOARDING — the preference wait is
+        // deliberately after the eligibility check — so the only screen that can
+        // sit in a long hold is the chooser, which has no autoFocus and no field
+        // to type into. HOLD_CAP_MS then bounds whatever is left; it is keyed on
+        // the phase, not on `state`, so it fires for any hold at all.
         //
         // `play` keeping `inert` is safe on an invariant worth stating: it
         // requires `onboarding && !recovering`, so Body can only render
         // Onboarding at its default "choose" step, which has no `autoFocus`.
-        // Onboarding's five other `autoFocus` sites sit on steps reachable only
-        // by a click `inert` itself prevents. Give the chooser an `autoFocus`,
+        // Onboarding's other `autoFocus` sites sit on four steps — create,
+        // hardware, watch, restore — reachable only by a click `inert` itself
+        // prevents. Give the chooser an `autoFocus`,
         // or extend the intro to the unlock screen, and this regresses silently
         // on first run only — change the phase gate too, or drop `inert` here.
         inert={moonIntro === "play" && !contentReady}
