@@ -50,10 +50,11 @@ export function Scene({
           moon's 5.0s and the UI's 4.8s), so its end is the timeline's end.
           KEEP IN SYNC with the timeline in theme.css and MOON_INTRO_MS in
           App.tsx, whose fallback timer covers an animationend that never
-          arrives. A reduced-motion user gets no phase at all (App resolves it in
-          useMoonIntro's initializer, and ends any phase mid-flight if the
-          preference turns on), so `intro` is false and this node does not render
-          for them. An interrupted animation can still swallow the event —
+          arrives. A reduced-motion user is resolved to no phase at init, and any
+          phase is ended mid-flight if the preference turns on — so `intro` is
+          false and this node does not render for them, EXCEPT across the frames
+          between the query matching and that listener committing. An interrupted
+          animation can still swallow the event —
           killing a running animation fires `animationcancel`, not
           `animationend` — which is what the fallback is actually for. */}
       {intro && (

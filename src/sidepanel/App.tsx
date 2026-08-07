@@ -128,12 +128,17 @@ function useMoonIntro(
     // default, so deciding before it lands can play the cinematic for someone
     // who turned Background animation off.
     if (!animationsLoaded) return;
-    // Reduced motion leaves the flag UNWRITTEN, so all three checks agree —
-    // initializer, the mid-flight listener below, and here. Writing first made
-    // this one disagree with the other two for a toggle that lands in the
-    // decision window: `matchMedia().matches` flips synchronously with the OS
-    // setting, ahead of the `change` dispatch, so the effect can observe it
-    // before the listener ever runs.
+    // Reduced motion leaves the flag UNWRITTEN, so all three places that ASK
+    // about it agree — initializer, the mid-flight listener below, and here.
+    // Writing first made this one disagree with the other two for a toggle that
+    // lands in the decision window: `matchMedia().matches` flips synchronously
+    // with the OS setting, ahead of the `change` dispatch, so the effect can
+    // observe it before the listener ever runs.
+    //
+    // Narrower than "nothing writes under reduced motion": the non-onboarding
+    // exit above and the hold cap below can still write while the preference is
+    // on, since neither is a reduced-motion decision. Harmless — an RM user
+    // never holds again either way, because the initializer short-circuits.
     if (prefersReducedMotion()) {
       setPhase(false);
       return;
@@ -182,9 +187,15 @@ function useMoonIntro(
   // also just correct — CSS has deleted the timeline, so there is nothing left
   // to watch.
   //
-  // The unwritten flag applies to the hold only; by `play` it is already
-  // written. Checked at attach too, not only on `change`, so a flip between
-  // render and commit self-corrects rather than being missed.
+  // The unwritten flag applies to the hold only: a `play` reached through the
+  // decision effect already has it written. A REPLAYED play does not — replay
+  // clears it on purpose so the next open replays too — so ending one here
+  // leaves it cleared, which is that path's intent rather than a leak.
+  //
+  // Checked at attach too, not only on `change`, so a flip between render and
+  // commit self-corrects rather than being missed. That also covers `replay()`,
+  // which reads the preference synchronously and sets "play" a frame later: a
+  // flip inside that frame is caught by the attach check, not by any `change`.
   useEffect(() => {
     if (!phase || typeof window.matchMedia !== "function") return;
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");

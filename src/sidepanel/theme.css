@@ -452,11 +452,12 @@
   /* Reduced motion: no cinematic — the static scene and the UI, immediately.
      DEFENCE IN DEPTH, not the active mechanism: App resolves reduced motion in
      useMoonIntro's initializer, and a mid-flight listener ends any phase the
-     moment the preference turns on — so the --intro-hold overrides below are now
-     near-unreachable (the listener fires on the same event that would apply
-     them). What still does live work is `animation: none`, which is what makes
-     the scene snap to the finished poster in the frames before that listener
-     lands. */
+     moment the preference turns on. What is left for this block is the frames
+     between the query matching and that listener's setPhase committing — the
+     whole block covers them, --intro-hold for a hold and `animation: none` for a
+     play and the content wrapper. One caveat in that window: the hold override's
+     `pointer-events: auto` cannot take effect on an ONBOARDING hold, because App
+     applies `inert` to it until the commit lands. */
   @media (prefers-reduced-motion: reduce) {
     .apogee-scene--intro .apogee-moon,
     .apogee-scene--intro .apogee-glow,
