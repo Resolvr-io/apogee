@@ -54,9 +54,9 @@ export function Scene({
           phase is ended mid-flight if the preference turns on — so `intro` is
           false and this node does not render for them, EXCEPT across the frames
           between the query matching and that listener committing. An interrupted
-          animation can still swallow the event —
-          killing a running animation fires `animationcancel`, not
-          `animationend` — which is what the fallback is actually for. */}
+          animation can still swallow the event — killing a running animation
+          fires `animationcancel`, not `animationend` — which is what the
+          fallback is actually for. */}
       {intro && (
         <div className="apogee-intro-dim" onAnimationEnd={() => onIntroEnd?.()} />
       )}

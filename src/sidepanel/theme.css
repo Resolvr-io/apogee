@@ -450,14 +450,18 @@
     }
   }
   /* Reduced motion: no cinematic — the static scene and the UI, immediately.
-     DEFENCE IN DEPTH, not the active mechanism: App resolves reduced motion in
-     useMoonIntro's initializer, and a mid-flight listener ends any phase the
-     moment the preference turns on. What is left for this block is the frames
-     between the query matching and that listener's setPhase committing — the
-     whole block covers them, --intro-hold for a hold and `animation: none` for a
-     play and the content wrapper. One caveat in that window: the hold override's
-     `pointer-events: auto` cannot take effect on an ONBOARDING hold, because App
-     applies `inert` to it until the commit lands. */
+     DEFENCE IN DEPTH rather than the active mechanism, with one exception: App
+     resolves reduced motion in useMoonIntro's initializer and ends any phase
+     mid-flight when the preference turns on, but BOTH of those go through
+     `matchMedia`. In a browser that honors the media query without it, every JS
+     guard reports "no reduced motion" and this block is the only mechanism there
+     is — theoretical on the Chrome/Firefox targets, but it is why the block
+     covers whole phases rather than only the gap below.
+     Otherwise what is left for it is the frames between the query matching and
+     the listener's setPhase committing: --intro-hold and the content wrapper's
+     hold rule for a hold, `animation: none` for a play. One caveat in that
+     window — the hold rule's `pointer-events: auto` cannot take effect on an
+     ONBOARDING hold, because App applies `inert` to it until the commit lands. */
   @media (prefers-reduced-motion: reduce) {
     .apogee-scene--intro .apogee-moon,
     .apogee-scene--intro .apogee-glow,
