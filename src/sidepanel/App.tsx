@@ -339,38 +339,35 @@ export function App() {
         // swallowing input. `target === currentTarget` because animationend
         // bubbles — a child's animation must not count as this one's.
         //
-        // "play" only, never "hold". `inert` blocks the imperative focus React
-        // fires for `autoFocus` at mount, and nothing re-fires it when inert
-        // lifts — so holding over the render that mounts Unlock cost its
-        // password field the focus it has always had, on every upgrade open.
-        // Not a race: `setPhase` runs in an effect, so the commit that mounts
-        // Unlock is ALWAYS under "hold", however fast getState() answers.
+        // NOT applied to a hold that can be showing Unlock. `inert` blocks the
+        // imperative focus React fires for `autoFocus` at mount, and nothing
+        // re-fires it when inert lifts — so holding over the render that mounts
+        // Unlock cost its password field the focus it has always had, on every
+        // upgrade open. Not a race: `setPhase` runs in an effect, so the commit
+        // that mounts Unlock is ALWAYS under "hold", however fast getState()
+        // answers, and that one commit is simultaneously the only moment
+        // `autoFocus` can fire and the only moment focusable content is
+        // invisible. `inert` cannot be off for the first and on for the second.
         //
-        // The trade is forced, not chosen. That one commit is simultaneously
-        // the only moment `autoFocus` can fire and the only moment focusable
-        // content is invisible, so `inert` cannot be off for the first and on
-        // for the second. The hold takes `pointer-events: none` (theme.css)
-        // instead, which is HALF a defence: it stops a pointer, not Enter/Space
-        // on a focused invisible control, and not the accessibility tree. That
-        // residual exposure is accepted because it is tightly bounded. While
-        // `state` is null Body renders a spinner or an error, neither focusable,
-        // and the error branch lasts about a frame because the same effect drops
-        // the phase on it. Once `state` arrives the decision is made in that same
-        // effect pass unless the wallet is ONBOARDING — the preference wait is
-        // deliberately after the eligibility check — so the only screen that can
-        // sit in a long hold is the chooser, which has no autoFocus and no field
-        // to type into. HOLD_CAP_MS then bounds whatever is left; it is keyed on
-        // the phase, not on `state`, so it fires for any hold at all.
+        // `preWallet` is what makes the rest safe. It is exactly the effect's
+        // `onboarding` test, so an inert hold is only ever the chooser — which
+        // carries no `autoFocus` on entry, so there is nothing to lose — while
+        // the Unlock/Wallet hold, now one commit thanks to the reordered
+        // decision, stays live. That closes the escalation the plain
+        // `pointer-events: none` could not: the CSS stops a pointer but not
+        // Enter/Space on a focused invisible control, so a blind Tab+Enter on
+        // the chooser called `setStep("restore")` and mounted a seed-phrase
+        // Textarea — invisible, focused and typeable. The remaining residual
+        // exposure is the a11y tree, and a live one-commit Unlock.
         //
-        // `play` keeping `inert` is safe on an invariant worth stating: it
-        // requires `onboarding && !recovering`, so Body can only render
-        // Onboarding at its default "choose" step, which has no `autoFocus`.
-        // Onboarding's other `autoFocus` sites sit on four steps — create,
-        // hardware, watch, restore — reachable only by a click `inert` itself
-        // prevents. Give the chooser an `autoFocus`,
-        // or extend the intro to the unlock screen, and this regresses silently
-        // on first run only — change the phase gate too, or drop `inert` here.
-        inert={moonIntro === "play" && !contentReady}
+        // `play` needs no such test: it already requires `onboarding &&
+        // !recovering`, so Body can only render the chooser. Onboarding's other
+        // `autoFocus` sites sit on four steps — create, hardware, watch, restore
+        // — now reachable by neither click nor keyboard while inert. Give the
+        // chooser an `autoFocus`, or extend the intro to the unlock screen, and
+        // this regresses silently on first run only: change the phase gate too,
+        // or drop `inert` here.
+        inert={moonIntro === "play" ? !contentReady : moonIntro === "hold" && preWallet}
         onAnimationEnd={(e) => {
           if (e.target === e.currentTarget) setContentReady(true);
         }}

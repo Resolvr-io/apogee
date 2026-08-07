@@ -427,10 +427,11 @@
      the hold lifts. App applies `inert` for the play phase only.
      This defends against POINTERS ALONE. A focused invisible control can still
      be activated with Enter/Space, and the held content stays in the
-     accessibility tree. Accepted, and bounded: see the wrapper comment in
-     App.tsx — the hold contains nothing focusable until `state` arrives, and
-     once it has, only the onboarding chooser can stay held, which has no
-     autoFocus and no field to type into. */
+     accessibility tree — which is why App additionally applies `inert` to an
+     ONBOARDING hold, the only one that can last (see the wrapper comment there).
+     What is left for this rule alone is the hold that must stay live so
+     Unlock's autoFocus lands, and the reordered decision makes that one commit
+     long. */
   .apogee-intro-content--hold {
     opacity: 0;
     pointer-events: none;
