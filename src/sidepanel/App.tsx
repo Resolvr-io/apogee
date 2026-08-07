@@ -322,7 +322,15 @@ export function App() {
         // left the UI fully opaque and apparently ready for ~300ms while still
         // swallowing input. `target === currentTarget` because animationend
         // bubbles — a child's animation must not count as this one's.
-        inert={Boolean(moonIntro) && !contentReady}
+        //
+        // "play" only, never "hold". `inert` blocks the imperative focus React
+        // fires for `autoFocus` at mount, and nothing re-fires it when inert
+        // lifts — so holding over the render that mounts Unlock cost its
+        // password field the focus it has always had. That is a certain loss on
+        // every upgrade open, traded against a speculative stray click on
+        // content nobody can see; the hold takes `pointer-events: none` instead
+        // (theme.css), which stops the click without touching focus.
+        inert={moonIntro === "play" && !contentReady}
         onAnimationEnd={(e) => {
           if (e.target === e.currentTarget) setContentReady(true);
         }}
@@ -388,7 +396,9 @@ export function App() {
             intro (`moonIntro === false`) this is the previous behavior exactly. */}
         {!moonIntro && <VersionBadge />}
       </div>
-      {/* Local debug builds only (see lib/debug.ts — needs .env.local): replay
+      {/* Gated on DEBUG_ENTERPRISE_BUILD — the same enterprise-credential flag
+          as the Settings Debug card, so an .env.local without Blockstream keys
+          gets neither. Replay
           the first-run intro without reinstalling. Bottom RIGHT to stay clear of
           the dev overlay in the opposite corner, and outside the fade wrapper so
           it stays reachable while the cinematic plays. Not during the hold —
@@ -398,7 +408,13 @@ export function App() {
       {DEBUG_ENTERPRISE_BUILD && preWallet && (
         <button
           type="button"
-          onClick={replayMoonIntro}
+          onClick={() => {
+            // Cleared here, not only in the effect: the effect runs after the
+            // render that first commits "play", so that render would still see
+            // a stale `true` and paint one frame at opacity 0 without `inert`.
+            setContentReady(false);
+            replayMoonIntro();
+          }}
           aria-label="Replay intro"
           title="Replay intro (debug build only)"
           className="absolute right-3 bottom-3 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-[color:var(--warning-border)] bg-[color:var(--warning-bg)] text-[color:var(--warning-text)] transition-opacity hover:opacity-80"

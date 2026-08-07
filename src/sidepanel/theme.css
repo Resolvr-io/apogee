@@ -367,9 +367,11 @@
     animation: apogee-glow-rise 2.6s ease-out 2.3s both;
   }
   /* Dims the water band while the moon is still on its way down — same box and
-     waterline feather as the ocean beneath it. Tinted to the sky's own bottom
-     stop rather than near-black, and never fully opaque, so the sea keeps its
-     texture and the horizon doesn't read as a hard black bar under the stars.
+     waterline feather as the ocean beneath it. Tinted into the sky's own range
+     rather than near-black — #060e1c sits between its 56% stop (#050b18) and its
+     bottom (#07101f), which suits a band covering 72-100% — and never fully
+     opaque, so the sea keeps its texture and the horizon doesn't read as a hard
+     black bar under the stars.
      Base opacity 0: the visible states come from the hold class or the
      keyframes, so reduced-motion (which disables the animation) leaves it
      invisible rather than stuck down. */
@@ -419,8 +421,13 @@
   .apogee-intro-content {
     opacity: 1;
   }
+  /* pointer-events, not `inert`: the wrapper is invisible here, so a stray or
+     queued click must not land — but `inert` would also swallow the imperative
+     focus React fires for `autoFocus` at mount, and nothing re-fires it when
+     the hold lifts. App applies `inert` for the play phase only. */
   .apogee-intro-content--hold {
     opacity: 0;
+    pointer-events: none;
   }
   .apogee-intro-content--play {
     animation: apogee-content-in 1.3s ease-out 3.5s both;
@@ -434,8 +441,10 @@
     }
   }
   /* Reduced motion: no cinematic — the static scene and the UI, immediately.
-     The hold styles are disabled too so even the parking frames show the
-     finished sky rather than an empty panel. */
+     DEFENCE IN DEPTH, not the active mechanism: App now resolves reduced motion
+     in useMoonIntro's initializer, so none of these phase classes reaches such a
+     user in the first place. This block still matters for the one way they can —
+     the preference toggled DURING a hold that began without it. */
   @media (prefers-reduced-motion: reduce) {
     .apogee-scene--intro .apogee-moon,
     .apogee-scene--intro .apogee-glow,
@@ -454,6 +463,7 @@
     }
     .apogee-intro-content--hold {
       opacity: 1;
+      pointer-events: auto;
     }
   }
 
