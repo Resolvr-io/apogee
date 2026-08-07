@@ -456,7 +456,13 @@
      `matchMedia`. In a browser that honors the media query without it, every JS
      guard reports "no reduced motion" and this block is the only mechanism there
      is — theoretical on the Chrome/Firefox targets, but it is why the block
-     covers whole phases rather than only the gap below.
+     covers whole phases rather than only the gap below. What it CANNOT do there
+     is lift `inert`: that is an attribute keyed on the phase those same failing
+     guards never end, and no CSS overrides it. So in that branch this block
+     restores the scene and the UI's visibility while the phase runs opaque and
+     inert to its JS bound — the cap at 2.5s for a hold, the backstop at 5.35s
+     for a play, since `animation: none` leaves no animationend to flip
+     contentReady. Bounded and one-off: the cap writes the flag.
      Otherwise what is left for it is the frames between the query matching and
      the listener's setPhase committing: --intro-hold and the content wrapper's
      hold rule for a hold, `animation: none` for a play. One caveat in that

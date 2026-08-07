@@ -129,8 +129,9 @@ function useMoonIntro(
     // who turned Background animation off.
     if (!animationsLoaded) return;
     // Reduced motion leaves the flag UNWRITTEN, so every place that ASKS about
-    // it agrees — initializer, the mid-flight listener below, `replay()`, and
-    // here. Writing first made this one disagree with the rest for a toggle
+    // it agrees on the PHASE — initializer, the mid-flight listener below,
+    // `replay()`, and here: none of them plays a cinematic. On the flag they
+    // differ, which the next paragraph bounds. Writing first made this one disagree with the rest for a toggle
     // landing in the decision window: `matchMedia().matches` flips
     // synchronously with the OS setting, ahead of the `change` dispatch, so the
     // effect can observe it before the listener ever runs.
@@ -140,7 +141,9 @@ function useMoonIntro(
     // `replay()`, which writes before it asks. None is a reduced-motion
     // decision, and replay both clears rather than sets and is debug-gated.
     // Harmless either way — an RM user never holds again, because the
-    // initializer short-circuits.
+    // initializer short-circuits (wherever `matchMedia` exists; without it they
+    // hold regardless of what the flag says, so a stray write costs nothing
+    // there either).
     if (prefersReducedMotion()) {
       setPhase(false);
       return;
