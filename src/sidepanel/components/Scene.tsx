@@ -51,10 +51,11 @@ export function Scene({
           KEEP IN SYNC with the timeline in theme.css and MOON_INTRO_MS in
           App.tsx, whose fallback timer covers an animationend that never
           arrives. A reduced-motion user gets no phase at all (App resolves it in
-          useMoonIntro's initializer), so `intro` is false and this node does not
-          render for them — the sole exception being the preference toggled
-          during a hold that began without it. An interrupted animation can still
-          swallow the event, which is what the fallback is actually for. */}
+          useMoonIntro's initializer, and ends any phase mid-flight if the
+          preference turns on), so `intro` is false and this node does not render
+          for them. An interrupted animation can still swallow the event —
+          killing a running animation fires `animationcancel`, not
+          `animationend` — which is what the fallback is actually for. */}
       {intro && (
         <div className="apogee-intro-dim" onAnimationEnd={() => onIntroEnd?.()} />
       )}

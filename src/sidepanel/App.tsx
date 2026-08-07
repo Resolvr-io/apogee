@@ -128,12 +128,22 @@ function useMoonIntro(
     // default, so deciding before it lands can play the cinematic for someone
     // who turned Background animation off.
     if (!animationsLoaded) return;
+    // Reduced motion leaves the flag UNWRITTEN, so all three checks agree —
+    // initializer, the mid-flight listener below, and here. Writing first made
+    // this one disagree with the other two for a toggle that lands in the
+    // decision window: `matchMedia().matches` flips synchronously with the OS
+    // setting, ahead of the `change` dispatch, so the effect can observe it
+    // before the listener ever runs.
+    if (prefersReducedMotion()) {
+      setPhase(false);
+      return;
+    }
     introFlagWrite(true);
     // `animated` folds in the Background-animation preference: with it off the
     // scene is the static poster, and a cinematic over a still would half-play.
-    // The reduced-motion re-check is not redundant with the initializer: the
-    // hold can last seconds, and the preference can be toggled inside it.
-    setPhase(animated && !prefersReducedMotion() ? "play" : false);
+    // Unlike reduced motion this DOES consume the first run — a deliberate
+    // preference about decoration, not a sensitivity to it.
+    setPhase(animated ? "play" : false);
   }, [phase, state, error, recovering, animated, animationsLoaded]);
 
   // Cap the hold. Everything above resolves it on a state OR an error, but the
@@ -158,18 +168,30 @@ function useMoonIntro(
     return () => window.clearTimeout(t);
   }, [phase]);
 
-  // Reduced motion turned on DURING a hold ends it. Without this the preference
-  // was honored at init and again at decision time but not in between, and the
-  // gap had teeth: the reduced-motion rules un-hide a held wrapper, while the
-  // wrapper is `inert` for an onboarding hold — so toggling mid-hold produced a
-  // fully opaque chooser with four dead controls, the visible-but-dead shape
-  // this whole feature keeps treating as the worst one. Nothing else re-runs the
-  // decision on a media-query change, so it would have sat there until
-  // animationsLoaded or the cap. The flag stays unwritten, matching the init
-  // path: a reduced-motion user hasn't had their first run.
+  // Reduced motion turned on MID-FLIGHT ends the phase, hold or play. Without
+  // it the preference was honored at init and at decision time but nowhere in
+  // between, and both phases fail the same way: the media query makes the
+  // wrapper fully visible — the hold via an explicit `opacity: 1`, the play by
+  // deleting its animation so the base style shows through — while `inert`
+  // stays on. Four opaque, unclickable, untabbable chooser controls, which is
+  // the visible-but-dead shape this feature keeps landing on as the worst one.
+  //
+  // `play` is the harder half to spot: killing a running animation fires
+  // `animationcancel`, NOT `animationend`, so `contentReady` never flips and
+  // nothing lifts `inert` until the backstop 5.35s later. Ending the phase is
+  // also just correct — CSS has deleted the timeline, so there is nothing left
+  // to watch.
+  //
+  // The unwritten flag applies to the hold only; by `play` it is already
+  // written. Checked at attach too, not only on `change`, so a flip between
+  // render and commit self-corrects rather than being missed.
   useEffect(() => {
-    if (phase !== "hold" || typeof window.matchMedia !== "function") return;
+    if (!phase || typeof window.matchMedia !== "function") return;
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (mq.matches) {
+      setPhase(false);
+      return;
+    }
     const onChange = () => {
       if (mq.matches) setPhase(false);
     };
