@@ -184,4 +184,44 @@ describe("ApprovalOverlay", () => {
     // The Label row carries the clamped 24-char form, not the full ticker.
     expect(markup).toContain(`registry · ${longTicker.slice(0, 24)}`);
   });
+
+  it("shows trusted lending intent and makes manifest broadcast explicit", () => {
+    const request: Extract<ApprovalRequest, { kind: "executeTxManifest" }> = {
+      kind: "executeTxManifest",
+      id: "manifest-approval-test",
+      origin: "https://lending.example.test",
+      network: "testnet",
+      locked: false,
+      signerKind: "local",
+      review: {
+        protocolLabel: "Simplicity Lending",
+        actionLabel: "Fund loan offer",
+        requestId: "accept-offer-3",
+        accountIdentifier: `bip122:${"22".repeat(16)}:${"33".repeat(16)}`,
+        bundleHash: `sha256:${"44".repeat(32)}`,
+        action: "lending_contract.AcceptOffer",
+        principalAssetId: "55".repeat(32),
+        principalAmount: "100000000",
+        collateralAssetId: "66".repeat(32),
+        collateralAmount: "250000000",
+        interestRateBasisPoints: "500",
+        totalDebt: "105000000",
+        expirationHeight: 500000,
+        feeAssetId: POLICY_ASSET,
+        fee: "1000",
+        principalChange: "2500",
+        feeChange: "9000",
+      },
+    };
+    const markup = renderToStaticMarkup(
+      createElement(ApprovalOverlay, { request, onClose: vi.fn() }),
+    );
+    expect(markup).toContain("Execute contract action");
+    expect(markup).toContain("Simplicity Lending");
+    expect(markup).toContain("Fund loan offer");
+    expect(markup).toContain("Approval signs and broadcasts it");
+    expect(markup).toContain("Approve &amp; execute");
+    expect(markup).toContain("Network fee");
+    expect(markup).toContain(",000 ");
+  });
 });

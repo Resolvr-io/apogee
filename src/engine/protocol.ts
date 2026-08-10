@@ -8,6 +8,22 @@
 // keystore. Requests are plain JSON (structured-clone over chrome.runtime).
 
 import type { LiquidNetwork, WalletInfo, WalletSigner } from "@/keystore/keystore";
+import type { TxManifestBundleHash } from "@/tx-manifest/registry";
+import type {
+  AcceptOfferRequirementPlan,
+  TxManifestInvocation,
+} from "@/tx-manifest/requirements";
+import type { AcceptOfferChainWalletSnapshot } from "@/tx-manifest/prepare-accept-offer";
+import type {
+  AcceptOfferVerifiedChainSnapshot,
+  HostedPreparedAcceptOfferExecution,
+} from "@/tx-manifest/wallet-host";
+import type {
+  TxManifestCovenantCompileSpec,
+  TxManifestCovenantDryRunSpec,
+  TxManifestCovenantFinalizeSpec,
+  TxManifestPsetBuildSpec,
+} from "@/tx-manifest/runtime";
 
 // ---- service worker → offscreen engine -------------------------------------
 
@@ -18,6 +34,37 @@ export const SCAN_STATE_DB = "apogee-scan-state";
 
 /** A request executed inside the offscreen document against lwk_wasm. */
 export type EngineRequest =
+  | { kind: "getTxManifestSupport"; bundleHash: TxManifestBundleHash }
+  | { kind: "resolveTxManifestRequirements"; invocation: TxManifestInvocation }
+  | { kind: "compileTxManifestCovenant"; spec: TxManifestCovenantCompileSpec }
+  | { kind: "inspectTxManifestTransactionOutput"; transactionHex: string; vout: number }
+  | {
+      kind: "inspectTxManifestAddress";
+      address: string;
+      network: TxManifestCovenantCompileSpec["network"];
+    }
+  | { kind: "dryRunTxManifestCovenant"; spec: TxManifestCovenantDryRunSpec }
+  | { kind: "buildTxManifestPset"; spec: TxManifestPsetBuildSpec }
+  | { kind: "finalizeTxManifestCovenant"; spec: TxManifestCovenantFinalizeSpec }
+  | {
+      kind: "prepareLendingV3AcceptOffer";
+      plan: AcceptOfferRequirementPlan;
+      snapshot: AcceptOfferChainWalletSnapshot;
+    }
+  | {
+      kind: "prepareLendingV3AcceptOfferWithWallet";
+      descriptor: string;
+      network: LiquidNetwork;
+      plan: AcceptOfferRequirementPlan;
+      chainSnapshot: AcceptOfferVerifiedChainSnapshot;
+    }
+  | {
+      kind: "dryRunLendingV3AcceptOffer";
+      transactionHex: string;
+      parentTransactions: string[];
+      genesisHash: string;
+      covenants: HostedPreparedAcceptOfferExecution["covenants"];
+    }
   | { kind: "generateMnemonic"; words?: 12 | 24 }
   | { kind: "deriveWallet"; mnemonic: string; network: LiquidNetwork }
   | { kind: "sync"; descriptor: string; network: LiquidNetwork; esploraUrl?: string }
@@ -25,6 +72,13 @@ export type EngineRequest =
   | { kind: "getBalance"; descriptor: string; network: LiquidNetwork }
   | { kind: "getTransactions"; descriptor: string; network: LiquidNetwork }
   | { kind: "signPset"; mnemonic: string; network: LiquidNetwork; pset: string }
+  | {
+      kind: "signTxManifestPset";
+      mnemonic: string;
+      descriptor: string;
+      network: LiquidNetwork;
+      pset: string;
+    }
   | { kind: "getRate"; currency: string } // BTC price in `currency` (median of sources)
   // Hourly BTC price history for the price chart, newest-last, in `currency`.
   // `range` selects the window; see `PriceRange` and `engine-core.ts` getPriceHistory.
@@ -69,6 +123,7 @@ export type EngineRequest =
   // authorization after finalization and immediately before the irreversible
   // network action.
   | { kind: "finalizePset"; descriptor: string; network: LiquidNetwork; pset: string }
+  | { kind: "extractPsetTransaction"; pset: string }
   // Submit an already-finalized PSET. All transaction cryptography and
   // extraction remain inside LWK; this request only selects the chain server.
   | { kind: "broadcastPset"; network: LiquidNetwork; pset: string; esploraUrl?: string }
@@ -242,6 +297,26 @@ export interface ProviderPsetAnalysisDTO {
 
 export interface ProviderPsetApprovalReviewDTO extends ProviderPsetAnalysisDTO {
   accountIdentifier: string;
+}
+
+export interface TxManifestApprovalReviewDTO {
+  protocolLabel: string;
+  actionLabel: string;
+  requestId: string;
+  accountIdentifier: string;
+  bundleHash: string;
+  action: string;
+  principalAssetId: string;
+  principalAmount: string;
+  collateralAssetId: string;
+  collateralAmount: string;
+  interestRateBasisPoints: string;
+  totalDebt: string;
+  expirationHeight: number;
+  feeAssetId: string;
+  fee: string;
+  principalChange: string;
+  feeChange: string;
 }
 
 export type ProviderPsetAnalysisFailureReason =
@@ -690,6 +765,15 @@ export type ApprovalRequest =
       signerKind: WalletSigner;
       /** True only when approval also authorizes irreversible network submission. */
       broadcast: boolean;
+    }
+  | {
+      kind: "executeTxManifest";
+      id: string;
+      origin: string;
+      review: TxManifestApprovalReviewDTO;
+      network: DappNetwork;
+      locked: boolean;
+      signerKind: WalletSigner;
     };
 
 /** Uniform reply envelope for both channels. */

@@ -63,6 +63,68 @@ describe("ELIP-0144 identifiers", () => {
 });
 
 describe("parseLiquidRpcRequest", () => {
+  it("validates and copies the experimental TX Manifest methods", () => {
+    const bundleHash = `sha256:${"11".repeat(32)}`;
+    expect(
+      parseLiquidRpcRequest({
+        method: "experimental_getTxManifestSupport",
+        params: { bundleHash },
+      }),
+    ).toEqual({
+      method: "experimental_getTxManifestSupport",
+      params: { bundleHash },
+    });
+
+    const request = parseLiquidRpcRequest({
+      method: "experimental_executeTxManifest",
+      params: {
+        protocolVersion: "0.1",
+        requestId: "accept-3",
+        chainId: CHAIN_ID,
+        accountIdentifier: ACCOUNT_ID,
+        manifest: { bundleHash },
+        action: "lending_contract.AcceptOffer",
+        arguments: { AMOUNT: "1000" },
+        providedInputs: {
+          offer: { txid: "33".repeat(32), vout: 0 },
+        },
+        constraints: { maxFee: "01000", validUntilHeight: 500000 },
+      },
+    });
+    expect(request).toMatchObject({
+      method: "experimental_executeTxManifest",
+      params: {
+        requestId: "accept-3",
+        constraints: { maxFee: "1000", validUntilHeight: 500000 },
+      },
+    });
+  });
+
+  it("fails closed on malformed TX Manifest hashes, outpoints, and unknown fields", () => {
+    expect(() =>
+      parseLiquidRpcRequest({
+        method: "experimental_getTxManifestSupport",
+        params: { bundleHash: "sha256:nope" },
+      }),
+    ).toThrow(expect.objectContaining({ code: -32602 }));
+    expect(() =>
+      parseLiquidRpcRequest({
+        method: "experimental_executeTxManifest",
+        params: {
+          protocolVersion: "0.1",
+          requestId: "accept-3",
+          chainId: CHAIN_ID,
+          accountIdentifier: ACCOUNT_ID,
+          manifest: { bundleHash: `sha256:${"11".repeat(32)}` },
+          action: "AcceptOffer",
+          arguments: {},
+          providedInputs: { offer: { txid: "AA".repeat(32), vout: 0 } },
+          forged: true,
+        },
+      }),
+    ).toThrow(expect.objectContaining({ code: -32602 }));
+  });
+
   it("accepts omitted params for asset reads and drops a caller-supplied id", () => {
     expect(parseLiquidRpcRequest({ id: 42, method: "getBalance" })).toEqual({
       method: "getBalance",

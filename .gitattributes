@@ -1,0 +1,4 @@
+# Bundle identity commits source bytes. Force deterministic checkouts on every host.
+src/tx-manifest/builtins/**/*.simf text eol=lf
+src/tx-manifest/builtins/**/manifest.json text eol=lf
+crates/tx-manifest-runtime/fixtures/*.hex text eol=lf

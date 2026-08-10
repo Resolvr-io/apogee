@@ -5,6 +5,8 @@ import {
   LIQUID_SIGN_MESSAGE_PROTOCOLS,
   LIQUID_WALLET_RPC_METHODS,
   type AnyLiquidRequest,
+  type LiquidExecuteTxManifestParams,
+  type LiquidGetTxManifestSupportParams,
   type LiquidGetBalanceParams,
   type LiquidGetIdentityPublicKeyParams,
   type LiquidGetIdentitySharedKeyParams,
@@ -32,6 +34,8 @@ const LOWER_HEX = /^[0-9a-f]*$/;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const PUBLIC_KEY = /^04[0-9a-f]{128}$/;
 const SIGHASH_TYPES = new Set([1, 2, 3, 129, 130, 131]);
+const BUNDLE_HASH = /^sha256:[0-9a-f]{64}$/;
+const TXID = /^[0-9a-f]{64}$/;
 
 /**
  * Validate and copy a page-supplied request into a fresh, trusted object.
@@ -54,6 +58,10 @@ export function parseLiquidRpcRequest(value: unknown): AnyLiquidRequest {
   }
 
   switch (method) {
+    case "experimental_getTxManifestSupport":
+      return { method, params: parseTxManifestSupport(request.params) };
+    case "experimental_executeTxManifest":
+      return { method, params: parseTxManifestExecution(request.params) };
     case "getBalance":
       return { method, params: parseAssetFilter(request.params, "params") };
     case "getUTXOs":
@@ -83,6 +91,151 @@ export function parseLiquidRpcRequest(value: unknown): AnyLiquidRequest {
     LIQUID_RPC_ERROR_REASONS.METHOD_NOT_FOUND,
     "method",
   );
+}
+
+function parseTxManifestSupport(value: unknown): LiquidGetTxManifestSupportParams {
+  const params = exactRecord(value, "params", ["bundleHash"]);
+  return { bundleHash: bundleHash(params.bundleHash, "params.bundleHash") };
+}
+
+function parseTxManifestExecution(value: unknown): LiquidExecuteTxManifestParams {
+  const params = exactRecord(value, "params", [
+    "protocolVersion",
+    "requestId",
+    "chainId",
+    "accountIdentifier",
+    "manifest",
+    "action",
+    "arguments",
+    "providedInputs",
+    "constraints",
+  ]);
+  const manifest = exactRecord(params.manifest, "params.manifest", ["bundleHash", "bundle"]);
+  const out: LiquidExecuteTxManifestParams = {
+    protocolVersion: exact(params.protocolVersion, "0.1", "params.protocolVersion"),
+    requestId: boundedString(params.requestId, "params.requestId", 128),
+    chainId: chainId(params.chainId, "params.chainId"),
+    accountIdentifier: accountId(params.accountIdentifier, "params.accountIdentifier"),
+    manifest: {
+      bundleHash: bundleHash(manifest.bundleHash, "params.manifest.bundleHash"),
+      ...(manifest.bundle === undefined
+        ? {}
+        : { bundle: jsonRecord(manifest.bundle, "params.manifest.bundle") }),
+    },
+    action: boundedString(params.action, "params.action", 256),
+    arguments: jsonRecord(params.arguments, "params.arguments"),
+  };
+  if (params.providedInputs !== undefined) {
+    const provided = record(params.providedInputs, "params.providedInputs");
+    out.providedInputs = Object.fromEntries(
+      Object.entries(provided).map(([name, candidate]) => {
+        if (name.length === 0 || name.length > 128) {
+          throw invalid("params.providedInputs", "Input names must contain 1 to 128 characters.");
+        }
+        return [
+          name,
+          Array.isArray(candidate)
+            ? candidate.map((entry, index) =>
+                manifestOutpoint(entry, `params.providedInputs.${name}[${index}]`),
+              )
+            : manifestOutpoint(candidate, `params.providedInputs.${name}`),
+        ];
+      }),
+    );
+  }
+  if (params.constraints !== undefined) {
+    const constraints = exactRecord(params.constraints, "params.constraints", [
+      "maxFee",
+      "validUntilHeight",
+    ]);
+    out.constraints = {
+      ...(constraints.maxFee === undefined
+        ? {}
+        : { maxFee: unsignedU64(constraints.maxFee, "params.constraints.maxFee") }),
+      ...(constraints.validUntilHeight === undefined
+        ? {}
+        : {
+            validUntilHeight: unsignedU32(
+              constraints.validUntilHeight,
+              "params.constraints.validUntilHeight",
+            ),
+          }),
+    };
+  }
+  return out;
+}
+
+function manifestOutpoint(value: unknown, path: string): { txid: string; vout: number } {
+  const candidate = exactRecord(value, path, ["txid", "vout"]);
+  const txid = string(candidate.txid, `${path}.txid`);
+  if (!TXID.test(txid)) throw invalid(`${path}.txid`, "Expected a lowercase transaction id.");
+  return { txid, vout: index(candidate.vout, `${path}.vout`) };
+}
+
+function bundleHash(value: unknown, path: string): `sha256:${string}` {
+  const result = string(value, path);
+  if (!BUNDLE_HASH.test(result)) throw invalid(path, "Expected a lowercase sha256 bundle hash.");
+  return result as `sha256:${string}`;
+}
+
+function chainId(value: unknown, path: string): string {
+  const result = string(value, path);
+  if (!CHAIN_ID.test(result)) throw invalid(path, "Expected an ELIP-0144 chain identifier.");
+  return result;
+}
+
+function boundedString(value: unknown, path: string, maximum: number): string {
+  const result = nonEmptyString(value, path);
+  if (result.length > maximum) throw invalid(path, `Expected at most ${maximum} characters.`);
+  return result;
+}
+
+function unsignedU32(value: unknown, path: string): number {
+  const result = index(value, path);
+  if (result > 0xffff_ffff) throw invalid(path, "Expected an unsigned 32-bit integer.");
+  return result;
+}
+
+function unsignedU64(value: unknown, path: string): string {
+  const result = decimal(value, path).replace(/^0+(?=\d)/, "");
+  const maximum = "18446744073709551615";
+  if (result.length > maximum.length || (result.length === maximum.length && result > maximum)) {
+    throw invalid(path, "Expected an unsigned 64-bit decimal string.");
+  }
+  return result;
+}
+
+function jsonRecord(value: unknown, path: string): Record<string, unknown> {
+  const result = record(value, path);
+  if (!isJsonValue(result, new Set())) throw invalid(path, "Expected JSON-serializable data.");
+  const serialized = JSON.stringify(result);
+  if (serialized.length > 1_000_000) throw invalid(path, "TX Manifest data exceeds the 1 MB limit.");
+  return JSON.parse(serialized) as Record<string, unknown>;
+}
+
+function isJsonValue(value: unknown, seen: Set<object>, depth = 0): boolean {
+  if (depth > 64) return false;
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isSafeInteger(value);
+  if (typeof value !== "object") return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  const valid = Array.isArray(value)
+    ? value.every((entry) => isJsonValue(entry, seen, depth + 1))
+    : Object.values(value as Record<string, unknown>).every((entry) =>
+        isJsonValue(entry, seen, depth + 1),
+      );
+  seen.delete(value);
+  return valid;
+}
+
+function exactRecord(value: unknown, path: string, fields: readonly string[]): Record<string, unknown> {
+  const result = record(value, path);
+  const allowed = new Set(fields);
+  for (const field of Object.keys(result)) {
+    if (!allowed.has(field)) throw invalid(`${path}.${field}`, "Unknown field.");
+  }
+  return result;
 }
 
 export function isLiquidChainId(value: string): boolean {

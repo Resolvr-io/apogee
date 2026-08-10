@@ -8,6 +8,8 @@ const PLAYGROUND_LOCALHOST = "http://localhost:4173/";
 const TEST_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const MAINNET_POLICY_ASSET =
   "bip122:1466275836220db2944ca059a3a10ef6/elip144:6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d";
+const LENDING_V3_BUNDLE_HASH =
+  "sha256:a85cd2b87a5c763a5e8db463a4784a0861b8994b3e3ae276fde36a3d72b1bcde";
 
 test.describe.serial("Liquid browser provider", () => {
   let context: BrowserContext;
@@ -51,6 +53,25 @@ test.describe.serial("Liquid browser provider", () => {
     await expect(page.getByTestId("check-summary")).toContainText("14 passed · 0 failed");
     await expect(page.locator("#checks .fail")).toHaveCount(0);
     await expect(page.getByTestId("frame-result")).toHaveText("same-origin: 0 · opaque: 0");
+
+    const methods = await discoveredProviderMethods(page);
+    expect(methods).toEqual(
+      expect.arrayContaining([
+        "experimental_getTxManifestSupport",
+        "experimental_executeTxManifest",
+      ]),
+    );
+    const support = await discoveredProviderRequest(page, {
+      method: "experimental_getTxManifestSupport",
+      params: { bundleHash: LENDING_V3_BUNDLE_HASH },
+    });
+    expect(support).toMatchObject({
+      supported: true,
+      bundleHash: LENDING_V3_BUNDLE_HASH,
+      status: "builtin",
+      protocol: { name: "simplicity-lending", version: "v3" },
+      supportedActions: ["lending_contract.AcceptOffer"],
+    });
 
     // getBalance is implemented, but account data remains unavailable until the
     // calling origin obtains an explicit connection grant.
@@ -324,4 +345,32 @@ async function requestDescriptorEventWithoutMethod(page: Page): Promise<unknown>
       return { code: providerError.code, data: providerError.data };
     }
   });
+}
+
+async function discoveredProviderMethods(page: Page): Promise<string[]> {
+  const capabilities = (await discoveredProviderRequest(page, {
+    method: "wallet_getCapabilities",
+  })) as { methods: string[] };
+  return capabilities.methods;
+}
+
+async function discoveredProviderRequest(page: Page, request: unknown): Promise<unknown> {
+  return page.evaluate(async (providerRequest) => {
+    const pageWindow = globalThis as typeof globalThis & {
+      addEventListener(type: string, listener: (event: Event) => void): void;
+      dispatchEvent(event: Event): boolean;
+      removeEventListener(type: string, listener: (event: Event) => void): void;
+    };
+    const detail = await new Promise<{
+      provider: { request(args: unknown): Promise<unknown> };
+    }>((resolve) => {
+      const receive = (event: Event) => {
+        pageWindow.removeEventListener("liquid:announceProvider", receive);
+        resolve((event as CustomEvent).detail);
+      };
+      pageWindow.addEventListener("liquid:announceProvider", receive);
+      pageWindow.dispatchEvent(new Event("liquid:requestProvider"));
+    });
+    return detail.provider.request(providerRequest);
+  }, request);
 }

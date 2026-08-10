@@ -15,6 +15,18 @@
       forAllSystems = nixpkgs.lib.genAttrs systems;
     in
     {
+      packages = forAllSystems (
+        system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+        in
+        {
+          # Pinned build-only tools for the checked-in TX Manifest browser runtime.
+          tx-manifest-clang = pkgs.llvmPackages.clang;
+          tx-manifest-wasm-bindgen = pkgs.wasm-bindgen-cli;
+        }
+      );
+
       devShells = forAllSystems (
         system:
         let

@@ -13,7 +13,10 @@
 export const ELIP_DRAFT_URL = "https://github.com/ElementsProject/ELIPs/pull/36";
 export const ELIP_DRAFT_REVISION = "d5b713cbbad5a13f15baa35073e8dda53886f0b0";
 
+/** Pinned Liquid Wallet RPC methods plus Apogee's TX Manifest experimental extension. */
 export const LIQUID_WALLET_RPC_METHODS = {
+  GET_TX_MANIFEST_SUPPORT: "experimental_getTxManifestSupport",
+  EXECUTE_TX_MANIFEST: "experimental_executeTxManifest",
   GET_BALANCE: "getBalance",
   GET_IDENTITY_PUBLIC_KEY: "getIdentityPublicKey",
   GET_IDENTITY_SHARED_KEY: "getIdentitySharedKey",
@@ -25,6 +28,51 @@ export const LIQUID_WALLET_RPC_METHODS = {
   SIGN_MESSAGE: "signMessage",
   SIGN_PSET: "signPset",
 } as const;
+
+export type TxManifestBundleHash = `sha256:${string}`;
+
+export type LiquidGetTxManifestSupportParams = {
+  bundleHash: TxManifestBundleHash;
+};
+
+export type LiquidGetTxManifestSupportResult = {
+  supported: boolean;
+  bundleHash: TxManifestBundleHash;
+  status: "builtin" | "unknown" | "blocked";
+  protocol?: { name: string; version: string };
+  manifestSpecVersion?: string;
+  supportedActions?: string[];
+};
+
+export type LiquidTxManifestOutpoint = { txid: string; vout: number };
+
+export type LiquidExecuteTxManifestParams = {
+  protocolVersion: "0.1";
+  requestId: string;
+  chainId: LiquidChainId;
+  accountIdentifier: LiquidAccountIdentifier;
+  manifest: {
+    bundleHash: TxManifestBundleHash;
+    bundle?: Record<string, unknown>;
+  };
+  action: string;
+  arguments: Record<string, unknown>;
+  providedInputs?: Record<
+    string,
+    LiquidTxManifestOutpoint | LiquidTxManifestOutpoint[]
+  >;
+  constraints?: { maxFee?: LiquidAmount; validUntilHeight?: number };
+};
+
+export type LiquidExecuteTxManifestResult = {
+  requestId: string;
+  chainId: LiquidChainId;
+  accountIdentifier: LiquidAccountIdentifier;
+  bundleHash: TxManifestBundleHash;
+  action: string;
+  status: "broadcast";
+  txid: string;
+};
 
 export const LIQUID_WALLET_DESCRIPTOR_CHANGED_EVENT = "bip122_walletDescriptorChanged";
 
@@ -291,6 +339,14 @@ type RpcMethod<Params, Result> = {
 };
 
 export interface LiquidRpcSchema {
+  experimental_getTxManifestSupport: RpcMethod<
+    LiquidGetTxManifestSupportParams,
+    LiquidGetTxManifestSupportResult
+  >;
+  experimental_executeTxManifest: RpcMethod<
+    LiquidExecuteTxManifestParams,
+    LiquidExecuteTxManifestResult
+  >;
   getBalance: RpcMethod<LiquidGetBalanceParams, LiquidGetBalanceResult>;
   getIdentityPublicKey: RpcMethod<
     LiquidGetIdentityPublicKeyParams,

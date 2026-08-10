@@ -95,6 +95,7 @@ export function ApprovalOverlay({
 export function Approval({ request, onClose }: { request: ApprovalRequest; onClose: () => void }) {
   const isConnect = request.kind === "connect";
   const isPset = request.kind === "signPset";
+  const isManifest = request.kind === "executeTxManifest";
   const broadcastsPset = request.kind === "signPset" && request.broadcast;
   const sendReview = request.kind === "send" ? request.review : null;
   const tokenAmount = sendReview?.assetId
@@ -239,7 +240,9 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
               ? "Sign & broadcast PSET"
               : isPset
                 ? "Sign PSET"
-                : "Approve transaction"}
+                : isManifest
+                  ? "Execute contract action"
+                  : "Approve transaction"}
         </h2>
         {/* Middle-truncate: clipping the end would hide the registrable
             domain/TLD behind a long subdomain — the part that identifies the
@@ -275,6 +278,13 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
               shows its exact inputs, recipients, asset changes, and fees for separate approval.
             </p>
           )}
+          {!request.legacy && request.methods.includes("experimental_executeTxManifest") && (
+            <p className="mt-2 text-xs leading-relaxed text-[color:var(--warning-text)]">
+              TX Manifest execution lets this site request supported contract actions. Apogee
+              independently builds, verifies, and shows every execution for separate approval
+              before signing and broadcasting it.
+            </p>
+          )}
           <dl className="mt-3 flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
             <Row label="Wallet" value={request.fingerprint.toUpperCase()} console />
             <Row label="Network" value={networkLabel(request.network)} />
@@ -290,6 +300,8 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
           network={request.network}
           broadcast={request.broadcast}
         />
+      ) : request.kind === "executeTxManifest" ? (
+        <TxManifestReview review={request.review} network={request.network} />
       ) : (
         <>
           <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
@@ -420,6 +432,8 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
                 : jade
                   ? "Approve & sign on Jade"
                   : "Approve & sign"
+            ) : isManifest ? (
+              "Approve & execute"
             ) : jade ? (
               "Approve & sign on Jade"
             ) : (
@@ -432,6 +446,112 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
         </div>
       )}
     </Card>
+  );
+}
+
+type TxManifestReviewDTO = Extract<
+  ApprovalRequest,
+  { kind: "executeTxManifest" }
+>["review"];
+
+function TxManifestReview({
+  review,
+  network,
+}: {
+  review: TxManifestReviewDTO;
+  network: "mainnet" | "testnet" | "regtest";
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-sm text-[color:var(--text-secondary)]">
+        Apogee built this transaction from a trusted contract manifest and current chain state.
+        Approval signs and broadcasts it.
+      </p>
+      <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
+        <Row label="Protocol" value={review.protocolLabel} strong />
+        <Row label="Action" value={review.actionLabel} strong />
+        <Row label="Network" value={networkLabel(network)} />
+        <Row
+          label="Account"
+          value={review.accountIdentifier}
+          title={review.accountIdentifier}
+          mono
+          wrap
+        />
+        <Row label="Request" value={review.requestId} title={review.requestId} mono wrap />
+      </dl>
+
+      <ReviewSection title="Loan terms">
+        <ReviewItem>
+          <Row
+            label="Principal"
+            value={`${formatBaseUnits(review.principalAmount)} base units`}
+            amount
+            strong
+          />
+          <Row
+            label="Principal asset"
+            value={review.principalAssetId}
+            title={review.principalAssetId}
+            mono
+            wrap
+          />
+          <Row
+            label="Collateral"
+            value={`${formatBaseUnits(review.collateralAmount)} base units`}
+            amount
+          />
+          <Row
+            label="Collateral asset"
+            value={review.collateralAssetId}
+            title={review.collateralAssetId}
+            mono
+            wrap
+          />
+          <Row label="Interest" value={`${formatBaseUnits(review.interestRateBasisPoints)} bps`} />
+          <Row
+            label="Total debt"
+            value={`${formatBaseUnits(review.totalDebt)} base units`}
+            amount
+          />
+          <Row label="Expires at height" value={String(review.expirationHeight)} mono />
+        </ReviewItem>
+      </ReviewSection>
+
+      <ReviewSection title="Wallet effect">
+        <ReviewItem>
+          <Row
+            label="Network fee"
+            value={`${formatBaseUnits(review.fee)} sats`}
+            amount
+            strong
+          />
+          {BigInt(review.principalChange) !== 0n && (
+            <Row
+              label="Principal change"
+              value={`${formatBaseUnits(review.principalChange)} base units`}
+              amount
+            />
+          )}
+          {BigInt(review.feeChange) !== 0n && (
+            <Row
+              label="L-BTC change"
+              value={`${formatBaseUnits(review.feeChange)} sats`}
+              amount
+            />
+          )}
+        </ReviewItem>
+      </ReviewSection>
+
+      <details className="rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-xs">
+        <summary className="cursor-pointer text-[color:var(--text-secondary)]">Technical details</summary>
+        <dl className="mt-2 flex flex-col gap-1.5">
+          <Row label="Bundle" value={review.bundleHash} title={review.bundleHash} mono wrap />
+          <Row label="Manifest action" value={review.action} title={review.action} mono wrap />
+          <Row label="Fee asset" value={review.feeAssetId} title={review.feeAssetId} mono wrap />
+        </dl>
+      </details>
+    </div>
   );
 }
 

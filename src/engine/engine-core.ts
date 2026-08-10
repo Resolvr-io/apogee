@@ -19,6 +19,7 @@ import {
 } from "@/lib/debug";
 import { SCAN_STATE_DB } from "@/engine/protocol";
 import { exactRecipientAmount } from "./recipient-amount";
+import { extractElementsTxOut } from "./elements-txout";
 import { collectProviderUtxos } from "./provider-utxos";
 import {
   analyzeAndSignProviderPset,
@@ -27,6 +28,25 @@ import {
 } from "./provider-pset-analyzer";
 import { publicWalletDescriptor } from "./public-wallet-descriptor";
 import { verifyDealerPset } from "@/engine/verify-dealer-pset";
+import { getTxManifestSupport } from "@/tx-manifest/registry";
+import { resolveTxManifestRequirements } from "@/tx-manifest/requirements";
+import {
+  dryRunLendingV3AcceptOfferExecution,
+  prepareLendingV3AcceptOffer,
+} from "@/tx-manifest/prepare-accept-offer";
+import {
+  selectAcceptOfferWalletInputs,
+  type AcceptOfferWalletCandidate,
+  type HostedPreparedAcceptOfferExecution,
+} from "@/tx-manifest/wallet-host";
+import {
+  compileTxManifestCovenant,
+  buildTxManifestPset,
+  dryRunTxManifestCovenant,
+  finalizeTxManifestCovenant,
+  inspectTxManifestAddress,
+  inspectTxManifestTransactionOutput,
+} from "@/tx-manifest/runtime";
 import type {
   AddressDTO,
   AssetInfo,
@@ -874,6 +894,43 @@ async function getPriceHistory(currency: string, range: PriceRange): Promise<Pri
 }
 
 export async function handle(req: EngineRequest): Promise<unknown> {
+  // These static, secret-free operations do not require the wallet WASM. Keeping
+  // them ahead of loadLwk also makes support discovery available before connect.
+  if (req.kind === "getTxManifestSupport") {
+    return getTxManifestSupport(req.bundleHash);
+  }
+  if (req.kind === "resolveTxManifestRequirements") {
+    return resolveTxManifestRequirements(req.invocation);
+  }
+  if (req.kind === "compileTxManifestCovenant") {
+    return compileTxManifestCovenant(req.spec);
+  }
+  if (req.kind === "inspectTxManifestTransactionOutput") {
+    return inspectTxManifestTransactionOutput(req.transactionHex, req.vout);
+  }
+  if (req.kind === "inspectTxManifestAddress") {
+    return inspectTxManifestAddress(req.address, req.network);
+  }
+  if (req.kind === "dryRunTxManifestCovenant") {
+    return dryRunTxManifestCovenant(req.spec);
+  }
+  if (req.kind === "buildTxManifestPset") {
+    return buildTxManifestPset(req.spec);
+  }
+  if (req.kind === "finalizeTxManifestCovenant") {
+    return finalizeTxManifestCovenant(req.spec);
+  }
+  if (req.kind === "prepareLendingV3AcceptOffer") {
+    return prepareLendingV3AcceptOffer(req.plan, req.snapshot);
+  }
+  if (req.kind === "dryRunLendingV3AcceptOffer") {
+    return dryRunLendingV3AcceptOfferExecution({
+      transactionHex: req.transactionHex,
+      parentTransactions: req.parentTransactions,
+      genesisHash: req.genesisHash,
+      covenants: req.covenants,
+    });
+  }
   const lwk = await loadLwk();
   switch (req.kind) {
     case "generateMnemonic":
@@ -961,9 +1018,110 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       return orderTransactionsNewestFirst(txs, spendsFrom);
     }
 
+    case "prepareLendingV3AcceptOfferWithWallet": {
+      if (req.network !== "liquidtestnet") {
+        throw new Error("The first TX Manifest wallet adapter is enabled only on Liquid testnet.");
+      }
+      const entry = await ensureWollet(lwk, req.descriptor, req.network);
+      if (entry.policyAssetHex !== req.chainSnapshot.policyAssetId) {
+        throw new Error("The wallet policy asset does not match the verified chain snapshot.");
+      }
+      const transactions = new Map(
+        entry.wollet.transactions().map((walletTx) => {
+          const transaction = walletTx.tx();
+          return [walletTx.txid().toString(), transaction.toBytes()] as const;
+        }),
+      );
+      const candidates = entry.wollet.utxos().map((utxo): AcceptOfferWalletCandidate => {
+        const outpoint = utxo.outpoint();
+        const txid = outpoint.txid().toString();
+        const transaction = transactions.get(txid);
+        if (!transaction) throw new Error(`wallet transaction unavailable for UTXO ${txid}`);
+        const secrets = utxo.unblinded();
+        return {
+          txid,
+          vout: outpoint.vout(),
+          txOut: bytesToHex(extractElementsTxOut(transaction, outpoint.vout())),
+          scriptPubKey: bytesToHex(utxo.scriptPubkey().bytes()),
+          assetId: secrets.asset().toString(),
+          amount: secrets.value().toString(),
+          assetBlindingFactor: secrets.assetBlindingFactor().toString(),
+          valueBlindingFactor: secrets.valueBlindingFactor().toString(),
+          address: utxo.address().toString(),
+          parentTransaction: bytesToHex(transaction),
+        };
+      });
+      const selected = selectAcceptOfferWalletInputs(
+        candidates,
+        req.plan.intent.principalAssetId,
+        req.plan.intent.principalAmount,
+        req.chainSnapshot.policyAssetId,
+        req.chainSnapshot.fee,
+      );
+      const address = entry.wollet.address(null).address().toString();
+      const destination = await inspectTxManifestAddress(address, "liquid-testnet");
+      const prepared = await prepareLendingV3AcceptOffer(req.plan, {
+        genesisHash: req.chainSnapshot.genesisHash,
+        tipHeight: req.chainSnapshot.tipHeight,
+        policyAssetId: req.chainSnapshot.policyAssetId,
+        pendingOffer: req.chainSnapshot.pendingOffer,
+        lenderNftAuthorization: req.chainSnapshot.lenderNftAuthorization,
+        principalInput: selected.principalInput,
+        feeInput: selected.feeInput,
+        lenderNftDestination: { scriptPubKey: destination.script_pub_key },
+        principalChangeDestination: {
+          scriptPubKey: destination.script_pub_key,
+          blindingPublicKey: destination.blinding_public_key,
+        },
+        feeChangeDestination: {
+          scriptPubKey: destination.script_pub_key,
+          blindingPublicKey: destination.blinding_public_key,
+        },
+        fee: req.chainSnapshot.fee,
+      });
+      const result: HostedPreparedAcceptOfferExecution = {
+        ...prepared,
+        parentTransactions: [
+          ...new Set([
+            ...req.chainSnapshot.parentTransactions,
+            selected.principalInput.parentTransaction,
+            selected.feeInput.parentTransaction,
+          ]),
+        ],
+      };
+      return result;
+    }
+
     case "signPset": {
       const signer = new lwk.Signer(new lwk.Mnemonic(req.mnemonic), lwkNetwork(lwk, req.network));
       return signer.sign(new lwk.Pset(req.pset)).toString();
+    }
+
+    case "signTxManifestPset": {
+      const entry = await ensureWollet(lwk, req.descriptor, req.network);
+      const pset = new lwk.Pset(req.pset);
+      let consumed = false;
+      const network = lwkNetwork(lwk, req.network);
+      try {
+        pset.addDetails(entry.wollet);
+        const mnemonic = new lwk.Mnemonic(req.mnemonic);
+        const signer = new lwk.Signer(mnemonic, network);
+        consumed = true;
+        try {
+          const signed = signer.sign(pset);
+          try {
+            return signed.toString();
+          } finally {
+            signed.free();
+          }
+        } finally {
+          signer.free();
+          mnemonic.free();
+        }
+      } finally {
+        if (!consumed) pset.free();
+        network.free();
+      }
     }
 
     case "verifyDealerPset": {
@@ -1351,6 +1509,23 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         return finalized.toString();
       } finally {
         finalized.free();
+      }
+    }
+
+    case "extractPsetTransaction": {
+      const pset = new lwk.Pset(req.pset);
+      try {
+        const transaction = pset.extractTx();
+        try {
+          return {
+            transactionHex: transaction.toString(),
+            txid: transaction.txid().toString(),
+          };
+        } finally {
+          transaction.free();
+        }
+      } finally {
+        pset.free();
       }
     }
 
