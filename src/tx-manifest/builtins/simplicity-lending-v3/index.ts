@@ -12,9 +12,9 @@ import {
 
 /**
  * Current lending-v3 sources pinned to the deployed simplicity-lending revision.
- * Only AcceptOffer is trusted in Apogee's first vertical slice; the complete
- * manifest is bundled so later actions can be enabled without changing the
- * bundle's interpretation underfoot.
+ * Apogee trusts only the actions explicitly enabled in its registry. The full
+ * protocol manifest remains bundled so every enabled action is interpreted
+ * against one pinned source and compiler revision.
  */
 export const SIMPLICITY_LENDING_V3_BUNDLE = Object.freeze({
   schema: TX_MANIFEST_BUNDLE_SCHEMA,
@@ -40,6 +40,9 @@ export const SIMPLICITY_LENDING_V3_BUNDLE = Object.freeze({
 
 export const SIMPLICITY_LENDING_V3_ACCEPT_OFFER =
   "lending_contract.AcceptOffer" as const;
+
+export const SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT =
+  "lending_contract.ClaimLenderVault" as const;
 
 export const SIMPLICITY_LENDING_V3_TESTNET_CHAIN =
   "bip122:a771da8e52ee6ad581ed1e9a99825e5b" as const;

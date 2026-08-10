@@ -11,12 +11,16 @@ import type { LiquidNetwork, WalletInfo, WalletSigner } from "@/keystore/keystor
 import type { TxManifestBundleHash } from "@/tx-manifest/registry";
 import type {
   AcceptOfferRequirementPlan,
+  ClaimLenderVaultRequirementPlan,
   TxManifestInvocation,
 } from "@/tx-manifest/requirements";
 import type { AcceptOfferChainWalletSnapshot } from "@/tx-manifest/prepare-accept-offer";
+import type { ClaimLenderVaultChainWalletSnapshot } from "@/tx-manifest/prepare-claim-lender-vault";
 import type {
   AcceptOfferVerifiedChainSnapshot,
+  ClaimLenderVaultVerifiedChainSnapshot,
   HostedPreparedAcceptOfferExecution,
+  HostedPreparedClaimLenderVaultExecution,
 } from "@/tx-manifest/wallet-host";
 import type {
   TxManifestCovenantCompileSpec,
@@ -64,6 +68,25 @@ export type EngineRequest =
       parentTransactions: string[];
       genesisHash: string;
       covenants: HostedPreparedAcceptOfferExecution["covenants"];
+    }
+  | {
+      kind: "prepareLendingV3ClaimLenderVault";
+      plan: ClaimLenderVaultRequirementPlan;
+      snapshot: ClaimLenderVaultChainWalletSnapshot;
+    }
+  | {
+      kind: "prepareLendingV3ClaimLenderVaultWithWallet";
+      descriptor: string;
+      network: LiquidNetwork;
+      plan: ClaimLenderVaultRequirementPlan;
+      chainSnapshot: ClaimLenderVaultVerifiedChainSnapshot;
+    }
+  | {
+      kind: "dryRunLendingV3ClaimLenderVault";
+      transactionHex: string;
+      parentTransactions: string[];
+      genesisHash: string;
+      vault: HostedPreparedClaimLenderVaultExecution["vault"];
     }
   | { kind: "generateMnemonic"; words?: 12 | 24 }
   | { kind: "deriveWallet"; mnemonic: string; network: LiquidNetwork }
@@ -299,25 +322,39 @@ export interface ProviderPsetApprovalReviewDTO extends ProviderPsetAnalysisDTO {
   accountIdentifier: string;
 }
 
-export interface TxManifestApprovalReviewDTO {
+interface TxManifestApprovalReviewBaseDTO {
   protocolLabel: string;
   actionLabel: string;
   requestId: string;
   accountIdentifier: string;
   bundleHash: string;
   action: string;
-  principalAssetId: string;
-  principalAmount: string;
-  collateralAssetId: string;
-  collateralAmount: string;
-  interestRateBasisPoints: string;
-  totalDebt: string;
-  expirationHeight: number;
   feeAssetId: string;
   fee: string;
-  principalChange: string;
   feeChange: string;
 }
+
+export type TxManifestApprovalReviewDTO =
+  | (TxManifestApprovalReviewBaseDTO & {
+      kind: "acceptOffer";
+      principalAssetId: string;
+      principalAmount: string;
+      collateralAssetId: string;
+      collateralAmount: string;
+      interestRateBasisPoints: string;
+      totalDebt: string;
+      expirationHeight: number;
+      principalChange: string;
+    })
+  | (TxManifestApprovalReviewBaseDTO & {
+      kind: "claimLenderVault";
+      principalAssetId: string;
+      principalAmount: string;
+      grossDebt: string;
+      interestAmount: string;
+      protocolFeeAmount: string;
+      lenderNftAssetId: string;
+    });
 
 export type ProviderPsetAnalysisFailureReason =
   | "analysis_failed"

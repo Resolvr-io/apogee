@@ -1,6 +1,7 @@
 import {
   SIMPLICITY_LENDING_V3_ACCEPT_OFFER,
   SIMPLICITY_LENDING_V3_BUNDLE,
+  SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT,
   SIMPLICITY_LENDING_V3_TESTNET_CHAIN,
 } from "./builtins/simplicity-lending-v3";
 import {
@@ -13,7 +14,7 @@ import {
 export type TxManifestBundleHash = `sha256:${string}`;
 
 export const SIMPLICITY_LENDING_V3_BUNDLE_HASH =
-  "sha256:a85cd2b87a5c763a5e8db463a4784a0861b8994b3e3ae276fde36a3d72b1bcde" as const;
+  "sha256:0a57b34e20a46f0a3ec60d6be4904eebc9d3807bb6a2fbab0c66abdcdc05af8e" as const;
 
 export type TrustedTxManifest = {
   bundleHash: TxManifestBundleHash;
@@ -36,13 +37,17 @@ export const TRUSTED_TX_MANIFESTS: readonly TrustedTxManifest[] = Object.freeze(
     protocol: "simplicity-lending",
     version: "v3",
     chainIds: [SIMPLICITY_LENDING_V3_TESTNET_CHAIN],
-    actions: [SIMPLICITY_LENDING_V3_ACCEPT_OFFER],
+    actions: [
+      SIMPLICITY_LENDING_V3_ACCEPT_OFFER,
+      SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT,
+    ],
     compilerRevision: TX_MANIFEST_PINNED_REVISIONS.simplicityHl,
     extensions: [],
     review: {
       protocolLabel: "Simplicity Lending",
       actionLabels: {
         [SIMPLICITY_LENDING_V3_ACCEPT_OFFER]: "Fund loan offer",
+        [SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT]: "Collect loan repayment",
       },
     },
     bundle: SIMPLICITY_LENDING_V3_BUNDLE,

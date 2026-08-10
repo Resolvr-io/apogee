@@ -1071,6 +1071,116 @@
           ],
           "intent": "lend {instance.PRINCIPAL_AMOUNT} {instance.PRINCIPAL_ASSET_ID:symbol} against {instance.COLLATERAL_AMOUNT} {instance.COLLATERAL_ASSET_ID:symbol} of collateral"
         },
+        "ClaimLenderVault": {
+          "description": "The lender collects a fully repaid loan from the finalized lender AssetAuthVault. Spends the finalized lender vault (input 0, WithdrawAll) and the wallet-held lender NFT (input 1), burns that NFT at output 0, and pays the lender-vault balance to the lender at output 1. This is the terminal lender-side transition (repaid to claimed).",
+          "params": {
+            "TOTAL_PROTOCOL_FEE": {
+              "type": "u64",
+              "compute": "instance.PRINCIPAL_AMOUNT * instance.PRINCIPAL_INTEREST_RATE / 10000 * 1000 / 10000",
+              "description": "The protocol's 10% cut of interest, using the covenant's exact two-step flooring order."
+            },
+            "LENDER_VAULT_AMOUNT": {
+              "type": "u64",
+              "compute": "instance.CURRENT_DEBT - instance.PRINCIPAL_AMOUNT * instance.PRINCIPAL_INTEREST_RATE / 10000 * 1000 / 10000",
+              "description": "The exact finalized lender-vault balance created by full repayment."
+            }
+          },
+          "inputs": [
+            {
+              "id": "lender_vault_in",
+              "description": "The finalized lender settlement vault created by RepayLoan (input 0).",
+              "utxo_source": {
+                "utxo_type": "lender_vault_finalized"
+              },
+              "required_index": 0,
+              "asset": "instance.PRINCIPAL_ASSET_ID",
+              "amount_sat": "params.LENDER_VAULT_AMOUNT",
+              "witnesses": {
+                "PATH": {
+                  "type": "simplicityhl",
+                  "simplicity_type": "Either<Either<(u32, u32), (u32, u32, u32, u64)>, Either<(u32, u32, u32, u64), (u32, u32, u32, u64)>>",
+                  "value": "Left(Left((1, 0)))",
+                  "description": "WithdrawAll, using the lender NFT at input 1 and burning it at output 0."
+                }
+              },
+              "ui": {
+                "label": "the vault holding your repaid principal and interest",
+                "role": "vault"
+              }
+            },
+            {
+              "id": "lender_nft_in",
+              "description": "The wallet-held lender NFT (input 1), proving the right to collect this repayment.",
+              "utxo_source": "wallet",
+              "required_index": 1,
+              "asset": "instance.LENDER_NFT_ASSET_ID",
+              "amount_sat": 1,
+              "ui": {
+                "label": "your lender NFT — consumed to collect the repayment",
+                "role": "lender_nft"
+              }
+            },
+            {
+              "id": "fee_input",
+              "description": "Wallet L-BTC UTXO covering the transaction fee.",
+              "utxo_source": "wallet",
+              "asset": "lbtc",
+              "ui": {
+                "label": "input used for paying fees",
+                "role": "fee"
+              }
+            }
+          ],
+          "outputs": [
+            {
+              "id": "lender_nft_burned",
+              "description": "The lender NFT burned to an OP_RETURN carrying the ASCII string burn (output 0).",
+              "destination": {
+                "type": "op_return"
+              },
+              "data": {
+                "parts": [
+                  {
+                    "type": "bytes",
+                    "value": "6275726e"
+                  }
+                ]
+              },
+              "asset": "instance.LENDER_NFT_ASSET_ID",
+              "amount_sat": 1,
+              "required_index": 0,
+              "ui": {
+                "label": "your lender NFT, destroyed after collection",
+                "role": "lender_nft"
+              }
+            },
+            {
+              "id": "principal_claimed",
+              "description": "The lender-vault balance released to the lender's wallet (output 1).",
+              "destination": "wallet",
+              "asset": "instance.PRINCIPAL_ASSET_ID",
+              "amount_sat": "params.LENDER_VAULT_AMOUNT",
+              "confidential": true,
+              "required_index": 1,
+              "ui": {
+                "label": "your repaid principal and net interest",
+                "role": "principal"
+              }
+            },
+            {
+              "id": "fee_change",
+              "description": "L-BTC change back to the lender.",
+              "destination": "change",
+              "asset": "lbtc",
+              "optional": true,
+              "ui": {
+                "label": "change from paying fees",
+                "role": "change"
+              }
+            }
+          ],
+          "intent": "collect {params.LENDER_VAULT_AMOUNT} {instance.PRINCIPAL_ASSET_ID:symbol} of repaid principal and net interest"
+        },
         "CancelOffer": {
           "description": "The borrower withdraws a pending offer before activation (offer_open → cancelled). Spends the pending lending covenant (in[0], Cancel witness Left(Right())) and the lender NFT from its ScriptAuth (in[1]) and the borrower NFT from the wallet (in[2]); burns both NFTs to OP_RETURN (out[0] lender, out[1] borrower — index-fixed by the covenant) and returns the collateral to the borrower (out[2]). Mirrors LendingOffer::attach_cancellation. The covenant only checks each NFT lands on an OP_RETURN, so data-less burns suffice.",
           "inputs": [

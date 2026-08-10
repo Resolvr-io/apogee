@@ -9,7 +9,7 @@ const TEST_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon a
 const MAINNET_POLICY_ASSET =
   "bip122:1466275836220db2944ca059a3a10ef6/elip144:6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d";
 const LENDING_V3_BUNDLE_HASH =
-  "sha256:a85cd2b87a5c763a5e8db463a4784a0861b8994b3e3ae276fde36a3d72b1bcde";
+  "sha256:0a57b34e20a46f0a3ec60d6be4904eebc9d3807bb6a2fbab0c66abdcdc05af8e";
 
 test.describe.serial("Liquid browser provider", () => {
   let context: BrowserContext;
@@ -70,7 +70,10 @@ test.describe.serial("Liquid browser provider", () => {
       bundleHash: LENDING_V3_BUNDLE_HASH,
       status: "builtin",
       protocol: { name: "simplicity-lending", version: "v3" },
-      supportedActions: ["lending_contract.AcceptOffer"],
+      supportedActions: [
+        "lending_contract.AcceptOffer",
+        "lending_contract.ClaimLenderVault",
+      ],
     });
 
     // getBalance is implemented, but account data remains unavailable until the

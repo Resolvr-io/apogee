@@ -31,6 +31,11 @@ export type LendingV3AcceptOfferCovenants = {
   lendingArguments: Record<string, SimplicityArgument>;
 };
 
+export type LendingV3FinalizedLenderVault = {
+  covenant: TxManifestCovenantCommitments;
+  arguments: Record<string, SimplicityArgument>;
+};
+
 type CovenantCompiler = (
   spec: TxManifestCovenantCompileSpec,
 ) => Promise<TxManifestCovenantCommitments>;
@@ -47,12 +52,11 @@ export async function compileLendingV3AcceptOfferCovenants(
   const sources = SIMPLICITY_LENDING_V3_BUNDLE.sources;
   const vaultSource = sources["asset_auth_vault.simf"];
 
-  const finalizedLenderVault = await compile(
-    compileSpec(
-      vaultSource,
-      vaultArguments(instance, instance.LENDER_NFT_ASSET_ID, false, true, ZERO_HASH),
-    ),
+  const finalizedLenderVaultPlan = await compileLendingV3FinalizedLenderVault(
+    instance,
+    compile,
   );
+  const finalizedLenderVault = finalizedLenderVaultPlan.covenant;
   const lenderVault = await compile(
     compileSpec(
       vaultSource,
@@ -141,6 +145,30 @@ export async function compileLendingV3AcceptOfferCovenants(
     activeOffer,
     lenderNftAuthorization,
     lendingArguments,
+  };
+}
+
+/** Compile the exact finalized vault produced by a full lender repayment. */
+export async function compileLendingV3FinalizedLenderVault(
+  instance: LendingV3Instance,
+  compile: CovenantCompiler = compileTxManifestCovenant,
+): Promise<LendingV3FinalizedLenderVault> {
+  validateInstance(instance);
+  const arguments_ = vaultArguments(
+    instance,
+    instance.LENDER_NFT_ASSET_ID,
+    false,
+    true,
+    ZERO_HASH,
+  );
+  return {
+    covenant: await compile(
+      compileSpec(
+        SIMPLICITY_LENDING_V3_BUNDLE.sources["asset_auth_vault.simf"],
+        arguments_,
+      ),
+    ),
+    arguments: arguments_,
   };
 }
 function compileSpec(

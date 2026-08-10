@@ -1,4 +1,7 @@
-import { SIMPLICITY_LENDING_V3_ACCEPT_OFFER } from "./builtins/simplicity-lending-v3";
+import {
+  SIMPLICITY_LENDING_V3_ACCEPT_OFFER,
+  SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT,
+} from "./builtins/simplicity-lending-v3";
 import { taggedCanonicalJsonHash } from "./bundle";
 import {
   resolveTrustedTxManifest,
@@ -19,24 +22,31 @@ export type TxManifestInvocation = {
   constraints?: { maxFee?: string; validUntilHeight?: number };
 };
 
-export type AcceptOfferRequirementPlan = {
+export type LendingV3InstanceArguments = {
+  COLLATERAL_ASSET_ID: string;
+  PRINCIPAL_ASSET_ID: string;
+  BORROWER_NFT_ASSET_ID: string;
+  LENDER_NFT_ASSET_ID: string;
+  PROTOCOL_FEE_KEEPER_ASSET_ID: string;
+  COLLATERAL_AMOUNT: string;
+  PRINCIPAL_AMOUNT: string;
+  PRINCIPAL_INTEREST_RATE: string;
+  LOAN_EXPIRATION_TIME: string;
+};
+
+type RequirementPlanBase = {
   planVersion: "apogee-tx-manifest-requirements/v1";
   requestId: string;
   chainId: string;
   accountIdentifier: string;
   bundleHash: TxManifestBundleHash;
+  instance: LendingV3InstanceArguments;
+  constraints: { maxFee?: string; validUntilHeight?: number };
+  requirementDigest: `sha256:${string}`;
+};
+
+export type AcceptOfferRequirementPlan = RequirementPlanBase & {
   action: typeof SIMPLICITY_LENDING_V3_ACCEPT_OFFER;
-  instance: {
-    COLLATERAL_ASSET_ID: string;
-    PRINCIPAL_ASSET_ID: string;
-    BORROWER_NFT_ASSET_ID: string;
-    LENDER_NFT_ASSET_ID: string;
-    PROTOCOL_FEE_KEEPER_ASSET_ID: string;
-    COLLATERAL_AMOUNT: string;
-    PRINCIPAL_AMOUNT: string;
-    PRINCIPAL_INTEREST_RATE: string;
-    LOAN_EXPIRATION_TIME: string;
-  };
   intent: {
     protocolLabel: "Simplicity Lending";
     actionLabel: "Fund loan offer";
@@ -69,12 +79,7 @@ export type AcceptOfferRequirementPlan = {
     },
   ];
   walletInputs: readonly [
-    {
-      id: "principal_in";
-      requiredIndex: 2;
-      assetId: string;
-      minAmount: string;
-    },
+    { id: "principal_in"; requiredIndex: 2; assetId: string; minAmount: string },
     { id: "fee_input"; assetId: "lbtc" },
   ];
   outputs: readonly [
@@ -107,9 +112,65 @@ export type AcceptOfferRequirementPlan = {
     { assetId: string; destinationType: "change" },
     { assetId: "lbtc"; destinationType: "change" },
   ];
-  constraints: { maxFee?: string; validUntilHeight?: number };
-  requirementDigest: `sha256:${string}`;
 };
+
+export type ClaimLenderVaultRequirementPlan = RequirementPlanBase & {
+  action: typeof SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT;
+  intent: {
+    protocolLabel: "Simplicity Lending";
+    actionLabel: "Collect loan repayment";
+    principalAssetId: string;
+    principalAmount: string;
+    grossDebt: string;
+    interestAmount: string;
+    protocolFeeAmount: string;
+    lenderNftAssetId: string;
+  };
+  covenantInputs: readonly [
+    {
+      id: "lender_vault_in";
+      requiredIndex: 0;
+      outpoint: TxManifestOutpoint;
+      assetId: string;
+      amount: string;
+      sourceType: "lender_vault_finalized";
+      witnesses: { PATH: "Left(Left((1, 0)))" };
+    },
+  ];
+  walletInputs: readonly [
+    {
+      id: "lender_nft_in";
+      requiredIndex: 1;
+      outpoint: TxManifestOutpoint;
+      assetId: string;
+      amount: "1";
+    },
+    { id: "fee_input"; assetId: "lbtc" },
+  ];
+  outputs: readonly [
+    {
+      id: "lender_nft_burned";
+      requiredIndex: 0;
+      destinationType: "op_return";
+      assetId: string;
+      amount: "1";
+      confidential: false;
+    },
+    {
+      id: "principal_claimed";
+      requiredIndex: 1;
+      destinationType: "wallet";
+      assetId: string;
+      amount: string;
+      confidential: true;
+    },
+  ];
+  change: readonly [{ assetId: "lbtc"; destinationType: "change" }];
+};
+
+export type TxManifestRequirementPlan =
+  | AcceptOfferRequirementPlan
+  | ClaimLenderVaultRequirementPlan;
 
 const REQUIRED_INSTANCE_FIELDS = [
   "COLLATERAL_ASSET_ID",
@@ -123,10 +184,10 @@ const REQUIRED_INSTANCE_FIELDS = [
   "LOAN_EXPIRATION_TIME",
 ] as const;
 
-/** Resolve only authorization-safe facts. Chain and wallet state are verified later by the host. */
+/** Resolve authorization-safe facts only. The host verifies chain and wallet state later. */
 export async function resolveTxManifestRequirements(
   invocation: TxManifestInvocation,
-): Promise<AcceptOfferRequirementPlan> {
+): Promise<TxManifestRequirementPlan> {
   if (invocation.protocolVersion !== "0.1") throw new Error("Unsupported TX Manifest protocol version.");
   const trusted = await resolveTrustedTxManifest(
     invocation.manifest.bundleHash,
@@ -138,11 +199,16 @@ export async function resolveTxManifestRequirements(
   if (!trusted.actions.includes(invocation.action)) {
     throw new Error("This TX Manifest action is not enabled by Apogee.");
   }
-  if (invocation.action !== SIMPLICITY_LENDING_V3_ACCEPT_OFFER) {
-    throw new Error("Unsupported TX Manifest action.");
-  }
 
-  const args = exactInstanceArguments(invocation.arguments);
+  const actionName =
+    invocation.action === SIMPLICITY_LENDING_V3_ACCEPT_OFFER
+      ? "AcceptOffer"
+      : invocation.action === SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT
+        ? "ClaimLenderVault"
+        : null;
+  if (!actionName) throw new Error("Unsupported TX Manifest action.");
+
+  const args = exactInstanceArguments(invocation.arguments, actionName);
   const collateralAssetId = assetId(args.COLLATERAL_ASSET_ID, "COLLATERAL_ASSET_ID");
   const principalAssetId = assetId(args.PRINCIPAL_ASSET_ID, "PRINCIPAL_ASSET_ID");
   const borrowerNftAssetId = assetId(args.BORROWER_NFT_ASSET_ID, "BORROWER_NFT_ASSET_ID");
@@ -155,119 +221,192 @@ export async function resolveTxManifestRequirements(
   const principalAmount = decimalU64(args.PRINCIPAL_AMOUNT, "PRINCIPAL_AMOUNT");
   const interestRate = decimalU64(args.PRINCIPAL_INTEREST_RATE, "PRINCIPAL_INTEREST_RATE");
   const expirationHeight = u32(args.LOAN_EXPIRATION_TIME, "LOAN_EXPIRATION_TIME");
-  const totalDebt =
-    BigInt(principalAmount) + (BigInt(principalAmount) * BigInt(interestRate)) / 10_000n;
+  const interestAmount = (BigInt(principalAmount) * BigInt(interestRate)) / 10_000n;
+  const totalDebt = BigInt(principalAmount) + interestAmount;
+  const protocolFeeAmount = (interestAmount * 1_000n) / 10_000n;
+  const lenderVaultAmount = totalDebt - protocolFeeAmount;
   if (totalDebt > 0xffff_ffff_ffff_ffffn) throw new Error("Total debt overflows u64.");
 
-  const pendingOffer = providedOutpoint(invocation.providedInputs, "pending_offer_in");
-  const lenderNft = providedOutpoint(invocation.providedInputs, "lender_nft_in");
-  const constraints = validateConstraints(invocation.constraints);
-  const planWithoutDigest = {
+  const instance: LendingV3InstanceArguments = {
+    COLLATERAL_ASSET_ID: collateralAssetId,
+    PRINCIPAL_ASSET_ID: principalAssetId,
+    BORROWER_NFT_ASSET_ID: borrowerNftAssetId,
+    LENDER_NFT_ASSET_ID: lenderNftAssetId,
+    PROTOCOL_FEE_KEEPER_ASSET_ID: protocolFeeKeeperAssetId,
+    COLLATERAL_AMOUNT: collateralAmount,
+    PRINCIPAL_AMOUNT: principalAmount,
+    PRINCIPAL_INTEREST_RATE: interestRate,
+    LOAN_EXPIRATION_TIME: String(expirationHeight),
+  };
+  const common = {
     planVersion: "apogee-tx-manifest-requirements/v1" as const,
     requestId: nonEmpty(invocation.requestId, "requestId"),
     chainId: nonEmpty(invocation.chainId, "chainId"),
     accountIdentifier: nonEmpty(invocation.accountIdentifier, "accountIdentifier"),
     bundleHash: invocation.manifest.bundleHash,
-    action: SIMPLICITY_LENDING_V3_ACCEPT_OFFER,
-    instance: {
-      COLLATERAL_ASSET_ID: collateralAssetId,
-      PRINCIPAL_ASSET_ID: principalAssetId,
-      BORROWER_NFT_ASSET_ID: borrowerNftAssetId,
-      LENDER_NFT_ASSET_ID: lenderNftAssetId,
-      PROTOCOL_FEE_KEEPER_ASSET_ID: protocolFeeKeeperAssetId,
-      COLLATERAL_AMOUNT: collateralAmount,
-      PRINCIPAL_AMOUNT: principalAmount,
-      PRINCIPAL_INTEREST_RATE: interestRate,
-      LOAN_EXPIRATION_TIME: String(expirationHeight),
-    },
+    instance,
+    constraints: validateConstraints(invocation.constraints),
+  };
+
+  if (invocation.action === SIMPLICITY_LENDING_V3_ACCEPT_OFFER) {
+    const pendingOffer = providedOutpoint(invocation.providedInputs, "pending_offer_in");
+    const lenderNft = providedOutpoint(invocation.providedInputs, "lender_nft_in");
+    const planWithoutDigest = {
+      ...common,
+      action: SIMPLICITY_LENDING_V3_ACCEPT_OFFER,
+      intent: {
+        protocolLabel: "Simplicity Lending" as const,
+        actionLabel: "Fund loan offer" as const,
+        principalAssetId,
+        principalAmount,
+        collateralAssetId,
+        collateralAmount,
+        interestRateBasisPoints: interestRate,
+        totalDebt: totalDebt.toString(),
+        expirationHeight,
+      },
+      covenantInputs: [
+        {
+          id: "pending_offer_in" as const,
+          requiredIndex: 0 as const,
+          outpoint: pendingOffer,
+          assetId: collateralAssetId,
+          amount: collateralAmount,
+          sourceType: "lending_collateral" as const,
+          witnesses: { PATH: "Left(Left(()))" as const },
+        },
+        {
+          id: "lender_nft_in" as const,
+          requiredIndex: 1 as const,
+          outpoint: lenderNft,
+          assetId: lenderNftAssetId,
+          amount: "1" as const,
+          sourceType: "lender_nft_script_auth" as const,
+          witnesses: { INPUT_SCRIPT_INDEX: "0" as const },
+        },
+      ] as const,
+      walletInputs: [
+        {
+          id: "principal_in" as const,
+          requiredIndex: 2 as const,
+          assetId: principalAssetId,
+          minAmount: principalAmount,
+        },
+        { id: "fee_input" as const, assetId: "lbtc" as const },
+      ] as const,
+      outputs: [
+        {
+          id: "active_offer_out" as const,
+          requiredIndex: 0 as const,
+          destinationType: "lending_collateral_active" as const,
+          assetId: collateralAssetId,
+          amount: collateralAmount,
+          confidential: false as const,
+        },
+        {
+          id: "principal_out" as const,
+          requiredIndex: 1 as const,
+          destinationType: "principal_asset_auth" as const,
+          assetId: principalAssetId,
+          amount: principalAmount,
+          confidential: false as const,
+        },
+        {
+          id: "lender_nft_out" as const,
+          requiredIndex: 2 as const,
+          destinationType: "wallet" as const,
+          assetId: lenderNftAssetId,
+          amount: "1" as const,
+          confidential: false as const,
+        },
+      ] as const,
+      change: [
+        { assetId: principalAssetId, destinationType: "change" as const },
+        { assetId: "lbtc" as const, destinationType: "change" as const },
+      ] as const,
+    };
+    return withDigest(planWithoutDigest);
+  }
+
+  const lenderVault = providedOutpoint(invocation.providedInputs, "lender_vault_in");
+  const lenderNft = providedOutpoint(invocation.providedInputs, "lender_nft_in");
+  const planWithoutDigest = {
+    ...common,
+    action: SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT,
     intent: {
       protocolLabel: "Simplicity Lending" as const,
-      actionLabel: "Fund loan offer" as const,
+      actionLabel: "Collect loan repayment" as const,
       principalAssetId,
-      principalAmount,
-      collateralAssetId,
-      collateralAmount,
-      interestRateBasisPoints: interestRate,
-      totalDebt: totalDebt.toString(),
-      expirationHeight,
+      principalAmount: lenderVaultAmount.toString(),
+      grossDebt: totalDebt.toString(),
+      interestAmount: interestAmount.toString(),
+      protocolFeeAmount: protocolFeeAmount.toString(),
+      lenderNftAssetId,
     },
     covenantInputs: [
       {
-        id: "pending_offer_in" as const,
+        id: "lender_vault_in" as const,
         requiredIndex: 0 as const,
-        outpoint: pendingOffer,
-        assetId: collateralAssetId,
-        amount: collateralAmount,
-        sourceType: "lending_collateral" as const,
-        witnesses: { PATH: "Left(Left(()))" as const },
+        outpoint: lenderVault,
+        assetId: principalAssetId,
+        amount: lenderVaultAmount.toString(),
+        sourceType: "lender_vault_finalized" as const,
+        witnesses: { PATH: "Left(Left((1, 0)))" as const },
       },
+    ] as const,
+    walletInputs: [
       {
         id: "lender_nft_in" as const,
         requiredIndex: 1 as const,
         outpoint: lenderNft,
         assetId: lenderNftAssetId,
         amount: "1" as const,
-        sourceType: "lender_nft_script_auth" as const,
-        witnesses: { INPUT_SCRIPT_INDEX: "0" as const },
-      },
-    ] as const,
-    walletInputs: [
-      {
-        id: "principal_in" as const,
-        requiredIndex: 2 as const,
-        assetId: principalAssetId,
-        minAmount: principalAmount,
       },
       { id: "fee_input" as const, assetId: "lbtc" as const },
     ] as const,
     outputs: [
       {
-        id: "active_offer_out" as const,
+        id: "lender_nft_burned" as const,
         requiredIndex: 0 as const,
-        destinationType: "lending_collateral_active" as const,
-        assetId: collateralAssetId,
-        amount: collateralAmount,
-        confidential: false as const,
-      },
-      {
-        id: "principal_out" as const,
-        requiredIndex: 1 as const,
-        destinationType: "principal_asset_auth" as const,
-        assetId: principalAssetId,
-        amount: principalAmount,
-        confidential: false as const,
-      },
-      {
-        id: "lender_nft_out" as const,
-        requiredIndex: 2 as const,
-        destinationType: "wallet" as const,
+        destinationType: "op_return" as const,
         assetId: lenderNftAssetId,
         amount: "1" as const,
         confidential: false as const,
       },
+      {
+        id: "principal_claimed" as const,
+        requiredIndex: 1 as const,
+        destinationType: "wallet" as const,
+        assetId: principalAssetId,
+        amount: lenderVaultAmount.toString(),
+        confidential: true as const,
+      },
     ] as const,
-    change: [
-      { assetId: principalAssetId, destinationType: "change" as const },
-      { assetId: "lbtc" as const, destinationType: "change" as const },
-    ] as const,
-    constraints,
+    change: [{ assetId: "lbtc" as const, destinationType: "change" as const }] as const,
   };
+  return withDigest(planWithoutDigest);
+}
+
+async function withDigest<T extends object>(plan: T): Promise<T & { requirementDigest: `sha256:${string}` }> {
   return {
-    ...planWithoutDigest,
+    ...plan,
     requirementDigest: await taggedCanonicalJsonHash(
       "apogee/tx-manifest-requirements/v1",
-      planWithoutDigest,
+      plan,
     ),
   };
 }
 
-function exactInstanceArguments(value: Record<string, unknown>): Record<string, unknown> {
+function exactInstanceArguments(
+  value: Record<string, unknown>,
+  actionName: string,
+): Record<string, unknown> {
   const expected = new Set<string>(REQUIRED_INSTANCE_FIELDS);
   for (const key of Object.keys(value)) {
-    if (!expected.has(key)) throw new Error(`Unknown AcceptOffer argument ${key}.`);
+    if (!expected.has(key)) throw new Error(`Unknown ${actionName} argument ${key}.`);
   }
   for (const key of REQUIRED_INSTANCE_FIELDS) {
-    if (!Object.hasOwn(value, key)) throw new Error(`Missing AcceptOffer argument ${key}.`);
+    if (!Object.hasOwn(value, key)) throw new Error(`Missing ${actionName} argument ${key}.`);
   }
   return value;
 }
