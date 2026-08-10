@@ -64,6 +64,7 @@ import type {
   SendResult,
   SendReview,
   SyncResult,
+  TxManifestApprovalReviewDTO,
   WalletRequest,
   WalletIdentity,
   WalletTxDTO,
@@ -83,6 +84,8 @@ import {
   LIQUID_WALLET_RPC_METHODS,
   type LiquidGetUTXOsResult,
   type LiquidGetWalletDescriptorResult,
+  type LiquidExecuteTxManifestParams,
+  type LiquidExecuteTxManifestResult,
   type LiquidSignPsetResult,
 } from "@/provider/liquid-rpc";
 import {
@@ -92,6 +95,16 @@ import {
   serializeLiquidRpcError,
 } from "@/provider/liquid-rpc-errors";
 import { finalizeAndBroadcastProviderPset } from "@/provider/liquid-provider-pset-broadcast";
+import { taggedCanonicalJsonHash } from "@/tx-manifest/bundle";
+import type { AcceptOfferRequirementPlan } from "@/tx-manifest/requirements";
+import type { HostedPreparedAcceptOfferExecution } from "@/tx-manifest/wallet-host";
+import type { TxManifestTransactionOutputInspection } from "@/tx-manifest/runtime";
+import { resolveAcceptOfferChainSnapshot } from "@/tx-manifest/esplora";
+import {
+  TxManifestIdempotency,
+  txManifestIdempotencyKey,
+  type TxManifestTerminalRecord,
+} from "@/tx-manifest/idempotency";
 
 // This extension's own origin. Privileged wallet/* and apogee/* messages are
 // only honored when they come from one of our own pages (side panel, approval
@@ -940,6 +953,8 @@ function queueConnectionWrite<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 const SUPPORTED_PROFILE_METHODS = new Set<string>([
+  LIQUID_WALLET_RPC_METHODS.GET_TX_MANIFEST_SUPPORT,
+  LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST,
   LIQUID_WALLET_RPC_METHODS.GET_BALANCE,
   LIQUID_WALLET_RPC_METHODS.GET_UTXOS,
   LIQUID_WALLET_RPC_METHODS.GET_WALLET_DESCRIPTOR,
@@ -954,6 +969,19 @@ const PROVIDER_CAPABILITIES = Object.freeze({
     ...SUPPORTED_PROFILE_METHODS,
   ]),
   events: Object.freeze([LIQUID_CONNECTION_CHANGED_EVENT, ...SUPPORTED_PROFILE_EVENTS]),
+});
+
+const TX_MANIFEST_RESULTS_KEY = "apogee_tx_manifest_results_v1";
+const txManifestIdempotency = new TxManifestIdempotency({
+  async load(): Promise<TxManifestTerminalRecord[]> {
+    const value = (await browser.storage.local.get(TX_MANIFEST_RESULTS_KEY))[
+      TX_MANIFEST_RESULTS_KEY
+    ];
+    return Array.isArray(value) ? (value as TxManifestTerminalRecord[]) : [];
+  },
+  async save(records: TxManifestTerminalRecord[]): Promise<void> {
+    await browser.storage.local.set({ [TX_MANIFEST_RESULTS_KEY]: records });
+  },
 });
 
 async function getProviderConnections(): Promise<StoredProviderConnections> {
@@ -1363,6 +1391,13 @@ async function handleStandardProvider(requestValue: unknown, origin: string | un
       return null;
     case "wallet_connect":
       return requestStandardConnection(origin, request.params);
+    case "experimental_getTxManifestSupport":
+      return engine({
+        kind: "getTxManifestSupport",
+        bundleHash: request.params.bundleHash,
+      });
+    case "experimental_executeTxManifest":
+      return executeProviderTxManifest(origin, request.params);
     case "getWalletDescriptor": {
       const connection = await migrateLegacyConnection(origin);
       if (!connection || !connection.permissions.methods.includes(request.method)) {
@@ -1847,6 +1882,235 @@ async function handleStandardProvider(requestValue: unknown, origin: string | un
   }
 }
 
+type PreparedProviderTxManifest = {
+  plan: AcceptOfferRequirementPlan;
+  prepared: HostedPreparedAcceptOfferExecution;
+  genesisHash: string;
+};
+
+async function executeProviderTxManifest(
+  origin: string,
+  invocation: LiquidExecuteTxManifestParams,
+): Promise<LiquidExecuteTxManifestResult> {
+  try {
+    const connection = await migrateLegacyConnection(origin);
+    if (!connection?.permissions.methods.includes(LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST)) {
+      throw providerError(
+        LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+        "This origin is not authorized to execute TX Manifests.",
+        LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+      );
+    }
+    if (
+      invocation.chainId !== connection.chainId ||
+      invocation.accountIdentifier !== connection.accountIdentifier
+    ) {
+      throw providerError(
+        LIQUID_RPC_ERROR_CODES.INVALID_PARAMS,
+        "The TX Manifest chain and account must exactly match the connected wallet.",
+        LIQUID_RPC_ERROR_REASONS.INVALID_PARAMS,
+        { path: "params.accountIdentifier" },
+      );
+    }
+    const info = await walletInfo(connection.walletId).catch(async () => {
+      await removeConnectedSite(origin);
+      throw providerError(
+        LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+        "The connected wallet is no longer available.",
+        LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+      );
+    });
+    if (info.network !== "liquidtestnet") {
+      throw providerError(
+        LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+        "TX Manifest execution is currently enabled only for Liquid testnet.",
+        LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+        { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST, cause: "network" },
+      );
+    }
+    if (info.signer !== "local") {
+      throw providerError(
+        LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+        info.signer === "jade"
+          ? "Jade TX Manifest execution is not enabled until BIP340 signing support is verified."
+          : "A watch-only wallet cannot execute TX Manifests.",
+        LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+        { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST, cause: info.signer },
+      );
+    }
+
+    const revision = connectionRevision(origin);
+    const generation = connectionGeneration;
+    const invocationDigest = await taggedCanonicalJsonHash(
+      "apogee/tx-manifest-invocation/v1",
+      invocation,
+    );
+    const key = txManifestIdempotencyKey({
+      origin,
+      accountIdentifier: invocation.accountIdentifier,
+      chainId: invocation.chainId,
+      requestId: invocation.requestId,
+    });
+    return await txManifestIdempotency.execute(key, invocationDigest, async () => {
+      const plan = await engine<AcceptOfferRequirementPlan>({
+        kind: "resolveTxManifestRequirements",
+        invocation,
+      });
+      const preparedContext = await prepareProviderTxManifest(
+        origin,
+        connection,
+        info,
+        revision,
+        generation,
+        plan,
+      );
+      const review: TxManifestApprovalReviewDTO = {
+        protocolLabel: plan.intent.protocolLabel,
+        actionLabel: plan.intent.actionLabel,
+        requestId: plan.requestId,
+        accountIdentifier: plan.accountIdentifier,
+        bundleHash: plan.bundleHash,
+        action: plan.action,
+        principalAssetId: plan.intent.principalAssetId,
+        principalAmount: plan.intent.principalAmount,
+        collateralAssetId: plan.intent.collateralAssetId,
+        collateralAmount: plan.intent.collateralAmount,
+        interestRateBasisPoints: plan.intent.interestRateBasisPoints,
+        totalDebt: plan.intent.totalDebt,
+        expirationHeight: plan.intent.expirationHeight,
+        feeAssetId: preparedContext.prepared.review.feeAssetId,
+        fee: preparedContext.prepared.review.fee,
+        principalChange: preparedContext.prepared.review.principalChange,
+        feeChange: preparedContext.prepared.review.feeChange,
+      };
+      const id = `appr-${approvalSeq++}-${Date.now()}`;
+      const approval: ApprovalRequest = {
+        kind: "executeTxManifest",
+        id,
+        origin,
+        review,
+        network: "testnet",
+        locked: keystore.isLocked(),
+        signerKind: info.signer,
+      };
+      return await new Promise<LiquidExecuteTxManifestResult>((resolve, reject) => {
+        parkApproval(id, {
+          kind: "executeTxManifest",
+          request: approval,
+          origin,
+          walletId: info.id,
+          descriptor: info.descriptor,
+          network: info.network,
+          invocation,
+          plan,
+          expectedPlanDigest: preparedContext.prepared.planDigest,
+          permissionMethod: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST,
+          revision,
+          generation,
+          resolve: resolve as (result: unknown) => void,
+          reject,
+        });
+        void routeApproval(approval);
+      });
+    });
+  } catch (error) {
+    if (error instanceof LiquidRpcError) throw error;
+    throw txManifestExecutionError(error);
+  }
+}
+
+async function prepareProviderTxManifest(
+  origin: string,
+  connection: StoredProviderConnection,
+  info: Awaited<ReturnType<typeof walletInfo>>,
+  revision: number,
+  generation: number,
+  plan: AcceptOfferRequirementPlan,
+): Promise<PreparedProviderTxManifest> {
+  await engine<SyncResult>({
+    kind: "sync",
+    descriptor: info.descriptor,
+    network: info.network,
+    esploraUrl: await chainServer(info.network),
+  });
+  const policyAssetId = connection.policyAssetId.slice(connection.policyAssetId.lastIndexOf(":") + 1);
+  const resolved = await resolveAcceptOfferChainSnapshot(
+    plan,
+    policyAssetId,
+    (transactionHex, vout) =>
+      engine<TxManifestTransactionOutputInspection>({
+        kind: "inspectTxManifestTransactionOutput",
+        transactionHex,
+        vout,
+      }),
+    await chainServer(info.network),
+  );
+  const prepared = await engine<HostedPreparedAcceptOfferExecution>({
+    kind: "prepareLendingV3AcceptOfferWithWallet",
+    descriptor: info.descriptor,
+    network: info.network,
+    plan,
+    chainSnapshot: resolved.snapshot,
+  });
+  await requireProviderPsetAuthorization(
+    {
+      origin,
+      walletId: info.id,
+      descriptor: info.descriptor,
+      network: info.network,
+      permissionMethod: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST,
+      revision,
+      generation,
+    },
+    "This site was disconnected while Apogee prepared the TX Manifest.",
+    false,
+  );
+  return { plan, prepared, genesisHash: resolved.snapshot.genesisHash };
+}
+
+function txManifestExecutionError(error: unknown): LiquidRpcError {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/already used for different request data/i.test(message)) {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.INVALID_PARAMS,
+      message,
+      LIQUID_RPC_ERROR_REASONS.INVALID_PARAMS,
+      { path: "params.requestId" },
+    );
+  }
+  if (/unknown|unsupported|not enabled|bundle|argument|providedInputs|fee cap/i.test(message)) {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+      "This TX Manifest bundle, action, or constraint is not supported by Apogee.",
+      LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+      { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST },
+    );
+  }
+  if (/no single principal|no distinct L-BTC|insufficient/i.test(message)) {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
+      "The connected wallet has insufficient suitable funds for this manifest action and fee.",
+      LIQUID_RPC_ERROR_REASONS.INTERNAL_ERROR,
+      { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST, cause: "insufficient_funds" },
+    );
+  }
+  if (/chain server|fetch|network|confirmed|already spent|outpoint/i.test(message)) {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.CHAIN_UNAVAILABLE,
+      "Apogee could not verify the requested covenant inputs against current chain state.",
+      LIQUID_RPC_ERROR_REASONS.CHAIN_UNAVAILABLE,
+      { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST },
+    );
+  }
+  console.debug("[apogee] TX Manifest execution failed:", message);
+  return providerError(
+    LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
+    "Apogee could not safely execute this TX Manifest request.",
+    LIQUID_RPC_ERROR_REASONS.INTERNAL_ERROR,
+    { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST },
+  );
+}
+
 function providerPsetAnalysisError(
   result: Extract<ProviderPsetAnalysisResultDTO, { ok: false }>,
 ): LiquidRpcError {
@@ -2203,6 +2467,24 @@ type PendingApproval =
       reject: (err: Error) => void;
       timer?: ReturnType<typeof setTimeout>;
       windowId?: number;
+    }
+  | {
+      kind: "executeTxManifest";
+      request: Extract<ApprovalRequest, { kind: "executeTxManifest" }>;
+      origin: string;
+      walletId: string;
+      descriptor: string;
+      network: LiquidNetwork;
+      invocation: LiquidExecuteTxManifestParams;
+      plan: AcceptOfferRequirementPlan;
+      expectedPlanDigest: `sha256:${string}`;
+      permissionMethod: string;
+      revision: number;
+      generation: number;
+      resolve: (result: unknown) => void;
+      reject: (err: Error) => void;
+      timer?: ReturnType<typeof setTimeout>;
+      windowId?: number;
     };
 
 interface ProviderPsetAuthorizationContext {
@@ -2320,6 +2602,13 @@ function rejectedApprovalError(pending: PendingApproval): Error {
       LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
     );
   }
+  if (pending.kind === "executeTxManifest") {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.USER_REJECTED,
+      "You rejected the TX Manifest execution request.",
+      LIQUID_RPC_ERROR_REASONS.USER_REJECTED,
+    );
+  }
   return pending.permissionMethod
     ? providerError(
         LIQUID_RPC_ERROR_CODES.USER_REJECTED,
@@ -2428,7 +2717,13 @@ async function handleApprovalDecision(
   id: string,
   approved: boolean,
   password?: string,
-): Promise<SendResult | LiquidSignPsetResult | { ok: true } | { rejected: true }> {
+): Promise<
+  | SendResult
+  | LiquidSignPsetResult
+  | LiquidExecuteTxManifestResult
+  | { ok: true }
+  | { rejected: true }
+> {
   const pending = pendingApprovals.get(id);
   if (!pending) throw new Error("This approval expired. Try again from the app.");
   pendingApprovals.delete(id);
@@ -2499,7 +2794,9 @@ async function handleApprovalDecision(
           LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
           pending.kind === "signPset"
             ? "This site is no longer authorized to request PSET signatures."
-            : "This site is no longer authorized to send this transfer.",
+            : pending.kind === "executeTxManifest"
+              ? "This site is no longer authorized to execute this TX Manifest."
+              : "This site is no longer authorized to send this transfer.",
           LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
         )
       : new Error("This site is no longer connected.");
@@ -2514,13 +2811,136 @@ async function handleApprovalDecision(
           LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
           pending.kind === "signPset"
             ? "The connected wallet is watch-only and cannot sign PSETs."
-            : "The connected wallet is watch-only and cannot send transfers.",
+            : pending.kind === "executeTxManifest"
+              ? "The connected wallet is watch-only and cannot execute TX Manifests."
+              : "The connected wallet is watch-only and cannot send transfers.",
           LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
           { method: pending.permissionMethod, cause: "watch_only" },
         )
       : new Error("Watch-only wallets can't sign or send.");
     pending.reject(err);
     throw err;
+  }
+
+  if (pending.kind === "executeTxManifest") {
+    if (info.signer !== "local") {
+      const err = providerError(
+        LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
+        "This TX Manifest action currently requires an Apogee software wallet.",
+        LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
+        { method: pending.permissionMethod, cause: info.signer },
+      );
+      pending.reject(err);
+      throw err;
+    }
+    if (keystore.isLocked()) {
+      const err = providerError(
+        LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+        "Unlock Apogee to approve this TX Manifest execution.",
+        LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        { cause: "locked" },
+      );
+      pending.reject(err);
+      throw err;
+    }
+    if (
+      (await autoLockMinutes()) === 0 &&
+      (!password || !(await keystore.verifyPassword(password)))
+    ) {
+      const err = providerError(
+        LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+        "Enter your password to approve this TX Manifest execution.",
+        LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+        { cause: "step_up_required" },
+      );
+      pending.reject(err);
+      throw err;
+    }
+    try {
+      const refreshed = await prepareProviderTxManifest(
+        pending.origin,
+        connection,
+        info,
+        pending.revision,
+        pending.generation,
+        pending.plan,
+      );
+      if (refreshed.prepared.planDigest !== pending.expectedPlanDigest) {
+        throw new Error("The wallet or chain execution plan changed after approval.");
+      }
+      if (keystore.isLocked()) {
+        throw providerError(
+          LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+          "Apogee locked while it was revalidating this TX Manifest execution.",
+          LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+          { cause: "locked" },
+        );
+      }
+      const signedPset = await engine<string>({
+        kind: "signTxManifestPset",
+        mnemonic: keystore.getMnemonic(pending.walletId),
+        descriptor: pending.descriptor,
+        network: pending.network,
+        pset: refreshed.prepared.pset,
+      });
+      const finalizedPset = await engine<string>({
+        kind: "finalizePset",
+        descriptor: pending.descriptor,
+        network: pending.network,
+        pset: signedPset,
+      });
+      const extracted = await engine<{ transactionHex: string; txid: string }>({
+        kind: "extractPsetTransaction",
+        pset: finalizedPset,
+      });
+      await engine<true>({
+        kind: "dryRunLendingV3AcceptOffer",
+        transactionHex: extracted.transactionHex,
+        parentTransactions: refreshed.prepared.parentTransactions,
+        genesisHash: refreshed.genesisHash,
+        covenants: refreshed.prepared.covenants,
+      });
+      let esploraUrl: string | undefined;
+      await requireProviderPsetAuthorization(
+        pending,
+        "This site was disconnected before Apogee could broadcast the manifest transaction.",
+        true,
+      );
+      esploraUrl = await chainServer(pending.network);
+      const sent = await engineAfterGate<SendResult>(
+        {
+          kind: "broadcastPset",
+          network: pending.network,
+          pset: finalizedPset,
+          esploraUrl,
+        },
+        () =>
+          requireProviderPsetAuthorization(
+            pending,
+            "This site was disconnected before Apogee could broadcast the manifest transaction.",
+            true,
+          ),
+      );
+      if (sent.txid !== extracted.txid) {
+        throw new Error("The chain server returned a different transaction id after broadcast.");
+      }
+      const result: LiquidExecuteTxManifestResult = {
+        requestId: pending.invocation.requestId,
+        chainId: pending.invocation.chainId,
+        accountIdentifier: pending.invocation.accountIdentifier,
+        bundleHash: pending.invocation.manifest.bundleHash,
+        action: pending.invocation.action,
+        status: "broadcast",
+        txid: sent.txid,
+      };
+      pending.resolve(result);
+      browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
+      return result;
+    } catch (error) {
+      const err = error instanceof LiquidRpcError ? error : txManifestExecutionError(error);
+      pending.reject(err);
+      throw err;
+    }
   }
 
   if (pending.kind === "signPset") {

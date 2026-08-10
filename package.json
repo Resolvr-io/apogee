@@ -13,6 +13,7 @@
     "dev:provider": "vite --config vite.playground.config.ts",
     "prebuild": "if ls .env .env.local .env.production .env.production.local 2>/dev/null | grep -q .; then echo 'refusing to build: a .env file is present (credentials could ship in the bundle) \u2014 remove it or use the CI release build' >&2; exit 1; fi",
     "build": "vite build",
+    "build:tx-manifest-runtime": "bash scripts/build-tx-manifest-runtime.sh",
     "build:firefox": "node scripts/build-firefox.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.playground.json",
     "test": "vitest run",
