@@ -37,9 +37,15 @@ import {
   prepareLendingV3AcceptOffer,
 } from "@/tx-manifest/prepare-accept-offer";
 import {
+  dryRunLendingV3ClaimLenderVaultExecution,
+  prepareLendingV3ClaimLenderVault,
+} from "@/tx-manifest/prepare-claim-lender-vault";
+import {
   selectAcceptOfferWalletInputs,
+  selectClaimLenderVaultWalletInputs,
   type AcceptOfferWalletCandidate,
   type HostedPreparedAcceptOfferExecution,
+  type HostedPreparedClaimLenderVaultExecution,
 } from "@/tx-manifest/wallet-host";
 import {
   compileTxManifestCovenant,
@@ -932,6 +938,17 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       covenants: req.covenants,
     });
   }
+  if (req.kind === "prepareLendingV3ClaimLenderVault") {
+    return prepareLendingV3ClaimLenderVault(req.plan, req.snapshot);
+  }
+  if (req.kind === "dryRunLendingV3ClaimLenderVault") {
+    return dryRunLendingV3ClaimLenderVaultExecution({
+      transactionHex: req.transactionHex,
+      parentTransactions: req.parentTransactions,
+      genesisHash: req.genesisHash,
+      vault: req.vault,
+    });
+  }
   const lwk = await loadLwk();
   switch (req.kind) {
     case "generateMnemonic":
@@ -1086,6 +1103,87 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           ...new Set([
             ...req.chainSnapshot.parentTransactions,
             selected.principalInput.parentTransaction,
+            selected.feeInput.parentTransaction,
+          ]),
+        ],
+      };
+      return result;
+    }
+
+    case "prepareLendingV3ClaimLenderVaultWithWallet": {
+      if (req.network !== "liquidtestnet") {
+        throw new Error("The TX Manifest wallet adapter is enabled only on Liquid testnet.");
+      }
+      const entry = await ensureWollet(lwk, req.descriptor, req.network);
+      if (entry.policyAssetHex !== req.chainSnapshot.policyAssetId) {
+        throw new Error("The wallet policy asset does not match the verified chain snapshot.");
+      }
+      const transactions = new Map(
+        entry.wollet.transactions().map((walletTx) => {
+          const transaction = walletTx.tx();
+          return [walletTx.txid().toString(), transaction.toBytes()] as const;
+        }),
+      );
+      const candidates = entry.wollet.utxos().map((utxo): AcceptOfferWalletCandidate => {
+        const outpoint = utxo.outpoint();
+        const txid = outpoint.txid().toString();
+        const transaction = transactions.get(txid);
+        if (!transaction) throw new Error(`wallet transaction unavailable for UTXO ${txid}`);
+        const secrets = utxo.unblinded();
+        return {
+          txid,
+          vout: outpoint.vout(),
+          txOut: bytesToHex(extractElementsTxOut(transaction, outpoint.vout())),
+          scriptPubKey: bytesToHex(utxo.scriptPubkey().bytes()),
+          assetId: secrets.asset().toString(),
+          amount: secrets.value().toString(),
+          assetBlindingFactor: secrets.assetBlindingFactor().toString(),
+          valueBlindingFactor: secrets.valueBlindingFactor().toString(),
+          address: utxo.address().toString(),
+          parentTransaction: bytesToHex(transaction),
+        };
+      });
+      const selected = selectClaimLenderVaultWalletInputs(
+        candidates,
+        req.plan.walletInputs[0].outpoint,
+        req.plan.intent.lenderNftAssetId,
+        req.chainSnapshot.policyAssetId,
+        req.chainSnapshot.fee,
+      );
+      const resolvedNft = req.chainSnapshot.lenderNft;
+      if (
+        selected.lenderNftInput.txOut !== resolvedNft.txOut ||
+        selected.lenderNftInput.scriptPubKey !== resolvedNft.scriptPubKey ||
+        selected.lenderNftInput.assetId !== resolvedNft.assetId ||
+        selected.lenderNftInput.amount !== resolvedNft.amount
+      ) {
+        throw new Error("Wallet and chain state disagree about the lender NFT input.");
+      }
+      const address = entry.wollet.address(null).address().toString();
+      const destination = await inspectTxManifestAddress(address, "liquid-testnet");
+      const prepared = await prepareLendingV3ClaimLenderVault(req.plan, {
+        genesisHash: req.chainSnapshot.genesisHash,
+        tipHeight: req.chainSnapshot.tipHeight,
+        policyAssetId: req.chainSnapshot.policyAssetId,
+        lenderVault: req.chainSnapshot.lenderVault,
+        lenderNftInput: selected.lenderNftInput,
+        feeInput: selected.feeInput,
+        principalDestination: {
+          scriptPubKey: destination.script_pub_key,
+          blindingPublicKey: destination.blinding_public_key,
+        },
+        feeChangeDestination: {
+          scriptPubKey: destination.script_pub_key,
+          blindingPublicKey: destination.blinding_public_key,
+        },
+        fee: req.chainSnapshot.fee,
+      });
+      const result: HostedPreparedClaimLenderVaultExecution = {
+        ...prepared,
+        parentTransactions: [
+          ...new Set([
+            ...req.chainSnapshot.parentTransactions,
+            selected.lenderNftInput.parentTransaction,
             selected.feeInput.parentTransaction,
           ]),
         ],

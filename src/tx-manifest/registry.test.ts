@@ -21,7 +21,10 @@ describe("trusted TX Manifest registry", () => {
     await expect(getTxManifestSupport(SIMPLICITY_LENDING_V3_BUNDLE_HASH)).resolves.toMatchObject({
       supported: true,
       status: "builtin",
-      supportedActions: ["lending_contract.AcceptOffer"],
+      supportedActions: [
+        "lending_contract.AcceptOffer",
+        "lending_contract.ClaimLenderVault",
+      ],
     });
   });
 

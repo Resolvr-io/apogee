@@ -95,11 +95,22 @@ import {
   serializeLiquidRpcError,
 } from "@/provider/liquid-rpc-errors";
 import { finalizeAndBroadcastProviderPset } from "@/provider/liquid-provider-pset-broadcast";
+import { SIMPLICITY_LENDING_V3_ACCEPT_OFFER } from "@/tx-manifest/builtins/simplicity-lending-v3";
 import { taggedCanonicalJsonHash } from "@/tx-manifest/bundle";
-import type { AcceptOfferRequirementPlan } from "@/tx-manifest/requirements";
-import type { HostedPreparedAcceptOfferExecution } from "@/tx-manifest/wallet-host";
+import type {
+  AcceptOfferRequirementPlan,
+  ClaimLenderVaultRequirementPlan,
+  TxManifestRequirementPlan,
+} from "@/tx-manifest/requirements";
+import type {
+  HostedPreparedAcceptOfferExecution,
+  HostedPreparedClaimLenderVaultExecution,
+} from "@/tx-manifest/wallet-host";
 import type { TxManifestTransactionOutputInspection } from "@/tx-manifest/runtime";
-import { resolveAcceptOfferChainSnapshot } from "@/tx-manifest/esplora";
+import {
+  resolveAcceptOfferChainSnapshot,
+  resolveClaimLenderVaultChainSnapshot,
+} from "@/tx-manifest/esplora";
 import {
   TxManifestIdempotency,
   txManifestIdempotencyKey,
@@ -1882,11 +1893,19 @@ async function handleStandardProvider(requestValue: unknown, origin: string | un
   }
 }
 
-type PreparedProviderTxManifest = {
-  plan: AcceptOfferRequirementPlan;
-  prepared: HostedPreparedAcceptOfferExecution;
-  genesisHash: string;
-};
+type PreparedProviderTxManifest =
+  | {
+      kind: "acceptOffer";
+      plan: AcceptOfferRequirementPlan;
+      prepared: HostedPreparedAcceptOfferExecution;
+      genesisHash: string;
+    }
+  | {
+      kind: "claimLenderVault";
+      plan: ClaimLenderVaultRequirementPlan;
+      prepared: HostedPreparedClaimLenderVaultExecution;
+      genesisHash: string;
+    };
 
 async function executeProviderTxManifest(
   origin: string,
@@ -1952,7 +1971,7 @@ async function executeProviderTxManifest(
       requestId: invocation.requestId,
     });
     return await txManifestIdempotency.execute(key, invocationDigest, async () => {
-      const plan = await engine<AcceptOfferRequirementPlan>({
+      const plan = await engine<TxManifestRequirementPlan>({
         kind: "resolveTxManifestRequirements",
         invocation,
       });
@@ -1964,25 +1983,7 @@ async function executeProviderTxManifest(
         generation,
         plan,
       );
-      const review: TxManifestApprovalReviewDTO = {
-        protocolLabel: plan.intent.protocolLabel,
-        actionLabel: plan.intent.actionLabel,
-        requestId: plan.requestId,
-        accountIdentifier: plan.accountIdentifier,
-        bundleHash: plan.bundleHash,
-        action: plan.action,
-        principalAssetId: plan.intent.principalAssetId,
-        principalAmount: plan.intent.principalAmount,
-        collateralAssetId: plan.intent.collateralAssetId,
-        collateralAmount: plan.intent.collateralAmount,
-        interestRateBasisPoints: plan.intent.interestRateBasisPoints,
-        totalDebt: plan.intent.totalDebt,
-        expirationHeight: plan.intent.expirationHeight,
-        feeAssetId: preparedContext.prepared.review.feeAssetId,
-        fee: preparedContext.prepared.review.fee,
-        principalChange: preparedContext.prepared.review.principalChange,
-        feeChange: preparedContext.prepared.review.feeChange,
-      };
+      const review = txManifestApprovalReview(preparedContext);
       const id = `appr-${approvalSeq++}-${Date.now()}`;
       const approval: ApprovalRequest = {
         kind: "executeTxManifest",
@@ -2025,7 +2026,7 @@ async function prepareProviderTxManifest(
   info: Awaited<ReturnType<typeof walletInfo>>,
   revision: number,
   generation: number,
-  plan: AcceptOfferRequirementPlan,
+  plan: TxManifestRequirementPlan,
 ): Promise<PreparedProviderTxManifest> {
   await engine<SyncResult>({
     kind: "sync",
@@ -2034,24 +2035,31 @@ async function prepareProviderTxManifest(
     esploraUrl: await chainServer(info.network),
   });
   const policyAssetId = connection.policyAssetId.slice(connection.policyAssetId.lastIndexOf(":") + 1);
-  const resolved = await resolveAcceptOfferChainSnapshot(
-    plan,
-    policyAssetId,
-    (transactionHex, vout) =>
-      engine<TxManifestTransactionOutputInspection>({
-        kind: "inspectTxManifestTransactionOutput",
-        transactionHex,
-        vout,
-      }),
-    await chainServer(info.network),
-  );
-  const prepared = await engine<HostedPreparedAcceptOfferExecution>({
-    kind: "prepareLendingV3AcceptOfferWithWallet",
-    descriptor: info.descriptor,
-    network: info.network,
-    plan,
-    chainSnapshot: resolved.snapshot,
-  });
+  const inspectOutput = (transactionHex: string, vout: number) =>
+    engine<TxManifestTransactionOutputInspection>({
+      kind: "inspectTxManifestTransactionOutput",
+      transactionHex,
+      vout,
+    });
+  const configuredServer = await chainServer(info.network);
+  const execution =
+    plan.action === SIMPLICITY_LENDING_V3_ACCEPT_OFFER
+      ? await prepareProviderAcceptOffer(
+          plan,
+          info.descriptor,
+          info.network,
+          policyAssetId,
+          inspectOutput,
+          configuredServer,
+        )
+      : await prepareProviderClaimLenderVault(
+          plan,
+          info.descriptor,
+          info.network,
+          policyAssetId,
+          inspectOutput,
+          configuredServer,
+        );
   await requireProviderPsetAuthorization(
     {
       origin,
@@ -2065,7 +2073,95 @@ async function prepareProviderTxManifest(
     "This site was disconnected while Apogee prepared the TX Manifest.",
     false,
   );
-  return { plan, prepared, genesisHash: resolved.snapshot.genesisHash };
+  return execution;
+}
+
+async function prepareProviderAcceptOffer(
+  plan: AcceptOfferRequirementPlan,
+  descriptor: string,
+  network: LiquidNetwork,
+  policyAssetId: string,
+  inspectOutput: (transactionHex: string, vout: number) => Promise<TxManifestTransactionOutputInspection>,
+  configuredServer: string | undefined,
+): Promise<Extract<PreparedProviderTxManifest, { kind: "acceptOffer" }>> {
+  const resolved = await resolveAcceptOfferChainSnapshot(
+    plan,
+    policyAssetId,
+    inspectOutput,
+    configuredServer,
+  );
+  const prepared = await engine<HostedPreparedAcceptOfferExecution>({
+    kind: "prepareLendingV3AcceptOfferWithWallet",
+    descriptor,
+    network,
+    plan,
+    chainSnapshot: resolved.snapshot,
+  });
+  return { kind: "acceptOffer", plan, prepared, genesisHash: resolved.snapshot.genesisHash };
+}
+
+async function prepareProviderClaimLenderVault(
+  plan: ClaimLenderVaultRequirementPlan,
+  descriptor: string,
+  network: LiquidNetwork,
+  policyAssetId: string,
+  inspectOutput: (transactionHex: string, vout: number) => Promise<TxManifestTransactionOutputInspection>,
+  configuredServer: string | undefined,
+): Promise<Extract<PreparedProviderTxManifest, { kind: "claimLenderVault" }>> {
+  const resolved = await resolveClaimLenderVaultChainSnapshot(
+    plan,
+    policyAssetId,
+    inspectOutput,
+    configuredServer,
+  );
+  const prepared = await engine<HostedPreparedClaimLenderVaultExecution>({
+    kind: "prepareLendingV3ClaimLenderVaultWithWallet",
+    descriptor,
+    network,
+    plan,
+    chainSnapshot: resolved.snapshot,
+  });
+  return { kind: "claimLenderVault", plan, prepared, genesisHash: resolved.snapshot.genesisHash };
+}
+
+function txManifestApprovalReview(
+  context: PreparedProviderTxManifest,
+): TxManifestApprovalReviewDTO {
+  const common = {
+    protocolLabel: context.plan.intent.protocolLabel,
+    actionLabel: context.plan.intent.actionLabel,
+    requestId: context.plan.requestId,
+    accountIdentifier: context.plan.accountIdentifier,
+    bundleHash: context.plan.bundleHash,
+    action: context.plan.action,
+    feeAssetId: context.prepared.review.feeAssetId,
+    fee: context.prepared.review.fee,
+    feeChange: context.prepared.review.feeChange,
+  };
+  if (context.kind === "acceptOffer") {
+    return {
+      ...common,
+      kind: "acceptOffer",
+      principalAssetId: context.plan.intent.principalAssetId,
+      principalAmount: context.plan.intent.principalAmount,
+      collateralAssetId: context.plan.intent.collateralAssetId,
+      collateralAmount: context.plan.intent.collateralAmount,
+      interestRateBasisPoints: context.plan.intent.interestRateBasisPoints,
+      totalDebt: context.plan.intent.totalDebt,
+      expirationHeight: context.plan.intent.expirationHeight,
+      principalChange: context.prepared.review.principalChange,
+    };
+  }
+  return {
+    ...common,
+    kind: "claimLenderVault",
+    principalAssetId: context.plan.intent.principalAssetId,
+    principalAmount: context.plan.intent.principalAmount,
+    grossDebt: context.plan.intent.grossDebt,
+    interestAmount: context.plan.intent.interestAmount,
+    protocolFeeAmount: context.plan.intent.protocolFeeAmount,
+    lenderNftAssetId: context.plan.intent.lenderNftAssetId,
+  };
 }
 
 function txManifestExecutionError(error: unknown): LiquidRpcError {
@@ -2086,7 +2182,7 @@ function txManifestExecutionError(error: unknown): LiquidRpcError {
       { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST },
     );
   }
-  if (/no single principal|no distinct L-BTC|insufficient/i.test(message)) {
+  if (/no single principal|no distinct L-BTC|not an unspent coin owned|insufficient/i.test(message)) {
     return providerError(
       LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
       "The connected wallet has insufficient suitable funds for this manifest action and fee.",
@@ -2476,7 +2572,7 @@ type PendingApproval =
       descriptor: string;
       network: LiquidNetwork;
       invocation: LiquidExecuteTxManifestParams;
-      plan: AcceptOfferRequirementPlan;
+      plan: TxManifestRequirementPlan;
       expectedPlanDigest: `sha256:${string}`;
       permissionMethod: string;
       revision: number;
@@ -2893,13 +2989,23 @@ async function handleApprovalDecision(
         kind: "extractPsetTransaction",
         pset: finalizedPset,
       });
-      await engine<true>({
-        kind: "dryRunLendingV3AcceptOffer",
-        transactionHex: extracted.transactionHex,
-        parentTransactions: refreshed.prepared.parentTransactions,
-        genesisHash: refreshed.genesisHash,
-        covenants: refreshed.prepared.covenants,
-      });
+      if (refreshed.kind === "acceptOffer") {
+        await engine<true>({
+          kind: "dryRunLendingV3AcceptOffer",
+          transactionHex: extracted.transactionHex,
+          parentTransactions: refreshed.prepared.parentTransactions,
+          genesisHash: refreshed.genesisHash,
+          covenants: refreshed.prepared.covenants,
+        });
+      } else {
+        await engine<true>({
+          kind: "dryRunLendingV3ClaimLenderVault",
+          transactionHex: extracted.transactionHex,
+          parentTransactions: refreshed.prepared.parentTransactions,
+          genesisHash: refreshed.genesisHash,
+          vault: refreshed.prepared.vault,
+        });
+      }
       let esploraUrl: string | undefined;
       await requireProviderPsetAuthorization(
         pending,

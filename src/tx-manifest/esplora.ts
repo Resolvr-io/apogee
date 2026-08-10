@@ -1,5 +1,12 @@
-import type { AcceptOfferRequirementPlan, TxManifestOutpoint } from "./requirements";
-import type { AcceptOfferVerifiedChainSnapshot } from "./wallet-host";
+import type {
+  AcceptOfferRequirementPlan,
+  ClaimLenderVaultRequirementPlan,
+  TxManifestOutpoint,
+} from "./requirements";
+import type {
+  AcceptOfferVerifiedChainSnapshot,
+  ClaimLenderVaultVerifiedChainSnapshot,
+} from "./wallet-host";
 import type { TxManifestTransactionOutputInspection } from "./runtime";
 
 export const LIQUID_TESTNET_GENESIS_HASH =
@@ -20,6 +27,11 @@ type InspectOutput = (
 export type TxManifestChainResolution = {
   esploraUrl: string;
   snapshot: AcceptOfferVerifiedChainSnapshot;
+};
+
+export type ClaimLenderVaultChainResolution = {
+  esploraUrl: string;
+  snapshot: ClaimLenderVaultVerifiedChainSnapshot;
 };
 
 /** Choose one correctly-networked Esplora endpoint and take a fresh covenant snapshot. */
@@ -75,6 +87,62 @@ export async function resolveAcceptOfferChainSnapshot(
   throw lastError instanceof Error
     ? lastError
     : new Error("No Liquid testnet chain server is available.");
+}
+
+/** Resolve the finalized vault and supplied lender NFT from one verified testnet view. */
+export async function resolveClaimLenderVaultChainSnapshot(
+  plan: ClaimLenderVaultRequirementPlan,
+  policyAssetId: string,
+  inspectOutput: InspectOutput,
+  configuredEsplora?: string,
+  fetcher: FetchLike = fetch,
+): Promise<ClaimLenderVaultChainResolution> {
+  requireSupportedFee(plan.constraints.maxFee);
+  const candidates = configuredEsplora
+    ? [normalizeBase(configuredEsplora)]
+    : [...LIQUID_TESTNET_ESPLORA];
+  let lastError: unknown;
+  for (const esploraUrl of candidates) {
+    try {
+      const [genesisHash, tipHeight] = await Promise.all([
+        text(fetcher, `${esploraUrl}/block-height/0`),
+        text(fetcher, `${esploraUrl}/blocks/tip/height`).then(parseHeight),
+      ]);
+      if (genesisHash !== LIQUID_TESTNET_GENESIS_HASH) {
+        throw new Error("The configured chain server is not Liquid testnet.");
+      }
+      const [vault, lenderNft] = await Promise.all([
+        resolveOutpoint(fetcher, esploraUrl, plan.covenantInputs[0].outpoint, inspectOutput),
+        resolveOutpoint(fetcher, esploraUrl, plan.walletInputs[0].outpoint, inspectOutput),
+      ]);
+      return {
+        esploraUrl,
+        snapshot: {
+          genesisHash,
+          tipHeight,
+          policyAssetId,
+          lenderVault: vault.input,
+          lenderNft: lenderNft.input,
+          parentTransactions: [...new Set([vault.transactionHex, lenderNft.transactionHex])],
+          fee: TX_MANIFEST_DEFAULT_FEE,
+        },
+      };
+    } catch (error) {
+      lastError = error;
+      if (configuredEsplora) break;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("No Liquid testnet chain server is available.");
+}
+
+function requireSupportedFee(maxFee: string | undefined): void {
+  if (maxFee !== undefined && BigInt(maxFee) < BigInt(TX_MANIFEST_DEFAULT_FEE)) {
+    throw new Error(
+      `The manifest fee cap is below Apogee's ${TX_MANIFEST_DEFAULT_FEE}-sat first-release fee.`,
+    );
+  }
 }
 
 async function resolveOutpoint(

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { SIMPLICITY_LENDING_V3_TESTNET_CHAIN } from "./builtins/simplicity-lending-v3";
+import {
+  SIMPLICITY_LENDING_V3_ACCEPT_OFFER,
+  SIMPLICITY_LENDING_V3_TESTNET_CHAIN,
+} from "./builtins/simplicity-lending-v3";
 import type { LendingV3AcceptOfferCovenants } from "./lending-v3";
 import {
   prepareLendingV3AcceptOffer,
@@ -117,9 +120,17 @@ function snapshot(covs = covenants()): AcceptOfferChainWalletSnapshot {
   };
 }
 
+async function requirementPlan() {
+  const plan = await resolveTxManifestRequirements(invocation());
+  if (plan.action !== SIMPLICITY_LENDING_V3_ACCEPT_OFFER) {
+    throw new Error("Expected AcceptOffer requirement plan.");
+  }
+  return plan;
+}
+
 describe("AcceptOffer preparation", () => {
   it("binds exact inputs, outputs, fee, and both covenant finalizations", async () => {
-    const plan = await resolveTxManifestRequirements(invocation());
+    const plan = await requirementPlan();
     const covs = covenants();
     let buildSpec: TxManifestPsetBuildSpec | undefined;
     const finalizations: TxManifestCovenantFinalizeSpec[] = [];
@@ -161,7 +172,7 @@ describe("AcceptOffer preparation", () => {
   });
 
   it("rejects stale covenant state and fee-policy violations before building", async () => {
-    const plan = await resolveTxManifestRequirements(invocation());
+    const plan = await requirementPlan();
     const covs = covenants();
     const stale = snapshot(covs);
     stale.pendingOffer.scriptPubKey = "51";

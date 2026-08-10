@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { selectAcceptOfferWalletInputs, type AcceptOfferWalletCandidate } from "./wallet-host";
+import {
+  selectAcceptOfferWalletInputs,
+  selectClaimLenderVaultWalletInputs,
+  type AcceptOfferWalletCandidate,
+} from "./wallet-host";
 
 const PRINCIPAL = "11".repeat(32);
 const POLICY = "22".repeat(32);
@@ -56,5 +60,32 @@ describe("selectAcceptOfferWalletInputs", () => {
         "1000",
       ).feeInput.txid,
     ).toBe("b".repeat(64));
+  });
+});
+
+describe("selectClaimLenderVaultWalletInputs", () => {
+  it("requires the exact wallet-owned NFT and a distinct fee input", () => {
+    const nft = coin("a", 2, PRINCIPAL, "1");
+    const fee = coin("b", 0, POLICY, "1000");
+    const selected = selectClaimLenderVaultWalletInputs(
+      [fee, nft],
+      { txid: nft.txid, vout: nft.vout },
+      PRINCIPAL,
+      POLICY,
+      "1000",
+    );
+    expect(selected).toEqual({ lenderNftInput: nft, feeInput: fee });
+  });
+
+  it("rejects a supplied NFT that the wallet does not own", () => {
+    expect(() =>
+      selectClaimLenderVaultWalletInputs(
+        [coin("b", 0, POLICY, "1000")],
+        { txid: "a".repeat(64), vout: 2 },
+        PRINCIPAL,
+        POLICY,
+        "1000",
+      ),
+    ).toThrow(/not an unspent coin owned/);
   });
 });

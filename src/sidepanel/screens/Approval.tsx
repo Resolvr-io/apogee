@@ -469,42 +469,84 @@ function TxManifestReview({
         <Row label="Request" value={review.requestId} title={review.requestId} mono wrap />
       </dl>
 
-      <ReviewSection title="Loan terms">
-        <ReviewItem>
-          <Row
-            label="Principal"
-            value={`${formatBaseUnits(review.principalAmount)} base units`}
-            amount
-            strong
-          />
-          <Row
-            label="Principal asset"
-            value={review.principalAssetId}
-            title={review.principalAssetId}
-            mono
-            wrap
-          />
-          <Row
-            label="Collateral"
-            value={`${formatBaseUnits(review.collateralAmount)} base units`}
-            amount
-          />
-          <Row
-            label="Collateral asset"
-            value={review.collateralAssetId}
-            title={review.collateralAssetId}
-            mono
-            wrap
-          />
-          <Row label="Interest" value={`${formatBaseUnits(review.interestRateBasisPoints)} bps`} />
-          <Row
-            label="Total debt"
-            value={`${formatBaseUnits(review.totalDebt)} base units`}
-            amount
-          />
-          <Row label="Expires at height" value={String(review.expirationHeight)} mono />
-        </ReviewItem>
-      </ReviewSection>
+      {review.kind === "acceptOffer" ? (
+        <ReviewSection title="Loan terms">
+          <ReviewItem>
+            <Row
+              label="Principal"
+              value={`${formatBaseUnits(review.principalAmount)} base units`}
+              amount
+              strong
+            />
+            <Row
+              label="Principal asset"
+              value={review.principalAssetId}
+              title={review.principalAssetId}
+              mono
+              wrap
+            />
+            <Row
+              label="Collateral"
+              value={`${formatBaseUnits(review.collateralAmount)} base units`}
+              amount
+            />
+            <Row
+              label="Collateral asset"
+              value={review.collateralAssetId}
+              title={review.collateralAssetId}
+              mono
+              wrap
+            />
+            <Row label="Interest" value={`${formatBaseUnits(review.interestRateBasisPoints)} bps`} />
+            <Row
+              label="Total debt"
+              value={`${formatBaseUnits(review.totalDebt)} base units`}
+              amount
+            />
+            <Row label="Expires at height" value={String(review.expirationHeight)} mono />
+          </ReviewItem>
+        </ReviewSection>
+      ) : (
+        <ReviewSection title="Repayment collected">
+          <ReviewItem>
+            <Row
+              label="Net to wallet"
+              value={`${formatBaseUnits(review.principalAmount)} base units`}
+              amount
+              strong
+            />
+            <Row
+              label="Principal asset"
+              value={review.principalAssetId}
+              title={review.principalAssetId}
+              mono
+              wrap
+            />
+            <Row
+              label="Gross repayment"
+              value={`${formatBaseUnits(review.grossDebt)} base units`}
+              amount
+            />
+            <Row
+              label="Interest included"
+              value={`${formatBaseUnits(review.interestAmount)} base units`}
+              amount
+            />
+            <Row
+              label="Protocol fee"
+              value={`${formatBaseUnits(review.protocolFeeAmount)} base units`}
+              amount
+            />
+            <Row
+              label="Lender NFT burned"
+              value={review.lenderNftAssetId}
+              title={review.lenderNftAssetId}
+              mono
+              wrap
+            />
+          </ReviewItem>
+        </ReviewSection>
+      )}
 
       <ReviewSection title="Wallet effect">
         <ReviewItem>
@@ -514,7 +556,7 @@ function TxManifestReview({
             amount
             strong
           />
-          {BigInt(review.principalChange) !== 0n && (
+          {review.kind === "acceptOffer" && BigInt(review.principalChange) !== 0n && (
             <Row
               label="Principal change"
               value={`${formatBaseUnits(review.principalChange)} base units`}

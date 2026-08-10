@@ -137,6 +137,7 @@ describe("ApprovalOverlay", () => {
       locked: false,
       signerKind: "local",
       review: {
+        kind: "acceptOffer",
         protocolLabel: "Simplicity Lending",
         actionLabel: "Fund loan offer",
         requestId: "accept-offer-3",
@@ -166,5 +167,42 @@ describe("ApprovalOverlay", () => {
     expect(markup).toContain("Approve &amp; execute");
     expect(markup).toContain("Network fee");
     expect(markup).toContain(",000 ");
+  });
+
+  it("shows the lender's net collection, protocol fee, and NFT burn", () => {
+    const request: Extract<ApprovalRequest, { kind: "executeTxManifest" }> = {
+      kind: "executeTxManifest",
+      id: "claim-manifest-approval-test",
+      origin: "https://lending.example.test",
+      network: "testnet",
+      locked: false,
+      signerKind: "local",
+      review: {
+        kind: "claimLenderVault",
+        protocolLabel: "Simplicity Lending",
+        actionLabel: "Collect loan repayment",
+        requestId: "claim-offer-3",
+        accountIdentifier: `bip122:${"22".repeat(16)}:${"33".repeat(16)}`,
+        bundleHash: `sha256:${"44".repeat(32)}`,
+        action: "lending_contract.ClaimLenderVault",
+        principalAssetId: "55".repeat(32),
+        principalAmount: "104500000",
+        grossDebt: "105000000",
+        interestAmount: "5000000",
+        protocolFeeAmount: "500000",
+        lenderNftAssetId: "66".repeat(32),
+        feeAssetId: POLICY_ASSET,
+        fee: "1000",
+        feeChange: "9000",
+      },
+    };
+    const markup = renderToStaticMarkup(
+      createElement(ApprovalOverlay, { request, onClose: vi.fn() }),
+    );
+    expect(markup).toContain("Collect loan repayment");
+    expect(markup).toContain("Repayment collected");
+    expect(markup).toContain("Net to wallet");
+    expect(markup).toContain("Protocol fee");
+    expect(markup).toContain("Lender NFT burned");
   });
 });

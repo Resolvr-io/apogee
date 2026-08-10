@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AcceptOfferRequirementPlan } from "./requirements";
-import { resolveAcceptOfferChainSnapshot, LIQUID_TESTNET_GENESIS_HASH } from "./esplora";
+import type {
+  AcceptOfferRequirementPlan,
+  ClaimLenderVaultRequirementPlan,
+} from "./requirements";
+import {
+  resolveAcceptOfferChainSnapshot,
+  resolveClaimLenderVaultChainSnapshot,
+  LIQUID_TESTNET_GENESIS_HASH,
+} from "./esplora";
 
 const PENDING = "11".repeat(32);
 const NFT = "22".repeat(32);
@@ -75,5 +82,45 @@ describe("resolveAcceptOfferChainSnapshot", () => {
     await expect(
       resolveAcceptOfferChainSnapshot(plan(), POLICY, vi.fn(), "https://test.invalid", fetcher),
     ).rejects.toThrow("already spent");
+  });
+});
+
+describe("resolveClaimLenderVaultChainSnapshot", () => {
+  it("resolves both the covenant and wallet-supplied NFT from confirmed unspent outputs", async () => {
+    const claimPlan = {
+      constraints: { maxFee: "1000" },
+      covenantInputs: [{ outpoint: { txid: PENDING, vout: 1 } }],
+      walletInputs: [{ outpoint: { txid: NFT, vout: 2 } }, { assetId: "lbtc" }],
+    } as unknown as ClaimLenderVaultRequirementPlan;
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/block-height/0")) return response(LIQUID_TESTNET_GENESIS_HASH);
+      if (url.endsWith("/blocks/tip/height")) return response("444");
+      if (url.endsWith("/status")) return response({ confirmed: true });
+      if (url.includes("/outspend/")) return response({ spent: false });
+      if (url.includes(PENDING)) return response("vault-raw");
+      if (url.includes(NFT)) return response("wallet-nft-raw");
+      throw new Error(`unexpected ${url}`);
+    }) as unknown as typeof fetch;
+    const inspect = vi.fn(async (hex: string, vout: number) => ({
+      txid: hex === "vault-raw" ? PENDING : NFT,
+      vout,
+      tx_out: "00",
+      script_pub_key: "51",
+      asset: hex === "vault-raw" ? "44".repeat(32) : "55".repeat(32),
+      amount: hex === "vault-raw" ? "190" : "1",
+      explicit: true,
+    }));
+    const result = await resolveClaimLenderVaultChainSnapshot(
+      claimPlan,
+      POLICY,
+      inspect,
+      "https://test.invalid/api",
+      fetcher,
+    );
+    expect(result.snapshot.tipHeight).toBe(444);
+    expect(result.snapshot.lenderVault.txid).toBe(PENDING);
+    expect(result.snapshot.lenderNft.txid).toBe(NFT);
+    expect(result.snapshot.parentTransactions).toEqual(["vault-raw", "wallet-nft-raw"]);
   });
 });

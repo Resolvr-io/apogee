@@ -5,10 +5,11 @@ Normative terms such as MUST and MUST NOT apply to Apogee's implementation, not 
 the upstream TX Manifest proposal.
 
 Implementation status: the event-discovered provider exposes both experimental
-methods. The built-in AcceptOffer path performs fresh-chain snapshot acquisition,
-deterministic wallet input selection, balanced multi-asset construction/blinding,
-approval digest binding, post-approval rebuild, software-wallet signing, exact
-final-transaction Simplicity dry-run, broadcast, and terminal-result idempotency.
+methods. The built-in AcceptOffer and ClaimLenderVault paths perform fresh-chain
+snapshot acquisition, deterministic wallet input selection, balanced multi-asset
+construction/blinding, approval digest binding, post-approval rebuild,
+software-wallet signing, exact final-transaction Simplicity dry-run, broadcast,
+and terminal-result idempotency.
 
 ## Scope and invariants
 
@@ -109,8 +110,9 @@ not download executable compiler code at runtime.
 
 The first built-in is the current simplicity-lending v3 source revision
 `8f8ace33963788a0ed901c160a1187f8489e2c55`, with bundle identity
-`sha256:a85cd2b87a5c763a5e8db463a4784a0861b8994b3e3ae276fde36a3d72b1bcde`.
-Only `lending_contract.AcceptOffer` is enabled, and only on Liquid testnet.
+`sha256:0a57b34e20a46f0a3ec60d6be4904eebc9d3807bb6a2fbab0c66abdcdc05af8e`.
+`lending_contract.AcceptOffer` and `lending_contract.ClaimLenderVault` are enabled,
+and only on Liquid testnet.
 
 ## Support request
 
