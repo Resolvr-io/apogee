@@ -8,6 +8,7 @@ import {
   resolveClaimLenderVaultChainSnapshot,
   LIQUID_TESTNET_GENESIS_HASH,
 } from "./esplora";
+import { SIMPLICITY_LENDING_V3_REGTEST_GENESIS_HASH } from "./network";
 
 const PENDING = "11".repeat(32);
 const NFT = "22".repeat(32);
@@ -53,6 +54,7 @@ describe("resolveAcceptOfferChainSnapshot", () => {
       POLICY,
       inspect,
       "https://test.invalid/api/",
+      LIQUID_TESTNET_GENESIS_HASH,
       fetcher,
     );
     expect(result.esploraUrl).toBe("https://test.invalid/api");
@@ -65,9 +67,53 @@ describe("resolveAcceptOfferChainSnapshot", () => {
   it("fails before network access when the fee cap is too low", async () => {
     const fetcher = vi.fn() as unknown as typeof fetch;
     await expect(
-      resolveAcceptOfferChainSnapshot(plan("999"), POLICY, vi.fn(), undefined, fetcher),
+      resolveAcceptOfferChainSnapshot(
+        plan("999"),
+        POLICY,
+        vi.fn(),
+        undefined,
+        LIQUID_TESTNET_GENESIS_HASH,
+        fetcher,
+      ),
     ).rejects.toThrow("fee cap");
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("accepts an explicitly configured server for the expected regtest genesis", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/block-height/0")) {
+        return response(SIMPLICITY_LENDING_V3_REGTEST_GENESIS_HASH);
+      }
+      if (url.endsWith("/blocks/tip/height")) return response("99");
+      if (url.endsWith("/status")) return response({ confirmed: true });
+      if (url.includes("/outspend/")) return response({ spent: false });
+      if (url.includes(PENDING)) return response("pending-raw");
+      if (url.includes(NFT)) return response("nft-raw");
+      throw new Error(`unexpected ${url}`);
+    }) as unknown as typeof fetch;
+    const inspect = vi.fn(async (hex: string, vout: number) => ({
+      txid: hex === "pending-raw" ? PENDING : NFT,
+      vout,
+      tx_out: "00",
+      script_pub_key: "51",
+      asset: "44".repeat(32),
+      amount: "1",
+      explicit: true,
+    }));
+
+    const result = await resolveAcceptOfferChainSnapshot(
+      plan(),
+      POLICY,
+      inspect,
+      "http://127.0.0.1:3002/api/",
+      SIMPLICITY_LENDING_V3_REGTEST_GENESIS_HASH,
+      fetcher,
+    );
+
+    expect(result.esploraUrl).toBe("http://127.0.0.1:3002/api");
+    expect(result.snapshot.genesisHash).toBe(SIMPLICITY_LENDING_V3_REGTEST_GENESIS_HASH);
+    expect(result.snapshot.tipHeight).toBe(99);
   });
 
   it("rejects spent covenant inputs", async () => {
@@ -80,7 +126,14 @@ describe("resolveAcceptOfferChainSnapshot", () => {
       return response("raw");
     }) as unknown as typeof fetch;
     await expect(
-      resolveAcceptOfferChainSnapshot(plan(), POLICY, vi.fn(), "https://test.invalid", fetcher),
+      resolveAcceptOfferChainSnapshot(
+        plan(),
+        POLICY,
+        vi.fn(),
+        "https://test.invalid",
+        LIQUID_TESTNET_GENESIS_HASH,
+        fetcher,
+      ),
     ).rejects.toThrow("already spent");
   });
 });
@@ -116,6 +169,7 @@ describe("resolveClaimLenderVaultChainSnapshot", () => {
       POLICY,
       inspect,
       "https://test.invalid/api",
+      LIQUID_TESTNET_GENESIS_HASH,
       fetcher,
     );
     expect(result.snapshot.tipHeight).toBe(444);

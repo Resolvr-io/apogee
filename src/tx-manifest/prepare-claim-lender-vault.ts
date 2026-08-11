@@ -2,8 +2,8 @@ import { SIMPLICITY_LENDING_V3_BUNDLE } from "./builtins/simplicity-lending-v3";
 import { taggedCanonicalJsonHash } from "./bundle";
 import {
   compileLendingV3FinalizedLenderVault,
+  type CovenantNetwork,
   type LendingV3FinalizedLenderVault,
-  type LendingV3Instance,
 } from "./lending-v3";
 import type { AcceptOfferDestination, AcceptOfferResolvedInput } from "./prepare-accept-offer";
 import type { ClaimLenderVaultRequirementPlan, TxManifestOutpoint } from "./requirements";
@@ -18,6 +18,7 @@ import {
 const LENDER_NFT_BURN_SCRIPT = "6a046275726e";
 
 export type ClaimLenderVaultChainWalletSnapshot = {
+  network?: CovenantNetwork;
   genesisHash: string;
   tipHeight: number;
   policyAssetId: string;
@@ -56,7 +57,7 @@ export type FinalClaimLenderVaultDryRun = {
 };
 
 type ClaimLenderVaultRuntime = {
-  compileVault(instance: LendingV3Instance): Promise<LendingV3FinalizedLenderVault>;
+  compileVault: typeof compileLendingV3FinalizedLenderVault;
   buildPset(spec: TxManifestPsetBuildSpec): Promise<string>;
   finalizeCovenant(spec: TxManifestCovenantFinalizeSpec): Promise<string>;
 };
@@ -74,7 +75,7 @@ export async function prepareLendingV3ClaimLenderVault(
   runtime: ClaimLenderVaultRuntime = DEFAULT_RUNTIME,
 ): Promise<PreparedClaimLenderVaultExecution> {
   validateSnapshot(plan, snapshot);
-  const vault = await runtime.compileVault(plan.instance);
+  const vault = await runtime.compileVault(plan.instance, undefined, snapshot.network);
   requireCovenantInput(snapshot.lenderVault, plan.covenantInputs[0], vault.covenant.script_pub_key);
 
   const feeChange = (BigInt(snapshot.feeInput.amount) - BigInt(snapshot.fee)).toString();

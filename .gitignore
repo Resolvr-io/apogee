@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-lending-regtest/
 *.zip
 .DS_Store
 *.log

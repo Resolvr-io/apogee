@@ -2,6 +2,7 @@ import { SIMPLICITY_LENDING_V3_BUNDLE } from "./builtins/simplicity-lending-v3";
 import { taggedCanonicalJsonHash } from "./bundle";
 import {
   compileLendingV3AcceptOfferCovenants,
+  type CovenantNetwork,
   type LendingV3AcceptOfferCovenants,
 } from "./lending-v3";
 import type {
@@ -33,6 +34,7 @@ export type BorrowerLendingRequirementPlan =
 export type PreparedCovenantExecution = Omit<TxManifestCovenantFinalizeSpec, "pset">;
 
 type SnapshotBase = {
+  network?: CovenantNetwork;
   genesisHash: string;
   tipHeight: number;
   policyAssetId: string;
@@ -121,7 +123,7 @@ export async function prepareLendingV3BorrowerAction(
   runtime: ActionRuntime = DEFAULT_RUNTIME,
 ): Promise<PreparedBorrowerLendingExecution> {
   validateCommon(plan, snapshot);
-  const covenants = await runtime.compileCovenants(plan.instance);
+  const covenants = await runtime.compileCovenants(plan.instance, undefined, snapshot.network);
   const prepared = prepareAction(plan, snapshot, covenants);
   let pset = await runtime.buildPset(prepared.buildSpec);
   for (const covenant of prepared.covenantExecutions) {

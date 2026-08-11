@@ -49,6 +49,10 @@ export default defineConfig(({ mode }) => {
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __GIT_COMMIT__: JSON.stringify(getCommitHash()),
+    // Regtest TX Manifest execution is a browser-test capability, never a
+    // user-selectable production network. The regtest harness opts in while
+    // building the unpacked extension it controls.
+    __TX_MANIFEST_REGTEST__: JSON.stringify(process.env.APOGEE_TX_MANIFEST_REGTEST === "1"),
   },
   plugins: [
     react(),

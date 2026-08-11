@@ -46,13 +46,15 @@ type CovenantCompiler = (
   spec: TxManifestCovenantCompileSpec,
 ) => Promise<TxManifestCovenantCommitments>;
 
-const NETWORK = "liquid-testnet" as const;
+export type CovenantNetwork = TxManifestCovenantCompileSpec["network"];
+const DEFAULT_NETWORK: CovenantNetwork = "liquid-testnet";
 const ZERO_HASH = "00".repeat(32);
 
 /** Compile the complete nested covenant chain that lending-v3 commits into AcceptOffer. */
 export async function compileLendingV3AcceptOfferCovenants(
   instance: LendingV3Instance,
   compile: CovenantCompiler = compileTxManifestCovenant,
+  network: CovenantNetwork = DEFAULT_NETWORK,
 ): Promise<LendingV3AcceptOfferCovenants> {
   validateInstance(instance);
   const sources = SIMPLICITY_LENDING_V3_BUNDLE.sources;
@@ -61,6 +63,7 @@ export async function compileLendingV3AcceptOfferCovenants(
   const finalizedLenderVaultPlan = await compileLendingV3FinalizedLenderVault(
     instance,
     compile,
+    network,
   );
   const finalizedLenderVault = finalizedLenderVaultPlan.covenant;
   const lenderVault = await compile(
@@ -73,6 +76,8 @@ export async function compileLendingV3AcceptOfferCovenants(
         true,
         finalizedLenderVault.script_hash,
       ),
+      [],
+      network,
     ),
   );
   const finalizedProtocolFeeVault = await compile(
@@ -85,6 +90,8 @@ export async function compileLendingV3AcceptOfferCovenants(
         false,
         ZERO_HASH,
       ),
+      [],
+      network,
     ),
   );
   const protocolFeeVault = await compile(
@@ -97,6 +104,8 @@ export async function compileLendingV3AcceptOfferCovenants(
         false,
         finalizedProtocolFeeVault.script_hash,
       ),
+      [],
+      network,
     ),
   );
   const principalArguments = {
@@ -104,7 +113,9 @@ export async function compileLendingV3AcceptOfferCovenants(
     ASSET_AMOUNT: argument("1", "u64"),
     WITH_ASSET_BURN: argument("false", "bool"),
   };
-  const principalOutput = await compile(compileSpec(sources["asset_auth.simf"], principalArguments));
+  const principalOutput = await compile(
+    compileSpec(sources["asset_auth.simf"], principalArguments, [], network),
+  );
   const lendingArguments = {
     COLLATERAL_ASSET_ID: assetArgument(instance.COLLATERAL_ASSET_ID),
     PRINCIPAL_ASSET_ID: assetArgument(instance.PRINCIPAL_ASSET_ID),
@@ -128,15 +139,18 @@ export async function compileLendingV3AcceptOfferCovenants(
   const debtLeaf = u64StorageLeaf(currentDebt);
   const lendingSource = sources["lending.simf"];
   const pendingOffer = await compile(
-    compileSpec(lendingSource, lendingArguments, [ZERO_HASH, debtLeaf]),
+    compileSpec(lendingSource, lendingArguments, [ZERO_HASH, debtLeaf], network),
   );
   const activeOffer = await compile(
-    compileSpec(lendingSource, lendingArguments, [`${"00".repeat(31)}01`, debtLeaf]),
+    compileSpec(lendingSource, lendingArguments, [`${"00".repeat(31)}01`, debtLeaf], network),
   );
   const lenderNftAuthorization = await compile(
-    compileSpec(sources["script_auth.simf"], {
-      SCRIPT_HASH: hashArgument(pendingOffer.script_hash),
-    }),
+    compileSpec(
+      sources["script_auth.simf"],
+      { SCRIPT_HASH: hashArgument(pendingOffer.script_hash) },
+      [],
+      network,
+    ),
   );
 
   return {
@@ -157,6 +171,7 @@ export async function compileLendingV3AcceptOfferCovenants(
 /** Compile the persistent factory shared by Enable borrowing and CreateOffer. */
 export async function compileLendingV3IssuanceFactory(
   compile: CovenantCompiler = compileTxManifestCovenant,
+  network: CovenantNetwork = DEFAULT_NETWORK,
 ): Promise<LendingV3IssuanceFactory> {
   const arguments_ = {
     ISSUING_UTXOS_COUNT: argument("2", "u8"),
@@ -167,6 +182,8 @@ export async function compileLendingV3IssuanceFactory(
       compileSpec(
         SIMPLICITY_LENDING_V3_BUNDLE.sources["issuance_factory.simf"],
         arguments_,
+        [],
+        network,
       ),
     ),
     arguments: arguments_,
@@ -177,6 +194,7 @@ export async function compileLendingV3IssuanceFactory(
 export async function compileLendingV3FinalizedLenderVault(
   instance: LendingV3Instance,
   compile: CovenantCompiler = compileTxManifestCovenant,
+  network: CovenantNetwork = DEFAULT_NETWORK,
 ): Promise<LendingV3FinalizedLenderVault> {
   validateInstance(instance);
   const arguments_ = vaultArguments(
@@ -191,6 +209,8 @@ export async function compileLendingV3FinalizedLenderVault(
       compileSpec(
         SIMPLICITY_LENDING_V3_BUNDLE.sources["asset_auth_vault.simf"],
         arguments_,
+        [],
+        network,
       ),
     ),
     arguments: arguments_,
@@ -200,12 +220,13 @@ function compileSpec(
   source: string,
   args: Record<string, SimplicityArgument>,
   extraLeaves: string[] = [],
+  network: CovenantNetwork = DEFAULT_NETWORK,
 ): TxManifestCovenantCompileSpec {
   return {
     source,
     arguments: args,
     extra_leaf_payloads: extraLeaves,
-    network: NETWORK,
+    network,
     include_debug_symbols: true,
   };
 }

@@ -25,6 +25,10 @@ import { claimSecret, type ParkedSecret } from "@/lib/qr-secret";
 import { clearAssetIconCache } from "@/lib/asset-icons";
 import { evaluateUpdate } from "@/lib/version-check";
 import { APP_VERSION } from "@/version";
+import {
+  isTxManifestExecutionNetwork,
+  txManifestExpectedGenesisHash,
+} from "@/tx-manifest/network";
 import { browser } from "@/lib/ext";
 // Static imports — dynamic import() is disallowed in the MV3 service worker
 // global scope per the HTML spec (Chrome blocks it at runtime).
@@ -2119,10 +2123,10 @@ async function executeProviderTxManifest(
         LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
       );
     });
-    if (info.network !== "liquidtestnet") {
+    if (!isTxManifestExecutionNetwork(info.network)) {
       throw providerError(
         LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
-        "TX Manifest execution is currently enabled only for Liquid testnet.",
+        "TX Manifest execution is not enabled for this Liquid network.",
         LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
         { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST, cause: "network" },
       );
@@ -2170,7 +2174,7 @@ async function executeProviderTxManifest(
         id,
         origin,
         review,
-        network: "testnet",
+        network: toDappNetwork(info.network),
         locked: keystore.isLocked(),
         signerKind: info.signer,
       };
@@ -2278,6 +2282,7 @@ async function prepareProviderAcceptOffer(
     policyAssetId,
     inspectOutput,
     configuredServer,
+    txManifestExpectedGenesisHash(network),
   );
   const prepared = await engine<HostedPreparedAcceptOfferExecution>({
     kind: "prepareLendingV3AcceptOfferWithWallet",
@@ -2302,6 +2307,7 @@ async function prepareProviderClaimLenderVault(
     policyAssetId,
     inspectOutput,
     configuredServer,
+    txManifestExpectedGenesisHash(network),
   );
   const prepared = await engine<HostedPreparedClaimLenderVaultExecution>({
     kind: "prepareLendingV3ClaimLenderVaultWithWallet",
@@ -2333,6 +2339,7 @@ async function prepareProviderNewLendingAction(
     policyAssetId,
     inspectOutput,
     configuredServer,
+    txManifestExpectedGenesisHash(network),
   );
   const prepared = await engine<HostedPreparedNewLendingExecution>({
     kind: "prepareLendingV3NewActionWithWallet",
@@ -2434,6 +2441,7 @@ function txManifestApprovalReview(
 
 function txManifestExecutionError(error: unknown): LiquidRpcError {
   const message = error instanceof Error ? error.message : String(error);
+  console.debug("[apogee] TX Manifest execution failed:", message);
   if (/already used for different request data/i.test(message)) {
     return providerError(
       LIQUID_RPC_ERROR_CODES.INVALID_PARAMS,
@@ -2466,7 +2474,6 @@ function txManifestExecutionError(error: unknown): LiquidRpcError {
       { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST },
     );
   }
-  console.debug("[apogee] TX Manifest execution failed:", message);
   return providerError(
     LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
     "Apogee could not safely execute this TX Manifest request.",

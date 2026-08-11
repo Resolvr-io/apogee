@@ -31,6 +31,10 @@ import { verifyDealerPset } from "@/engine/verify-dealer-pset";
 import { getTxManifestSupport } from "@/tx-manifest/registry";
 import { resolveTxManifestRequirements } from "@/tx-manifest/requirements";
 import {
+  isTxManifestExecutionNetwork,
+  txManifestRuntimeNetwork,
+} from "@/tx-manifest/network";
+import {
   dryRunLendingV3AcceptOfferExecution,
   prepareLendingV3AcceptOffer,
 } from "@/tx-manifest/prepare-accept-offer";
@@ -1053,9 +1057,10 @@ export async function handle(req: EngineRequest): Promise<unknown> {
     }
 
     case "prepareLendingV3AcceptOfferWithWallet": {
-      if (req.network !== "liquidtestnet") {
-        throw new Error("The first TX Manifest wallet adapter is enabled only on Liquid testnet.");
+      if (!isTxManifestExecutionNetwork(req.network)) {
+        throw new Error("The TX Manifest wallet adapter is not enabled on this network.");
       }
+      const manifestNetwork = txManifestRuntimeNetwork(req.network);
       const entry = await ensureWollet(lwk, req.descriptor, req.network);
       if (entry.policyAssetHex !== req.chainSnapshot.policyAssetId) {
         throw new Error("The wallet policy asset does not match the verified chain snapshot.");
@@ -1093,8 +1098,9 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         req.chainSnapshot.fee,
       );
       const address = entry.wollet.address(null).address().toString();
-      const destination = await inspectTxManifestAddress(address, "liquid-testnet");
+      const destination = await inspectTxManifestAddress(address, manifestNetwork);
       const prepared = await prepareLendingV3AcceptOffer(req.plan, {
+        network: manifestNetwork,
         genesisHash: req.chainSnapshot.genesisHash,
         tipHeight: req.chainSnapshot.tipHeight,
         policyAssetId: req.chainSnapshot.policyAssetId,
@@ -1127,9 +1133,10 @@ export async function handle(req: EngineRequest): Promise<unknown> {
     }
 
     case "prepareLendingV3ClaimLenderVaultWithWallet": {
-      if (req.network !== "liquidtestnet") {
-        throw new Error("The TX Manifest wallet adapter is enabled only on Liquid testnet.");
+      if (!isTxManifestExecutionNetwork(req.network)) {
+        throw new Error("The TX Manifest wallet adapter is not enabled on this network.");
       }
+      const manifestNetwork = txManifestRuntimeNetwork(req.network);
       const entry = await ensureWollet(lwk, req.descriptor, req.network);
       if (entry.policyAssetHex !== req.chainSnapshot.policyAssetId) {
         throw new Error("The wallet policy asset does not match the verified chain snapshot.");
@@ -1202,8 +1209,9 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         throw new Error("Wallet and chain state disagree about the lender NFT input.");
       }
       const address = entry.wollet.address(null).address().toString();
-      const destination = await inspectTxManifestAddress(address, "liquid-testnet");
+      const destination = await inspectTxManifestAddress(address, manifestNetwork);
       const prepared = await prepareLendingV3ClaimLenderVault(req.plan, {
+        network: manifestNetwork,
         genesisHash: req.chainSnapshot.genesisHash,
         tipHeight: req.chainSnapshot.tipHeight,
         policyAssetId: req.chainSnapshot.policyAssetId,
@@ -1234,9 +1242,10 @@ export async function handle(req: EngineRequest): Promise<unknown> {
     }
 
     case "prepareLendingV3NewActionWithWallet": {
-      if (req.network !== "liquidtestnet") {
-        throw new Error("The TX Manifest wallet adapter is enabled only on Liquid testnet.");
+      if (!isTxManifestExecutionNetwork(req.network)) {
+        throw new Error("The TX Manifest wallet adapter is not enabled on this network.");
       }
+      const manifestNetwork = txManifestRuntimeNetwork(req.network);
       const entry = await ensureWollet(lwk, req.descriptor, req.network);
       if (entry.policyAssetHex !== req.chainSnapshot.policyAssetId) {
         throw new Error("The wallet policy asset does not match the verified chain snapshot.");
@@ -1268,7 +1277,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         };
       });
       const address = entry.wollet.address(null).address().toString();
-      const inspectedDestination = await inspectTxManifestAddress(address, "liquid-testnet");
+      const inspectedDestination = await inspectTxManifestAddress(address, manifestNetwork);
       const currentWalletDestination = {
         address,
         scriptPubKey: inspectedDestination.script_pub_key,
@@ -1317,6 +1326,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           "confirmed L-BTC input",
         );
         const prepared = await prepareLendingV3CreateFactory(req.plan, {
+          network: manifestNetwork,
           genesisHash: req.chainSnapshot.genesisHash,
           tipHeight: req.chainSnapshot.tipHeight,
           policyAssetId: req.chainSnapshot.policyAssetId,
@@ -1365,6 +1375,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         const factoryCovenant = req.chainSnapshot.inputs.factory_covenant_in;
         if (!factoryCovenant) throw new Error("Verified chain snapshot is missing factory_covenant_in.");
         const prepared = await prepareLendingV3CreateOffer(req.plan, {
+          network: manifestNetwork,
           genesisHash: req.chainSnapshot.genesisHash,
           tipHeight: req.chainSnapshot.tipHeight,
           policyAssetId: req.chainSnapshot.policyAssetId,
@@ -1391,6 +1402,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         const principalAssetAuth = req.chainSnapshot.inputs.principal_asset_auth_in;
         if (!principalAssetAuth) throw new Error("Verified chain snapshot is missing principal_asset_auth_in.");
         const prepared = await prepareLendingV3BorrowerAction(req.plan, {
+          network: manifestNetwork,
           kind: "claimPrincipal",
           genesisHash: req.chainSnapshot.genesisHash,
           tipHeight: req.chainSnapshot.tipHeight,
@@ -1414,6 +1426,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         const lenderNftAuthorization = req.chainSnapshot.inputs.lender_nft_in;
         if (!pendingOffer || !lenderNftAuthorization) throw new Error("Verified chain snapshot is missing cancellation inputs.");
         const prepared = await prepareLendingV3BorrowerAction(req.plan, {
+          network: manifestNetwork,
           kind: "cancelOffer",
           genesisHash: req.chainSnapshot.genesisHash,
           tipHeight: req.chainSnapshot.tipHeight,
@@ -1450,6 +1463,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         const activeOffer = req.chainSnapshot.inputs.active_offer_in;
         if (!activeOffer) throw new Error("Verified chain snapshot is missing active_offer_in.");
         const prepared = await prepareLendingV3BorrowerAction(req.plan, {
+          network: manifestNetwork,
           kind: "repayLoan",
           genesisHash: req.chainSnapshot.genesisHash,
           tipHeight: req.chainSnapshot.tipHeight,
@@ -1474,6 +1488,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         const activeOffer = req.chainSnapshot.inputs.active_offer_in;
         if (!activeOffer) throw new Error("Verified chain snapshot is missing active_offer_in.");
         const prepared = await prepareLendingV3BorrowerAction(req.plan, {
+          network: manifestNetwork,
           kind: "liquidateOffer",
           genesisHash: req.chainSnapshot.genesisHash,
           tipHeight: req.chainSnapshot.tipHeight,

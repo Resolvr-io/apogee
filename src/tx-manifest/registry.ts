@@ -16,6 +16,7 @@ import {
   txManifestBundleHash,
   type TxManifestBundle,
 } from "./bundle";
+import { SIMPLICITY_LENDING_V3_REGTEST_CHAIN } from "./network";
 
 export type TxManifestBundleHash = `sha256:${string}`;
 
@@ -42,7 +43,9 @@ export const TRUSTED_TX_MANIFESTS: readonly TrustedTxManifest[] = Object.freeze(
     bundleHash: SIMPLICITY_LENDING_V3_BUNDLE_HASH,
     protocol: "simplicity-lending",
     version: "v3",
-    chainIds: [SIMPLICITY_LENDING_V3_TESTNET_CHAIN],
+    chainIds: __TX_MANIFEST_REGTEST__
+      ? [SIMPLICITY_LENDING_V3_TESTNET_CHAIN, SIMPLICITY_LENDING_V3_REGTEST_CHAIN]
+      : [SIMPLICITY_LENDING_V3_TESTNET_CHAIN],
     actions: [
       SIMPLICITY_LENDING_V3_CREATE_FACTORY,
       SIMPLICITY_LENDING_V3_CREATE_OFFER,
