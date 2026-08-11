@@ -111,6 +111,39 @@ and a new registry entry.
 The compiler revision maps to a compiler artifact shipped inside Apogee. Apogee MUST
 not download executable compiler code at runtime.
 
+### On-chain history hint policy
+
+The trusted registry may separately opt a vendored bundle into the wallet-owned
+`txmf-v1` history extension with `dedicated-before-fee` placement and a named,
+compiled-in postcondition verifier. This is wallet policy rather than dapp-supplied
+manifest data, so enabling it does not change the bundle hash or require the dapp
+to send a different execution request. Unknown bundles and registry entries
+without this opt-in never receive an injected output or trusted history label.
+
+The 53-byte v1 OP_RETURN datum is:
+
+```text
+ASCII("TXMF") || 0x01 || bundle_hash || action_tag
+
+action_tag = first16(TaggedHash(
+  "tx-manifest/action/v1",
+  bundle_hash || UTF8(canonical_action_name)
+))
+```
+
+Apogee appends one explicit zero-value policy-asset output after ordinary/change
+outputs and immediately before the Elements fee output. History recovery scans
+every datum of every OP_RETURN in each LWK-discovered wallet transaction; the
+output index is not part of the decoding format.
+
+A marker is not authoritative by itself. Apogee labels an action verified only
+when exactly one canonical marker resolves to one action in an opted-in trusted
+bundle, the transaction spends a wallet-owned input, the marker output is the
+canonical explicit zero-value output at the registered placement, and the
+action-specific transaction-shape postconditions pass. Unknown bundles and failed
+checks remain unsupported or unverified and do not receive trusted protocol/action
+labels.
+
 The first built-in is the current simplicity-lending v3 source revision
 `8f8ace33963788a0ed901c160a1187f8489e2c55`, with bundle identity
 `sha256:debdae89777fdd21fec2d763efe028876f267ff214aca9ddf9b3735d7657be15`.

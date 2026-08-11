@@ -17,6 +17,10 @@ import {
   type TxManifestBundle,
 } from "./bundle";
 import { SIMPLICITY_LENDING_V3_REGTEST_CHAIN } from "./network";
+import {
+  TX_MANIFEST_ACTION_HINT_V1,
+  txManifestActionHintScript,
+} from "./action-hint";
 
 export type TxManifestBundleHash = `sha256:${string}`;
 
@@ -31,6 +35,13 @@ export type TrustedTxManifest = {
   actions: readonly string[];
   compilerRevision: string;
   extensions: readonly string[];
+  history: {
+    actionHint: {
+      codec: typeof TX_MANIFEST_ACTION_HINT_V1;
+      placement: "dedicated-before-fee";
+      postconditionVerifier: "simplicity-lending-v3";
+    } | null;
+  };
   review: {
     protocolLabel: string;
     actionLabels: Readonly<Record<string, string>>;
@@ -58,6 +69,13 @@ export const TRUSTED_TX_MANIFESTS: readonly TrustedTxManifest[] = Object.freeze(
     ],
     compilerRevision: TX_MANIFEST_PINNED_REVISIONS.simplicityHl,
     extensions: [],
+    history: {
+      actionHint: {
+        codec: TX_MANIFEST_ACTION_HINT_V1,
+        placement: "dedicated-before-fee",
+        postconditionVerifier: "simplicity-lending-v3",
+      },
+    },
     review: {
       protocolLabel: "Simplicity Lending",
       actionLabels: {
@@ -114,6 +132,21 @@ export async function resolveTrustedTxManifest(
     }
   }
   return trusted;
+}
+
+/** Build a wallet-added hint only when the trusted registry explicitly opts in. */
+export async function trustedTxManifestActionHintScript(
+  bundleHash: TxManifestBundleHash,
+  action: string,
+): Promise<string> {
+  const trusted = await resolveTrustedTxManifest(bundleHash);
+  if (trusted.history.actionHint?.codec !== TX_MANIFEST_ACTION_HINT_V1) {
+    throw new Error("This trusted TX Manifest does not enable on-chain action hints.");
+  }
+  if (!trusted.actions.includes(action)) {
+    throw new Error("This TX Manifest action is not enabled by Apogee.");
+  }
+  return txManifestActionHintScript(bundleHash, action);
 }
 
 async function assertTrustedBundleIntegrity(trusted: TrustedTxManifest): Promise<void> {

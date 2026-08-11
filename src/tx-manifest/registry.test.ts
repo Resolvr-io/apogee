@@ -6,6 +6,7 @@ import {
   TRUSTED_TX_MANIFESTS,
   getTxManifestSupport,
   resolveTrustedTxManifest,
+  trustedTxManifestActionHintScript,
 } from "./registry";
 import { SIMPLICITY_LENDING_V3_REGTEST_CHAIN } from "./network";
 
@@ -34,6 +35,20 @@ describe("trusted TX Manifest registry", () => {
         "lending_contract.ClaimLenderVault",
       ],
     });
+  });
+
+  it("explicitly opts the trusted lending bundle into canonical history hints", async () => {
+    expect(TRUSTED_TX_MANIFESTS[0].history.actionHint).toEqual({
+      codec: "txmf-v1",
+      placement: "dedicated-before-fee",
+      postconditionVerifier: "simplicity-lending-v3",
+    });
+    await expect(
+      trustedTxManifestActionHintScript(
+        SIMPLICITY_LENDING_V3_BUNDLE_HASH,
+        "lending_contract.RepayLoan",
+      ),
+    ).resolves.toMatch(/^6a35[0-9a-f]{106}$/);
   });
 
   it("does not trust the regtest chain in normal builds", () => {

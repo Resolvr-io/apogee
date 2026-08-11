@@ -30,6 +30,7 @@ import { publicWalletDescriptor } from "./public-wallet-descriptor";
 import { verifyDealerPset } from "@/engine/verify-dealer-pset";
 import { getTxManifestSupport } from "@/tx-manifest/registry";
 import { resolveTxManifestRequirements } from "@/tx-manifest/requirements";
+import { txManifestHistoryAnnotation } from "@/tx-manifest/history";
 import {
   isTxManifestExecutionNetwork,
   txManifestRuntimeNetwork,
@@ -1035,15 +1036,23 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       // Per tx, the wallet txids it spends from — used to order same-block txs
       // (see orderTransactionsNewestFirst). Inputs owned by others come back None.
       const spendsFrom = new Map<string, Set<string>>();
-      const txs: WalletTxDTO[] = entry.wollet.transactions().map((tx) => {
+      const txs: WalletTxDTO[] = await Promise.all(entry.wollet.transactions().map(async (tx) => {
         const txid = tx.txid().toString();
         const spends = new Set<string>();
+        let hasWalletOwnedInput = false;
         for (const input of tx.inputs()) {
           const spent = input.get();
-          if (spent) spends.add(spent.outpoint().txid().toString());
+          if (spent) {
+            hasWalletOwnedInput = true;
+            spends.add(spent.outpoint().txid().toString());
+          }
         }
         spendsFrom.set(txid, spends);
         const assetDeltas = balanceToRecord(tx.balance());
+        const annotation = await txManifestHistoryAnnotation(
+          tx.tx().toBytes(),
+          hasWalletOwnedInput,
+        );
         return {
           txid,
           balanceChange: assetDeltas[entry.policyAssetHex] ?? 0,
@@ -1051,8 +1060,9 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           height: tx.height() ?? null,
           timestamp: tx.timestamp() ?? null,
           assetDeltas,
+          ...(annotation ? { txManifest: annotation } : {}),
         };
-      });
+      }));
       return orderTransactionsNewestFirst(txs, spendsFrom);
     }
 

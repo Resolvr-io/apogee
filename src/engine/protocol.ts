@@ -9,6 +9,7 @@
 
 import type { LiquidNetwork, WalletInfo, WalletSigner } from "@/keystore/keystore";
 import type { TxManifestBundleHash } from "@/tx-manifest/registry";
+import type { TxManifestHistoryAnnotation } from "@/tx-manifest/history";
 import type {
   AcceptOfferRequirementPlan,
   ClaimLenderVaultRequirementPlan,
@@ -559,6 +560,7 @@ export interface WalletTxDTO {
   height: number | null;
   timestamp: number | null;
   assetDeltas: Record<string, number>;
+  txManifest?: TxManifestHistoryAnnotation;
 }
 
 // ---- side panel / prompt → service worker ----------------------------------

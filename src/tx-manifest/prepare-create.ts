@@ -1,5 +1,6 @@
 import { SIMPLICITY_LENDING_V3_BUNDLE } from "./builtins/simplicity-lending-v3";
 import { taggedCanonicalJsonHash } from "./bundle";
+import { trustedTxManifestActionHintScript } from "./registry";
 import { deriveSimplicityLendingAsset } from "./issuance";
 import {
   compileLendingV3AcceptOfferCovenants,
@@ -92,6 +93,11 @@ export async function prepareLendingV3CreateFactory(
     if (!snapshot.feeChangeDestination) throw new Error("feeChangeDestination is required for non-zero change.");
     outputs.push(confidentialOutput(snapshot.feeChangeDestination, snapshot.policyAssetId, feeChange, 0));
   }
+  outputs.push({
+    script_pub_key: await trustedTxManifestActionHintScript(plan.bundleHash, plan.action),
+    asset: snapshot.policyAssetId,
+    amount: "0",
+  });
   const buildSpec: TxManifestPsetBuildSpec = {
     inputs: [{
       ...psetInput(snapshot.fundingInput),
@@ -243,6 +249,11 @@ export async function prepareLendingV3CreateOffer(
     if (!snapshot.changeDestination) throw new Error("changeDestination is required for fee change.");
     outputs.push(confidentialOutput(snapshot.changeDestination, snapshot.policyAssetId, feeChange, 3));
   }
+  outputs.push({
+    script_pub_key: await trustedTxManifestActionHintScript(plan.bundleHash, plan.action),
+    asset: snapshot.policyAssetId,
+    amount: "0",
+  });
 
   const buildSpec: TxManifestPsetBuildSpec = {
     inputs: [

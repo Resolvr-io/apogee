@@ -1,4 +1,5 @@
 import { chromium, expect, test, type BrowserContext } from "@playwright/test";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -10,6 +11,14 @@ const TEST_MNEMONIC =
 const LENDING_V3_BUNDLE_HASH =
   "sha256:debdae89777fdd21fec2d763efe028876f267ff214aca9ddf9b3735d7657be15";
 const REGTEST_CHAIN_ID = "bip122:00902a6b70c2ca83b5d9c815d96a0e2f";
+const SIMPLICITY_LENDING_V3_CREATE_FACTORY = "issuance_factory.CreateFactory";
+const SIMPLICITY_LENDING_V3_CREATE_OFFER = "lending_contract.CreateOffer";
+const SIMPLICITY_LENDING_V3_ACCEPT_OFFER = "lending_contract.AcceptOffer";
+const SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL = "lending_contract.ClaimPrincipal";
+const SIMPLICITY_LENDING_V3_REPAY_LOAN = "lending_contract.RepayLoan";
+const SIMPLICITY_LENDING_V3_CANCEL_OFFER = "lending_contract.CancelOffer";
+const SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER = "lending_contract.LiquidateOffer";
+const SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT = "lending_contract.ClaimLenderVault";
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -24,6 +33,16 @@ const RPC_USER = requiredEnv("LENDING_REGTEST_RPC_USER");
 const RPC_PASSWORD = requiredEnv("LENDING_REGTEST_RPC_PASSWORD");
 const MINER_ADDRESS = requiredEnv("LENDING_REGTEST_MINER_ADDRESS");
 const PRINCIPAL_ASSET_ID = requiredEnv("LENDING_REGTEST_PRINCIPAL_ASSET_ID");
+const LENDING_ACTIONS = [
+  SIMPLICITY_LENDING_V3_CREATE_FACTORY,
+  SIMPLICITY_LENDING_V3_CREATE_OFFER,
+  SIMPLICITY_LENDING_V3_ACCEPT_OFFER,
+  SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL,
+  SIMPLICITY_LENDING_V3_REPAY_LOAN,
+  SIMPLICITY_LENDING_V3_CANCEL_OFFER,
+  SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER,
+  SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT,
+] as const;
 
 test("real lending UI executes every trusted lending action through Apogee", async () => {
   if (!existsSync(resolve(EXTENSION_PATH, "manifest.json"))) {
@@ -141,11 +160,162 @@ test("real lending UI executes every trusted lending action through Apogee", asy
     await expect(
       lenderPage.getByRole("row").filter({ hasText: "Liquidated" }).first(),
     ).toBeVisible();
+
+    const borrowerBeforeRecords = await walletTransactions(context, extensionId);
+    const lenderBeforeRecords = await walletTransactions(lenderContext, lenderExtensionId);
+    const borrowerBefore = borrowerBeforeRecords.map(({ txid }) => txid);
+    const lenderBefore = lenderBeforeRecords.map(({ txid }) => txid);
+    const observed = await inspectActionHints([...new Set([...borrowerBefore, ...lenderBefore])]);
+    expect(countActions(observed)).toEqual({
+      [SIMPLICITY_LENDING_V3_CREATE_FACTORY]: 1,
+      [SIMPLICITY_LENDING_V3_CREATE_OFFER]: 3,
+      [SIMPLICITY_LENDING_V3_ACCEPT_OFFER]: 2,
+      [SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL]: 1,
+      [SIMPLICITY_LENDING_V3_REPAY_LOAN]: 1,
+      [SIMPLICITY_LENDING_V3_CANCEL_OFFER]: 1,
+      [SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER]: 1,
+      [SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT]: 1,
+    });
+
+    const borrowerAfterRecords = await restoreAndReadTransactions(
+      context,
+      extensionId,
+      TEST_MNEMONIC,
+      "borrower-restored",
+    );
+    const lenderAfterRecords = await restoreAndReadTransactions(
+      lenderContext,
+      lenderExtensionId,
+      "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "lender-restored",
+    );
+    const borrowerAfter = borrowerAfterRecords.map(({ txid }) => txid);
+    const lenderAfter = lenderAfterRecords.map(({ txid }) => txid);
+    expect([...borrowerAfter].sort()).toEqual([...borrowerBefore].sort());
+    expect([...lenderAfter].sort()).toEqual([...lenderBefore].sort());
+    const restoredByTxid = new Map(
+      [...borrowerAfterRecords, ...lenderAfterRecords].map((record) => [record.txid, record]),
+    );
+    for (const row of observed) {
+      expect(restoredByTxid.get(row.txid)?.txManifest).toMatchObject({
+        status: "verified",
+        bundleHash: LENDING_V3_BUNDLE_HASH,
+        action: row.action,
+      });
+    }
+    await expectWalletHistoryAction(context, extensionId, "Repay loan in full");
+    await expectWalletHistoryAction(
+      lenderContext,
+      lenderExtensionId,
+      "Collect loan repayment",
+    );
+
+    console.log("[txmf-spike] action marker compatibility");
+    for (const row of observed) {
+      console.log(JSON.stringify({
+        ...row,
+        borrowerRecovered: borrowerAfter.includes(row.txid),
+        lenderRecovered: lenderAfter.includes(row.txid),
+      }));
+    }
   } finally {
     await lenderContext?.close();
     await context.close();
   }
 });
+
+type ActionHintObservation = {
+  txid: string;
+  action: (typeof LENDING_ACTIONS)[number];
+  markerOutputIndex: number;
+  outputCount: number;
+};
+
+type WalletHistoryRecord = {
+  txid: string;
+  txManifest?: {
+    status: "verified" | "unsupported" | "unverified";
+    bundleHash?: string;
+    action?: string;
+  };
+};
+
+async function inspectActionHints(txids: string[]): Promise<ActionHintObservation[]> {
+  const observations: ActionHintObservation[] = [];
+  for (const txid of txids) {
+    const transaction = await rpc("getrawtransaction", [txid, true]) as {
+      vout: Array<{ n: number; scriptPubKey: { hex: string } }>;
+    };
+    const found = transaction.vout.flatMap((output) => {
+      const hint = actionHintFromScript(output.scriptPubKey.hex);
+      return hint ? [{ output, hint }] : [];
+    });
+    if (found.length === 0) continue;
+    expect(found).toHaveLength(1);
+    expect(found[0]?.hint.bundleHash).toBe(LENDING_V3_BUNDLE_HASH);
+    const matches: Array<(typeof LENDING_ACTIONS)[number]> = [];
+    for (const action of LENDING_ACTIONS) {
+      if (found[0]!.hint.actionTag === actionTag(found[0]!.hint.bundleHash, action)) {
+        matches.push(action);
+      }
+    }
+    expect(matches).toHaveLength(1);
+    observations.push({
+      txid,
+      action: matches[0]!,
+      markerOutputIndex: found[0]!.output.n,
+      outputCount: transaction.vout.length,
+    });
+  }
+  return observations;
+}
+
+function countActions(
+  observations: ActionHintObservation[],
+): Record<(typeof LENDING_ACTIONS)[number], number> {
+  const counts = Object.fromEntries(LENDING_ACTIONS.map((action) => [action, 0])) as Record<
+    (typeof LENDING_ACTIONS)[number],
+    number
+  >;
+  for (const observation of observations) counts[observation.action] += 1;
+  return counts;
+}
+
+function actionHintFromScript(
+  scriptHex: string,
+): { bundleHash: string; actionTag: string } | null {
+  if (!/^(?:[0-9a-f]{2})+$/i.test(scriptHex)) return null;
+  const bytes = Buffer.from(scriptHex, "hex");
+  if (bytes[0] !== 0x6a) return null;
+  let cursor = 1;
+  while (cursor < bytes.length) {
+    const opcode = bytes[cursor];
+    if (opcode === undefined || opcode > 0x4b) return null;
+    const start = cursor + 1;
+    const end = start + opcode;
+    if (end > bytes.length) return null;
+    const payload = bytes.subarray(start, end).toString("hex");
+    if (payload.length === 106 && payload.startsWith("54584d4601")) {
+      return {
+        bundleHash: `sha256:${payload.slice(10, 74)}`,
+        actionTag: payload.slice(74),
+      };
+    }
+    cursor = end;
+  }
+  return null;
+}
+
+function actionTag(bundleHash: string, action: string): string {
+  const tag = createHash("sha256").update("tx-manifest/action/v1").digest();
+  return createHash("sha256")
+    .update(tag)
+    .update(tag)
+    .update(Buffer.from(bundleHash.slice("sha256:".length), "hex"))
+    .update(action, "utf8")
+    .digest("hex")
+    .slice(0, 32);
+}
 
 async function launchExtensionContext(): Promise<BrowserContext> {
   return chromium.launchPersistentContext("", {
@@ -282,6 +452,93 @@ async function seedRegtestWallet(
   );
   await extensionPage.close();
   return result.address;
+}
+
+async function walletTransactions(
+  context: BrowserContext,
+  extensionId: string,
+): Promise<WalletHistoryRecord[]> {
+  const extensionPage = await context.newPage();
+  await extensionPage.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+  const result = await extensionPage.evaluate(async () => {
+    const extension = globalThis as typeof globalThis & {
+      chrome: {
+        runtime: {
+          sendMessage(message: unknown): Promise<{
+            ok: boolean;
+            value?: unknown;
+            error?: string;
+          }>;
+        };
+      };
+    };
+    const send = async (message: unknown) => {
+      const reply = await extension.chrome.runtime.sendMessage(message);
+      if (!reply.ok) throw new Error(reply.error ?? "Apogee request failed");
+      return reply.value;
+    };
+    await send({ type: "wallet/sync" });
+    return await send({ type: "wallet/getTransactions" }) as WalletHistoryRecord[];
+  });
+  await extensionPage.close();
+  return result;
+}
+
+async function restoreAndReadTransactions(
+  context: BrowserContext,
+  extensionId: string,
+  mnemonic: string,
+  role: string,
+): Promise<WalletHistoryRecord[]> {
+  const extensionPage = await context.newPage();
+  await extensionPage.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+  const result = await extensionPage.evaluate(
+    async ({ mnemonic, esploraUrl, role }) => {
+      const extension = globalThis as typeof globalThis & {
+        chrome: {
+          runtime: {
+            sendMessage(message: unknown): Promise<{
+              ok: boolean;
+              value?: unknown;
+              error?: string;
+            }>;
+          };
+        };
+      };
+      const send = async (message: unknown) => {
+        const reply = await extension.chrome.runtime.sendMessage(message);
+        if (!reply.ok) throw new Error(reply.error ?? "Apogee request failed");
+        return reply.value;
+      };
+      await send({
+        type: "wallet/restore",
+        password: "lending-regtest-password",
+        mnemonic,
+        label: `Lending regtest ${role}`,
+        network: "regtest",
+        replace: true,
+      });
+      await send({ type: "wallet/setChainServer", network: "regtest", url: esploraUrl });
+      await send({ type: "wallet/sync" });
+      return await send({ type: "wallet/getTransactions" }) as WalletHistoryRecord[];
+    },
+    { mnemonic, esploraUrl: ESPLORA_URL, role },
+  );
+  await extensionPage.close();
+  return result;
+}
+
+async function expectWalletHistoryAction(
+  context: BrowserContext,
+  extensionId: string,
+  actionLabel: string,
+): Promise<void> {
+  const extensionPage = await context.newPage();
+  await extensionPage.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+  await expect(extensionPage.getByText(actionLabel, { exact: true }).first()).toBeVisible({
+    timeout: 60_000,
+  });
+  await extensionPage.close();
 }
 
 function approvalPage(context: BrowserContext) {

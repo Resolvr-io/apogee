@@ -167,6 +167,7 @@ describe("AcceptOffer preparation", () => {
       { script_pub_key: "0014aa", amount: "1" },
       { script_pub_key: "0014bb", amount: "50" },
       { script_pub_key: "0014cc", amount: "695" },
+      { script_pub_key: expect.stringMatching(/^6a35/), amount: "0" },
     ]);
     expect(finalizations.map(({ input_index }) => input_index)).toEqual([0, 1]);
     expect(prepared.planDigest).toMatch(/^sha256:[0-9a-f]{64}$/);

@@ -157,10 +157,15 @@ describe("new lending action preparation", () => {
     expect(buildSpec?.inputs).toHaveLength(3);
     expect(buildSpec?.inputs[1].issuance?.asset_amount).toBe("1");
     expect(buildSpec?.inputs[2].issuance?.asset_amount).toBe("1");
-    expect(buildSpec?.outputs.at(-1)).toMatchObject({
+    expect(buildSpec?.outputs.at(-2)).toMatchObject({
       asset: POLICY,
       amount: "500",
       blinder_index: 2,
+    });
+    expect(buildSpec?.outputs.at(-1)).toMatchObject({
+      script_pub_key: expect.stringMatching(/^6a35/),
+      asset: POLICY,
+      amount: "0",
     });
     expect(prepared.review).toMatchObject({ collateralChange: "500", feeChange: "0" });
     expect(finalizations.map(spec => spec.input_index)).toEqual([1]);

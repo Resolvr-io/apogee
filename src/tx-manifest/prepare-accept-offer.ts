@@ -1,4 +1,5 @@
 import { taggedCanonicalJsonHash } from "./bundle";
+import { trustedTxManifestActionHintScript } from "./registry";
 import {
   compileLendingV3AcceptOfferCovenants,
   type CovenantNetwork,
@@ -152,6 +153,11 @@ export async function prepareLendingV3AcceptOffer(
       ),
     );
   }
+  outputs.push({
+    script_pub_key: await trustedTxManifestActionHintScript(plan.bundleHash, plan.action),
+    asset: snapshot.policyAssetId,
+    amount: "0",
+  });
 
   const inputs = [
     psetInput(snapshot.pendingOffer),

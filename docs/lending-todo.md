@@ -84,6 +84,18 @@ event-discovered provider.
 
 ## Wallet and indexer integration
 
+- [x] Promote the successful TX Manifest on-chain action-hint prototype into
+  verified transaction-history annotations.
+  - [x] Keep the dedicated position-independent OP_RETURN placement validated across
+    all eight lifecycle actions in `docs/tx-manifest-action-hint-spike.md`.
+  - [x] Add an explicit trusted-registry opt-in instead of injecting outputs into
+    arbitrary manifests or changing the dapp-facing bundle identity.
+  - [x] Scan every OP_RETURN datum in LWK-discovered wallet transactions, resolve the
+    vendored bundle/action, and verify action postconditions before labeling it.
+  - [x] Preserve the mnemonic replacement/restoration coverage in the regtest suite.
+- [ ] Recover counterparty-only contract transitions as a separate discovery
+  feature; an action marker does not make those transactions seed-discoverable.
+
 - [ ] Add native indexer support for rotating wallet identities.
   - Replace client-side per-script querying and aggregation with a privacy-reviewed
     portfolio discovery design.

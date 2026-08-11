@@ -7,11 +7,21 @@
  * and surjection proof live later in the output-witness vector and are therefore
  * deliberately excluded here.
  */
-export function extractElementsTxOut(transaction: Uint8Array, vout: number): Uint8Array {
-  if (!Number.isSafeInteger(vout) || vout < 0) {
-    throw new Error("invalid Elements output index");
-  }
+export type ElementsTransactionOutput = {
+  serialized: Uint8Array;
+  scriptPubKey: Uint8Array;
+  explicitAsset: boolean;
+  explicitValue: bigint | null;
+  nullNonce: boolean;
+};
 
+export type ElementsTransactionShape = {
+  inputCount: number;
+  outputs: ElementsTransactionOutput[];
+};
+
+/** Inspect the non-witness transaction shape needed by trusted history decoders. */
+export function inspectElementsTransaction(transaction: Uint8Array): ElementsTransactionShape {
   const cursor = new Cursor(transaction);
   cursor.skip(4, "transaction version");
   const witnessFlag = cursor.byte("witness flag");
@@ -23,20 +33,29 @@ export function extractElementsTxOut(transaction: Uint8Array, vout: number): Uin
   for (let index = 0; index < inputCount; index += 1) skipInput(cursor, index);
 
   const outputCount = cursor.compactSize("output count");
-  if (vout >= outputCount) throw new Error("Elements output index is out of range");
-
-  let selected: Uint8Array | null = null;
+  const outputs: ElementsTransactionOutput[] = [];
   for (let index = 0; index < outputCount; index += 1) {
     const start = cursor.offset;
-    skipTxOut(cursor, index);
-    if (index === vout) selected = transaction.slice(start, cursor.offset);
+    const output = readTxOut(cursor, index);
+    outputs.push({
+      ...output,
+      serialized: transaction.slice(start, cursor.offset),
+    });
   }
 
   // Lock time follows the output vector. Output witnesses, when present, come
-  // after it and are intentionally not parsed or included in the returned slice.
+  // after it and are intentionally not parsed.
   cursor.skip(4, "transaction lock time");
-  if (!selected) throw new Error("Elements output was not found");
-  return selected;
+  return { inputCount, outputs };
+}
+
+export function extractElementsTxOut(transaction: Uint8Array, vout: number): Uint8Array {
+  if (!Number.isSafeInteger(vout) || vout < 0) {
+    throw new Error("invalid Elements output index");
+  }
+  const output = inspectElementsTransaction(transaction).outputs[vout];
+  if (!output) throw new Error("Elements output index is out of range");
+  return output.serialized;
 }
 
 function skipInput(cursor: Cursor, index: number): void {
@@ -55,43 +74,54 @@ function skipInput(cursor: Cursor, index: number): void {
   }
 }
 
-function skipTxOut(cursor: Cursor, index: number): void {
-  skipConfidentialAsset(cursor, `output ${index} asset`);
-  skipConfidentialValue(cursor, `output ${index} value`);
-  skipConfidentialNonce(cursor, `output ${index} nonce`);
-  cursor.varBytes(`output ${index} scriptPubKey`);
+function readTxOut(
+  cursor: Cursor,
+  index: number,
+): Omit<ElementsTransactionOutput, "serialized"> {
+  const assetPrefix = skipConfidentialAsset(cursor, `output ${index} asset`);
+  const value = readConfidentialValue(cursor, `output ${index} value`);
+  const noncePrefix = skipConfidentialNonce(cursor, `output ${index} nonce`);
+  return {
+    scriptPubKey: cursor.varBytes(`output ${index} scriptPubKey`),
+    explicitAsset: assetPrefix === 0x01,
+    explicitValue: value,
+    nullNonce: noncePrefix === 0x00,
+  };
 }
 
-function skipConfidentialAsset(cursor: Cursor, label: string): void {
+function skipConfidentialAsset(cursor: Cursor, label: string): number {
   const prefix = cursor.byte(`${label} prefix`);
-  if (prefix === 0x00) return;
+  if (prefix === 0x00) return prefix;
   if (prefix === 0x01 || prefix === 0x0a || prefix === 0x0b) {
     cursor.skip(32, label);
-    return;
+    return prefix;
   }
   throw new Error(`invalid confidential asset prefix in ${label}`);
 }
 
 function skipConfidentialValue(cursor: Cursor, label: string): void {
+  readConfidentialValue(cursor, label);
+}
+
+function readConfidentialValue(cursor: Cursor, label: string): bigint | null {
   const prefix = cursor.byte(`${label} prefix`);
-  if (prefix === 0x00) return;
+  if (prefix === 0x00) return null;
   if (prefix === 0x01) {
-    cursor.skip(8, label);
-    return;
+    return cursor.u64be(label);
   }
   if (prefix === 0x08 || prefix === 0x09) {
     cursor.skip(32, label);
-    return;
+    return null;
   }
   throw new Error(`invalid confidential value prefix in ${label}`);
 }
 
-function skipConfidentialNonce(cursor: Cursor, label: string): void {
+function skipConfidentialNonce(cursor: Cursor, label: string): number {
   const prefix = cursor.byte(`${label} prefix`);
-  if (prefix === 0x00) return;
+  if (prefix === 0x00) return prefix;
   if (prefix === 0x01 || prefix === 0x02 || prefix === 0x03) {
     cursor.skip(32, label);
-    return;
+    return prefix;
   }
   throw new Error(`invalid confidential nonce prefix in ${label}`);
 }
@@ -115,6 +145,13 @@ class Cursor {
       (this.bytes[this.offset + 3] << 24);
     this.offset += 4;
     return value >>> 0;
+  }
+
+  u64be(label: string): bigint {
+    const bytes = this.take(8, label);
+    let value = 0n;
+    for (const byte of bytes) value = (value << 8n) | BigInt(byte);
+    return value;
   }
 
   compactSize(label: string): number {
@@ -144,14 +181,20 @@ class Cursor {
     return Number(value);
   }
 
-  varBytes(label: string): void {
-    this.skip(this.compactSize(`${label} length`), label);
+  varBytes(label: string): Uint8Array {
+    return this.take(this.compactSize(`${label} length`), label);
+  }
+
+  take(length: number, label: string): Uint8Array {
+    if (!Number.isSafeInteger(length) || length < 0) throw new Error(`invalid length in ${label}`);
+    this.require(length, label);
+    const result = this.bytes.slice(this.offset, this.offset + length);
+    this.offset += length;
+    return result;
   }
 
   skip(length: number, label: string): void {
-    if (!Number.isSafeInteger(length) || length < 0) throw new Error(`invalid length in ${label}`);
-    this.require(length, label);
-    this.offset += length;
+    this.take(length, label);
   }
 
   private require(length: number, label: string): void {

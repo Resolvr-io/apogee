@@ -149,6 +149,7 @@ describe("ClaimLenderVault preparation", () => {
       { script_pub_key: "6a046275726e", asset: LENDER, amount: "1" },
       { script_pub_key: "0014aa", asset: PRINCIPAL, amount: "190", blinder_index: 0 },
       { script_pub_key: "0014bb", asset: POLICY, amount: "695", blinder_index: 2 },
+      { script_pub_key: expect.stringMatching(/^6a35/), asset: POLICY, amount: "0" },
     ]);
     expect(finalization).toMatchObject({
       input_index: 0,

@@ -1,5 +1,6 @@
 import { SIMPLICITY_LENDING_V3_BUNDLE } from "./builtins/simplicity-lending-v3";
 import { taggedCanonicalJsonHash } from "./bundle";
+import { trustedTxManifestActionHintScript } from "./registry";
 import {
   compileLendingV3FinalizedLenderVault,
   type CovenantNetwork,
@@ -107,6 +108,11 @@ export async function prepareLendingV3ClaimLenderVault(
       blinder_index: 2,
     });
   }
+  outputs.push({
+    script_pub_key: await trustedTxManifestActionHintScript(plan.bundleHash, plan.action),
+    asset: snapshot.policyAssetId,
+    amount: "0",
+  });
 
   const buildSpec: TxManifestPsetBuildSpec = {
     inputs,
