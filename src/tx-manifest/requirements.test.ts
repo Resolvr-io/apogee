@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { SIMPLICITY_LENDING_V3_TESTNET_CHAIN } from "./builtins/simplicity-lending-v3";
+import {
+  SIMPLICITY_LENDING_V3_ACCEPT_OFFER,
+  SIMPLICITY_LENDING_V3_CREATE_FACTORY,
+  SIMPLICITY_LENDING_V3_CREATE_OFFER,
+  SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER,
+  SIMPLICITY_LENDING_V3_REPAY_LOAN,
+  SIMPLICITY_LENDING_V3_TESTNET_CHAIN,
+} from "./builtins/simplicity-lending-v3";
 import { SIMPLICITY_LENDING_V3_BUNDLE_HASH } from "./registry";
 import { resolveTxManifestRequirements, type TxManifestInvocation } from "./requirements";
 
@@ -37,6 +44,7 @@ describe("TX Manifest AcceptOffer requirements", () => {
   it("resolves the confirmed testnet offer deterministically", async () => {
     const first = await resolveTxManifestRequirements(invocation());
     const second = await resolveTxManifestRequirements(invocation());
+    if (first.action !== SIMPLICITY_LENDING_V3_ACCEPT_OFFER) throw new Error("wrong plan");
     expect(first).toEqual(second);
     expect(first.intent).toMatchObject({
       actionLabel: "Fund loan offer",
@@ -59,7 +67,7 @@ describe("TX Manifest AcceptOffer requirements", () => {
 
   it("fails closed for actions, chains, fields, and outpoints", async () => {
     const wrongAction = invocation();
-    wrongAction.action = "lending_contract.RepayLoan";
+    wrongAction.action = "lending_contract.NotAnAction";
     await expect(resolveTxManifestRequirements(wrongAction)).rejects.toThrow(/not enabled/);
 
     const wrongChain = invocation();
@@ -73,5 +81,84 @@ describe("TX Manifest AcceptOffer requirements", () => {
     const noOffer = invocation();
     delete noOffer.providedInputs?.pending_offer_in;
     await expect(resolveTxManifestRequirements(noOffer)).rejects.toThrow(/pending_offer_in/);
+  });
+
+  it("resolves Enable borrowing without trusting any dapp-selected input", async () => {
+    const createFactory = invocation();
+    createFactory.requestId = "enable-borrowing";
+    createFactory.action = SIMPLICITY_LENDING_V3_CREATE_FACTORY;
+    createFactory.arguments = {};
+    createFactory.providedInputs = {};
+    const plan = await resolveTxManifestRequirements(createFactory);
+    if (plan.action !== SIMPLICITY_LENDING_V3_CREATE_FACTORY) throw new Error("wrong plan");
+    expect(plan.intent).toEqual({
+      protocolLabel: "Simplicity Lending",
+      actionLabel: "Enable borrowing",
+      issuingUtxosCount: 2,
+      reissuanceFlags: "0",
+    });
+    expect(plan.walletInputs).toEqual([{ id: "factory_issuance_input", assetId: "lbtc" }]);
+  });
+
+  it("keeps dynamically issued borrower and lender NFT ids inside Apogee", async () => {
+    const createOffer = invocation();
+    createOffer.requestId = "create-offer";
+    createOffer.action = SIMPLICITY_LENDING_V3_CREATE_OFFER;
+    const { BORROWER_NFT_ASSET_ID: _borrower, LENDER_NFT_ASSET_ID: _lender, ...arguments_ } =
+      createOffer.arguments;
+    createOffer.arguments = {
+      FACTORY_ASSET_ID: "11".repeat(32),
+      ...arguments_,
+    };
+    createOffer.providedInputs = {
+      factory_auth_in: { txid: "22".repeat(32), vout: 0 },
+      factory_covenant_in: { txid: "22".repeat(32), vout: 1 },
+    };
+    const plan = await resolveTxManifestRequirements(createOffer);
+    if (plan.action !== SIMPLICITY_LENDING_V3_CREATE_OFFER) throw new Error("wrong plan");
+    expect(plan.instance).not.toHaveProperty("BORROWER_NFT_ASSET_ID");
+    expect(plan.instance).not.toHaveProperty("LENDER_NFT_ASSET_ID");
+    expect(plan.intent).toMatchObject({
+      actionLabel: "Create borrow offer",
+      factoryAssetId: "11".repeat(32),
+      totalDebt: "200",
+    });
+
+    createOffer.arguments.BORROWER_NFT_ASSET_ID = "33".repeat(32);
+    await expect(resolveTxManifestRequirements(createOffer)).rejects.toThrow(
+      /Unknown CreateOffer argument BORROWER_NFT_ASSET_ID/,
+    );
+  });
+
+  it("derives full-repayment settlement values and liquidation authorization", async () => {
+    const repay = invocation();
+    repay.action = SIMPLICITY_LENDING_V3_REPAY_LOAN;
+    repay.providedInputs = {
+      borrower_nft_in: { txid: "44".repeat(32), vout: 0 },
+      active_offer_in: { txid: "55".repeat(32), vout: 0 },
+    };
+    const repayment = await resolveTxManifestRequirements(repay);
+    if (repayment.action !== SIMPLICITY_LENDING_V3_REPAY_LOAN) throw new Error("wrong plan");
+    expect(repayment.intent).toMatchObject({
+      totalDebt: "200",
+      interestAmount: "100",
+      protocolFeeAmount: "10",
+      lenderVaultAmount: "190",
+    });
+
+    const liquidate = invocation();
+    liquidate.action = SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER;
+    liquidate.providedInputs = {
+      lender_nft_in: { txid: "66".repeat(32), vout: 2 },
+      active_offer_in: { txid: "55".repeat(32), vout: 0 },
+    };
+    const liquidation = await resolveTxManifestRequirements(liquidate);
+    if (liquidation.action !== SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER) {
+      throw new Error("wrong plan");
+    }
+    expect(liquidation.walletInputs[0]).toMatchObject({
+      id: "lender_nft_in",
+      outpoint: { txid: "66".repeat(32), vout: 2 },
+    });
   });
 });

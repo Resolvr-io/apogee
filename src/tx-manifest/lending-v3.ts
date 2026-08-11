@@ -28,7 +28,13 @@ export type LendingV3AcceptOfferCovenants = {
   pendingOffer: TxManifestCovenantCommitments;
   activeOffer: TxManifestCovenantCommitments;
   lenderNftAuthorization: TxManifestCovenantCommitments;
+  principalArguments: Record<string, SimplicityArgument>;
   lendingArguments: Record<string, SimplicityArgument>;
+};
+
+export type LendingV3IssuanceFactory = {
+  covenant: TxManifestCovenantCommitments;
+  arguments: Record<string, SimplicityArgument>;
 };
 
 export type LendingV3FinalizedLenderVault = {
@@ -93,13 +99,12 @@ export async function compileLendingV3AcceptOfferCovenants(
       ),
     ),
   );
-  const principalOutput = await compile(
-    compileSpec(sources["asset_auth.simf"], {
-      ASSET_ID: assetArgument(instance.BORROWER_NFT_ASSET_ID),
-      ASSET_AMOUNT: argument("1", "u64"),
-      WITH_ASSET_BURN: argument("false", "bool"),
-    }),
-  );
+  const principalArguments = {
+    ASSET_ID: assetArgument(instance.BORROWER_NFT_ASSET_ID),
+    ASSET_AMOUNT: argument("1", "u64"),
+    WITH_ASSET_BURN: argument("false", "bool"),
+  };
+  const principalOutput = await compile(compileSpec(sources["asset_auth.simf"], principalArguments));
   const lendingArguments = {
     COLLATERAL_ASSET_ID: assetArgument(instance.COLLATERAL_ASSET_ID),
     PRINCIPAL_ASSET_ID: assetArgument(instance.PRINCIPAL_ASSET_ID),
@@ -144,7 +149,27 @@ export async function compileLendingV3AcceptOfferCovenants(
     pendingOffer,
     activeOffer,
     lenderNftAuthorization,
+    principalArguments,
     lendingArguments,
+  };
+}
+
+/** Compile the persistent factory shared by Enable borrowing and CreateOffer. */
+export async function compileLendingV3IssuanceFactory(
+  compile: CovenantCompiler = compileTxManifestCovenant,
+): Promise<LendingV3IssuanceFactory> {
+  const arguments_ = {
+    ISSUING_UTXOS_COUNT: argument("2", "u8"),
+    REISSUANCE_FLAGS: argument("0", "u64"),
+  };
+  return {
+    covenant: await compile(
+      compileSpec(
+        SIMPLICITY_LENDING_V3_BUNDLE.sources["issuance_factory.simf"],
+        arguments_,
+      ),
+    ),
+    arguments: arguments_,
   };
 }
 

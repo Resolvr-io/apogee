@@ -9,7 +9,7 @@ const TEST_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon a
 const MAINNET_POLICY_ASSET =
   "bip122:1466275836220db2944ca059a3a10ef6/elip144:6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d";
 const LENDING_V3_BUNDLE_HASH =
-  "sha256:0a57b34e20a46f0a3ec60d6be4904eebc9d3807bb6a2fbab0c66abdcdc05af8e";
+  "sha256:debdae89777fdd21fec2d763efe028876f267ff214aca9ddf9b3735d7657be15";
 
 test.describe.serial("Liquid browser provider", () => {
   let context: BrowserContext;
@@ -71,8 +71,14 @@ test.describe.serial("Liquid browser provider", () => {
       status: "builtin",
       protocol: { name: "simplicity-lending", version: "v3" },
       supportedActions: [
+        "issuance_factory.CreateFactory",
+        "lending_contract.CreateOffer",
         "lending_contract.AcceptOffer",
+        "lending_contract.ClaimPrincipal",
+        "lending_contract.RepayLoan",
         "lending_contract.ClaimLenderVault",
+        "lending_contract.CancelOffer",
+        "lending_contract.LiquidateOffer",
       ],
     });
 

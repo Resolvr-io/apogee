@@ -5,6 +5,7 @@ export const build_explicit_pset_json: (a: number, b: number, c: number) => void
 export const build_manifest_pset_json: (a: number, b: number, c: number) => void;
 export const compile_cmr_from_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const compile_covenant_json: (a: number, b: number, c: number) => void;
+export const derive_issuance_asset_json: (a: number, b: number, c: number) => void;
 export const dry_run_covenant_json: (a: number, b: number, c: number) => void;
 export const execute_core_self_test: (a: number) => void;
 export const finalize_covenant_pset_json: (a: number, b: number, c: number) => void;

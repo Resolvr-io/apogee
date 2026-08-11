@@ -53,6 +53,10 @@ export type TxManifestPsetBuildSpec = {
     asset_blinding_factor?: string;
     value_blinding_factor?: string;
     sequence?: number;
+    issuance?: {
+      contract_hash: string;
+      asset_amount: string;
+    };
   }>;
   outputs: Array<{
     script_pub_key: string;
@@ -62,6 +66,7 @@ export type TxManifestPsetBuildSpec = {
     blinder_index?: number;
   }>;
   fee: { asset: string; amount: string };
+  locktime?: number;
 };
 
 export type TxManifestCovenantFinalizeSpec = Omit<
@@ -114,6 +119,15 @@ export async function inspectTxManifestAddress(
   return JSON.parse(
     runtime.inspect_address_json(JSON.stringify({ address, network })),
   ) as TxManifestAddressInspection;
+}
+
+export async function deriveTxManifestIssuanceAsset(spec: {
+  txid: string;
+  vout: number;
+  contract_hash: string;
+}): Promise<string> {
+  const runtime = await loadRuntime();
+  return runtime.derive_issuance_asset_json(JSON.stringify(spec));
 }
 
 export async function dryRunTxManifestCovenant(

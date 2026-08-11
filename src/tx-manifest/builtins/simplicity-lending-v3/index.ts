@@ -44,6 +44,24 @@ export const SIMPLICITY_LENDING_V3_ACCEPT_OFFER =
 export const SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT =
   "lending_contract.ClaimLenderVault" as const;
 
+export const SIMPLICITY_LENDING_V3_CREATE_FACTORY =
+  "issuance_factory.CreateFactory" as const;
+
+export const SIMPLICITY_LENDING_V3_CREATE_OFFER =
+  "lending_contract.CreateOffer" as const;
+
+export const SIMPLICITY_LENDING_V3_CANCEL_OFFER =
+  "lending_contract.CancelOffer" as const;
+
+export const SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL =
+  "lending_contract.ClaimPrincipal" as const;
+
+export const SIMPLICITY_LENDING_V3_REPAY_LOAN =
+  "lending_contract.RepayLoan" as const;
+
+export const SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER =
+  "lending_contract.LiquidateOffer" as const;
+
 export const SIMPLICITY_LENDING_V3_TESTNET_CHAIN =
   "bip122:a771da8e52ee6ad581ed1e9a99825e5b" as const;
 

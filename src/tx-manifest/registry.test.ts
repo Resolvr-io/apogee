@@ -22,7 +22,13 @@ describe("trusted TX Manifest registry", () => {
       supported: true,
       status: "builtin",
       supportedActions: [
+        "issuance_factory.CreateFactory",
+        "lending_contract.CreateOffer",
         "lending_contract.AcceptOffer",
+        "lending_contract.ClaimPrincipal",
+        "lending_contract.RepayLoan",
+        "lending_contract.CancelOffer",
+        "lending_contract.LiquidateOffer",
         "lending_contract.ClaimLenderVault",
       ],
     });

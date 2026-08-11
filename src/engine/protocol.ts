@@ -12,6 +12,12 @@ import type { TxManifestBundleHash } from "@/tx-manifest/registry";
 import type {
   AcceptOfferRequirementPlan,
   ClaimLenderVaultRequirementPlan,
+  CreateFactoryRequirementPlan,
+  CreateOfferRequirementPlan,
+  CancelOfferRequirementPlan,
+  ClaimPrincipalRequirementPlan,
+  LiquidateOfferRequirementPlan,
+  RepayLoanRequirementPlan,
   TxManifestInvocation,
 } from "@/tx-manifest/requirements";
 import type { AcceptOfferChainWalletSnapshot } from "@/tx-manifest/prepare-accept-offer";
@@ -21,6 +27,7 @@ import type {
   ClaimLenderVaultVerifiedChainSnapshot,
   HostedPreparedAcceptOfferExecution,
   HostedPreparedClaimLenderVaultExecution,
+  NewLendingVerifiedChainSnapshot,
 } from "@/tx-manifest/wallet-host";
 import type {
   TxManifestCovenantCompileSpec,
@@ -87,6 +94,20 @@ export type EngineRequest =
       parentTransactions: string[];
       genesisHash: string;
       vault: HostedPreparedClaimLenderVaultExecution["vault"];
+    }
+  | {
+      kind: "prepareLendingV3NewActionWithWallet";
+      descriptor: string;
+      network: LiquidNetwork;
+      assetContractDomain: string;
+      plan:
+        | CreateFactoryRequirementPlan
+        | CreateOfferRequirementPlan
+        | ClaimPrincipalRequirementPlan
+        | CancelOfferRequirementPlan
+        | RepayLoanRequirementPlan
+        | LiquidateOfferRequirementPlan;
+      chainSnapshot: NewLendingVerifiedChainSnapshot;
     }
   | { kind: "generateMnemonic"; words?: 12 | 24 }
   | { kind: "deriveWallet"; mnemonic: string; network: LiquidNetwork }
@@ -324,6 +345,25 @@ interface TxManifestApprovalReviewBaseDTO {
 
 export type TxManifestApprovalReviewDTO =
   | (TxManifestApprovalReviewBaseDTO & {
+      kind: "createFactory";
+      factoryAssetId: string;
+      fundingAmount: string;
+    })
+  | (TxManifestApprovalReviewBaseDTO & {
+      kind: "createOffer";
+      factoryAssetId: string;
+      borrowerNftAssetId: string;
+      lenderNftAssetId: string;
+      principalAssetId: string;
+      principalAmount: string;
+      collateralAssetId: string;
+      collateralAmount: string;
+      interestRateBasisPoints: string;
+      totalDebt: string;
+      expirationHeight: number;
+      collateralChange: string;
+    })
+  | (TxManifestApprovalReviewBaseDTO & {
       kind: "acceptOffer";
       principalAssetId: string;
       principalAmount: string;
@@ -342,6 +382,21 @@ export type TxManifestApprovalReviewDTO =
       interestAmount: string;
       protocolFeeAmount: string;
       lenderNftAssetId: string;
+    })
+  | (TxManifestApprovalReviewBaseDTO & {
+      kind: "claimPrincipal" | "cancelOffer" | "repayLoan" | "liquidateOffer";
+      principalAssetId: string;
+      principalAmount: string;
+      collateralAssetId: string;
+      collateralAmount: string;
+      borrowerNftAssetId: string;
+      lenderNftAssetId: string;
+      expirationHeight: number;
+      totalDebt?: string;
+      interestAmount?: string;
+      protocolFeeAmount?: string;
+      lenderVaultAmount?: string;
+      principalChange: string;
     });
 
 export type ProviderPsetAnalysisFailureReason =

@@ -469,7 +469,15 @@ function TxManifestReview({
         <Row label="Request" value={review.requestId} title={review.requestId} mono wrap />
       </dl>
 
-      {review.kind === "acceptOffer" ? (
+      {review.kind === "createFactory" ? (
+        <ReviewSection title="Borrower setup">
+          <ReviewItem>
+            <Row label="Factory asset" value={review.factoryAssetId} title={review.factoryAssetId} mono wrap />
+            <Row label="Funding input" value={`${formatBaseUnits(review.fundingAmount)} sats`} amount />
+            <Row label="Factory auth NFT" value="1 to this wallet" strong />
+          </ReviewItem>
+        </ReviewSection>
+      ) : review.kind === "acceptOffer" || review.kind === "createOffer" ? (
         <ReviewSection title="Loan terms">
           <ReviewItem>
             <Row
@@ -506,7 +514,7 @@ function TxManifestReview({
             <Row label="Expires at height" value={String(review.expirationHeight)} mono />
           </ReviewItem>
         </ReviewSection>
-      ) : (
+      ) : review.kind === "claimLenderVault" ? (
         <ReviewSection title="Repayment collected">
           <ReviewItem>
             <Row
@@ -546,6 +554,18 @@ function TxManifestReview({
             />
           </ReviewItem>
         </ReviewSection>
+      ) : (
+        <ReviewSection title={review.kind === "claimPrincipal" ? "Funds claimed" : review.kind === "cancelOffer" ? "Offer cancelled" : review.kind === "repayLoan" ? "Loan repaid" : "Expired loan liquidated"}>
+          <ReviewItem>
+            <Row label="Principal" value={`${formatBaseUnits(review.principalAmount)} base units`} amount />
+            <Row label="Principal asset" value={review.principalAssetId} title={review.principalAssetId} mono wrap />
+            <Row label="Collateral" value={`${formatBaseUnits(review.collateralAmount)} base units`} amount strong />
+            <Row label="Collateral asset" value={review.collateralAssetId} title={review.collateralAssetId} mono wrap />
+            {review.totalDebt !== undefined && <Row label="Total debt" value={`${formatBaseUnits(review.totalDebt)} base units`} amount />}
+            {review.protocolFeeAmount !== undefined && <Row label="Protocol fee" value={`${formatBaseUnits(review.protocolFeeAmount)} base units`} amount />}
+            <Row label="Expiration height" value={String(review.expirationHeight)} mono />
+          </ReviewItem>
+        </ReviewSection>
       )}
 
       <ReviewSection title="Wallet effect">
@@ -556,10 +576,17 @@ function TxManifestReview({
             amount
             strong
           />
-          {review.kind === "acceptOffer" && BigInt(review.principalChange) !== 0n && (
+          {"principalChange" in review && BigInt(review.principalChange) !== 0n && (
             <Row
               label="Principal change"
               value={`${formatBaseUnits(review.principalChange)} base units`}
+              amount
+            />
+          )}
+          {review.kind === "createOffer" && BigInt(review.collateralChange) !== 0n && (
+            <Row
+              label="Collateral change"
+              value={`${formatBaseUnits(review.collateralChange)} base units`}
               amount
             />
           )}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  recoverExplicitWalletInputCandidate,
   selectAcceptOfferWalletInputs,
   selectClaimLenderVaultWalletInputs,
   type AcceptOfferWalletCandidate,
@@ -87,5 +88,38 @@ describe("selectClaimLenderVaultWalletInputs", () => {
         "1000",
       ),
     ).toThrow(/not an unspent coin owned/);
+  });
+
+  it("recovers an explicit NFT only when its verified script belongs to the wallet", () => {
+    const fee = coin("b", 0, POLICY, "1000");
+    const resolvedNft = coin("a", 2, PRINCIPAL, "1");
+    const recovered = recoverExplicitWalletInputCandidate(
+      [fee],
+      { txid: resolvedNft.txid, vout: resolvedNft.vout },
+      resolvedNft,
+      [{ address: resolvedNft.address, scriptPubKey: resolvedNft.scriptPubKey }],
+      resolvedNft.parentTransaction,
+    );
+    expect(
+      selectClaimLenderVaultWalletInputs(
+        recovered,
+        { txid: resolvedNft.txid, vout: resolvedNft.vout },
+        PRINCIPAL,
+        POLICY,
+        "1000",
+      ).lenderNftInput,
+    ).toMatchObject({ txid: resolvedNft.txid, vout: resolvedNft.vout });
+  });
+
+  it("does not recover an explicit NFT for a foreign wallet script", () => {
+    const resolvedNft = coin("a", 2, PRINCIPAL, "1");
+    const recovered = recoverExplicitWalletInputCandidate(
+      [coin("b", 0, POLICY, "1000")],
+      { txid: resolvedNft.txid, vout: resolvedNft.vout },
+      resolvedNft,
+      [{ address: "tlq1foreign", scriptPubKey: "0014" + "44".repeat(20) }],
+      resolvedNft.parentTransaction,
+    );
+    expect(recovered).toHaveLength(1);
   });
 });
