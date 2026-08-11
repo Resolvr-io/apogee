@@ -2458,7 +2458,7 @@ function txManifestExecutionError(error: unknown): LiquidRpcError {
       { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST },
     );
   }
-  if (/no single principal|no distinct L-BTC|not an unspent coin owned|insufficient/i.test(message)) {
+  if (/no single principal|no distinct L-BTC|not an unspent coin owned|insufficient|too fragmented/i.test(message)) {
     return providerError(
       LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
       "The connected wallet has insufficient suitable funds for this manifest action and fee.",

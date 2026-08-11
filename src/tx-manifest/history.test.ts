@@ -92,6 +92,27 @@ describe("TX Manifest history recovery", () => {
     });
   });
 
+  it.each(CASES)("accepts supplemental wallet inputs for $action", async ({
+    action,
+    inputs,
+    scripts,
+  }) => {
+    const marker = await txManifestActionHintScript(SIMPLICITY_LENDING_V3_BUNDLE_HASH, action);
+    await expect(
+      txManifestHistoryAnnotation(transaction(inputs + 2, [...scripts, marker, ""]), true),
+    ).resolves.toMatchObject({ status: "verified", action });
+  });
+
+  it("rejects a marker whose wallet-input count exceeds the construction policy", async () => {
+    const marker = await txManifestActionHintScript(
+      SIMPLICITY_LENDING_V3_BUNDLE_HASH,
+      SIMPLICITY_LENDING_V3_CREATE_FACTORY,
+    );
+    await expect(
+      txManifestHistoryAnnotation(transaction(13, [PAY, PAY, FACTORY_METADATA, marker, ""]), true),
+    ).resolves.toMatchObject({ status: "unverified", reason: "shape-mismatch" });
+  });
+
   it("does not trust a recognized marker without a wallet-owned signed input", async () => {
     const marker = await txManifestActionHintScript(
       SIMPLICITY_LENDING_V3_BUNDLE_HASH,

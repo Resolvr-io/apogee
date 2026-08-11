@@ -22,6 +22,11 @@ Apogee's manifest review prompt, real wallet signatures, broadcast, confirmation
 indexer ingestion, and the resulting lending UI state. The suite never uses
 `window.liquid` or bypasses Apogee to construct a lifecycle transaction.
 
+The wallets are seeded with fragmented L-BTC and principal-asset outputs. The
+scenario asserts that Create Offer, Accept Offer, and Repay Loan each consume
+multiple wallet funding inputs, covering collateral, principal, repayment, and
+fee selection through the production manifest path.
+
 ## Prerequisites
 
 - Node.js 22.18 or newer and pnpm 10.

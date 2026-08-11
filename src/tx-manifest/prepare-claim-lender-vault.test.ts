@@ -96,14 +96,24 @@ function snapshot(compiled = vault()): ClaimLenderVaultChainWalletSnapshot {
       assetId: LENDER,
       amount: "1",
     },
-    feeInput: {
-      txid: "66".repeat(32),
-      vout: 0,
-      txOut: "00",
-      scriptPubKey: "001422",
-      assetId: POLICY,
-      amount: "1000",
-    },
+    feeInputs: [
+      {
+        txid: "66".repeat(32),
+        vout: 0,
+        txOut: "00",
+        scriptPubKey: "001422",
+        assetId: POLICY,
+        amount: "400",
+      },
+      {
+        txid: "67".repeat(32),
+        vout: 1,
+        txOut: "00",
+        scriptPubKey: "001423",
+        assetId: POLICY,
+        amount: "600",
+      },
+    ],
     principalDestination: {
       scriptPubKey: "0014aa",
       blindingPublicKey: `02${"aa".repeat(32)}`,
@@ -144,6 +154,7 @@ describe("ClaimLenderVault preparation", () => {
       { txid: VAULT_TXID, vout: 1 },
       { txid: NFT_TXID, vout: 2 },
       { txid: "66".repeat(32), vout: 0 },
+      { txid: "67".repeat(32), vout: 1 },
     ]);
     expect(buildSpec?.outputs).toMatchObject([
       { script_pub_key: "6a046275726e", asset: LENDER, amount: "1" },

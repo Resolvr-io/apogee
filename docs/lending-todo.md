@@ -108,11 +108,17 @@ event-discovered provider.
 
 ## Transaction construction
 
-- [ ] Replace the one-sufficient-UTXO-per-asset policy with deterministic multi-UTXO
+- [x] Replace the one-sufficient-UTXO-per-asset policy with deterministic multi-UTXO
   coin selection.
-  - Preserve exact approval accounting and stable transaction ordering.
-  - Add dust avoidance and change minimization.
-  - Test fragmented L-BTC, collateral, and principal balances.
+  - Uses exact-match-first, bounded best-fit selection with a 12-input-per-asset
+    limit and stable outpoint tie-breaking.
+  - Preserves exact approval accounting and stable transaction ordering.
+  - Covers fragmented L-BTC, collateral, and principal balances in unit tests and
+    the complete regtest browser lifecycle.
+- [ ] Calibrate and apply a network-aware minimum-change/dust policy. The selector
+  already accepts a minimum-change floor and prefers dust-safe solutions; dynamic
+  fee construction must decide whether an unavoidable policy-asset remainder is
+  change, additional fee, or a preparation failure.
 - [ ] Replace the fixed 1,000-sat fee with dynamic fee estimation.
   - Keep the dapp's maximum-fee constraint authoritative.
   - Rebuild and require reapproval if the estimated fee changes the approved plan.

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  SIMPLICITY_LENDING_V3_CREATE_FACTORY,
   SIMPLICITY_LENDING_V3_CREATE_OFFER,
   SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER,
   SIMPLICITY_LENDING_V3_REPAY_LOAN,
@@ -9,7 +10,7 @@ import type {
   LendingV3AcceptOfferCovenants,
   LendingV3IssuanceFactory,
 } from "./lending-v3";
-import { prepareLendingV3CreateOffer } from "./prepare-create";
+import { prepareLendingV3CreateFactory, prepareLendingV3CreateOffer } from "./prepare-create";
 import { prepareLendingV3BorrowerAction } from "./prepare-lending-action";
 import { SIMPLICITY_LENDING_V3_BUNDLE_HASH } from "./registry";
 import { resolveTxManifestRequirements, type TxManifestInvocation } from "./requirements";
@@ -100,7 +101,53 @@ function input(
 }
 
 describe("new lending action preparation", () => {
-  it("creates an offer with one L-BTC input funding both collateral and fee", async () => {
+  it("keeps the first fragmented fee coin as the factory issuance anchor", async () => {
+    const invocation = baseInvocation(SIMPLICITY_LENDING_V3_CREATE_FACTORY);
+    invocation.arguments = {};
+    const plan = await resolveTxManifestRequirements(invocation);
+    if (plan.action !== SIMPLICITY_LENDING_V3_CREATE_FACTORY) throw new Error("wrong plan");
+    let buildSpec: TxManifestPsetBuildSpec | undefined;
+    const prepared = await prepareLendingV3CreateFactory(
+      plan,
+      {
+        genesisHash: "a771da8e52ee6ad581ed1e9a99825e5b3b7992225534eaa2ae23244fe26ab1c1",
+        tipHeight: 2_601_000,
+        policyAssetId: POLICY,
+        assetContractDomain: "127.0.0.1",
+        fundingInputs: [
+          input("10".repeat(32), 1, "0014aa", POLICY, "400"),
+          input("20".repeat(32), 0, "0014bb", POLICY, "700"),
+        ],
+        explicitWalletDestination: { scriptPubKey: "0014dd" },
+        feeChangeDestination: { scriptPubKey: "0014dd", blindingPublicKey: BLINDING_KEY },
+        fee: "1000",
+      },
+      {
+        compileFactory: async () => factory(),
+        compileLending: async () => covenants(),
+        deriveAsset: async (_domain, outpoint) => ({
+          assetId: FACTORY,
+          contractHash: "ab".repeat(32),
+          outpoint,
+        }),
+        buildPset: async spec => {
+          buildSpec = spec;
+          return "built";
+        },
+        finalizeCovenant: async () => "finalized",
+      },
+    );
+
+    expect(buildSpec?.inputs).toHaveLength(2);
+    expect(buildSpec?.inputs[0]).toMatchObject({
+      txid: "10".repeat(32),
+      issuance: { asset_amount: "2" },
+    });
+    expect(buildSpec?.inputs[1]?.issuance).toBeUndefined();
+    expect(prepared.review).toMatchObject({ fundingAmount: "1100", feeChange: "100" });
+  });
+
+  it("creates an offer with fragmented L-BTC inputs funding collateral and fee", async () => {
     const invocation = baseInvocation(SIMPLICITY_LENDING_V3_CREATE_OFFER);
     invocation.arguments = {
       FACTORY_ASSET_ID: FACTORY,
@@ -118,7 +165,10 @@ describe("new lending action preparation", () => {
     };
     const plan = await resolveTxManifestRequirements(invocation);
     if (plan.action !== SIMPLICITY_LENDING_V3_CREATE_OFFER) throw new Error("wrong plan");
-    const collateralAndFee = input("33".repeat(32), 4, "0014cc", POLICY, "2000");
+    const collateralAndFee = [
+      input("33".repeat(32), 4, "0014cc", POLICY, "800"),
+      input("34".repeat(32), 1, "0014cd", POLICY, "1200"),
+    ];
     let buildSpec: TxManifestPsetBuildSpec | undefined;
     const finalizations: TxManifestCovenantFinalizeSpec[] = [];
     const prepared = await prepareLendingV3CreateOffer(
@@ -130,8 +180,8 @@ describe("new lending action preparation", () => {
         assetContractDomain: "127.0.0.1",
         factoryAuthInput: input("22".repeat(32), 0, "0014aa", FACTORY, "1"),
         factoryCovenant: input("22".repeat(32), 1, factory().covenant.script_pub_key, FACTORY, "1"),
-        collateralInput: collateralAndFee,
-        feeInput: collateralAndFee,
+        collateralInputs: collateralAndFee,
+        feeInputs: [],
         explicitWalletDestination: { scriptPubKey: "0014dd" },
         changeDestination: { scriptPubKey: "0014dd", blindingPublicKey: BLINDING_KEY },
         fee: "1000",
@@ -154,9 +204,10 @@ describe("new lending action preparation", () => {
       },
     );
 
-    expect(buildSpec?.inputs).toHaveLength(3);
+    expect(buildSpec?.inputs).toHaveLength(4);
     expect(buildSpec?.inputs[1].issuance?.asset_amount).toBe("1");
     expect(buildSpec?.inputs[2].issuance?.asset_amount).toBe("1");
+    expect(buildSpec?.inputs[3].issuance).toBeUndefined();
     expect(buildSpec?.outputs.at(-2)).toMatchObject({
       asset: POLICY,
       amount: "500",
@@ -171,7 +222,7 @@ describe("new lending action preparation", () => {
     expect(finalizations.map(spec => spec.input_index)).toEqual([1]);
   });
 
-  it("repays an L-BTC-denominated loan with one combined repayment and fee input", async () => {
+  it("repays an L-BTC-denominated loan with fragmented repayment and fee inputs", async () => {
     const invocation = baseInvocation(SIMPLICITY_LENDING_V3_REPAY_LOAN);
     invocation.providedInputs = {
       borrower_nft_in: { txid: "44".repeat(32), vout: 0 },
@@ -179,7 +230,10 @@ describe("new lending action preparation", () => {
     };
     const plan = await resolveTxManifestRequirements(invocation);
     if (plan.action !== SIMPLICITY_LENDING_V3_REPAY_LOAN) throw new Error("wrong plan");
-    const repaymentAndFee = input("66".repeat(32), 2, "0014cc", POLICY, "500");
+    const repaymentAndFee = [
+      input("66".repeat(32), 2, "0014cc", POLICY, "200"),
+      input("67".repeat(32), 0, "0014cd", POLICY, "300"),
+    ];
     let buildSpec: TxManifestPsetBuildSpec | undefined;
     const finalizations: TxManifestCovenantFinalizeSpec[] = [];
     const prepared = await prepareLendingV3BorrowerAction(
@@ -191,8 +245,8 @@ describe("new lending action preparation", () => {
         policyAssetId: POLICY,
         activeOffer: input(OFFER_TXID, 0, covenants().activeOffer.script_pub_key, COLLATERAL, "1000"),
         borrowerNftInput: input("44".repeat(32), 0, "0014aa", BORROWER, "1"),
-        repaymentInput: repaymentAndFee,
-        feeInput: repaymentAndFee,
+        repaymentInputs: repaymentAndFee,
+        feeInputs: [],
         walletDestination: { scriptPubKey: "0014dd", blindingPublicKey: BLINDING_KEY },
         explicitWalletDestination: { scriptPubKey: "0014dd" },
         principalChangeDestination: { scriptPubKey: "0014dd", blindingPublicKey: BLINDING_KEY },
@@ -212,7 +266,7 @@ describe("new lending action preparation", () => {
       },
     );
 
-    expect(buildSpec?.inputs).toHaveLength(3);
+    expect(buildSpec?.inputs).toHaveLength(4);
     expect(buildSpec?.outputs[3]).toMatchObject({ asset: COLLATERAL, blinder_index: 1 });
     expect(buildSpec?.outputs[4]).toMatchObject({ asset: POLICY, amount: "200", blinder_index: 2 });
     expect(prepared.review).toMatchObject({ principalChange: "200", feeChange: "0" });
@@ -238,7 +292,10 @@ describe("new lending action preparation", () => {
         policyAssetId: POLICY,
         activeOffer: input(OFFER_TXID, 0, covenants().activeOffer.script_pub_key, COLLATERAL, "1000"),
         lenderNftInput: input("99".repeat(32), 2, "0014aa", LENDER, "1"),
-        feeInput: input("aa".repeat(32), 3, "0014bb", POLICY, "1100"),
+        feeInputs: [
+          input("aa".repeat(32), 3, "0014bb", POLICY, "500"),
+          input("ab".repeat(32), 1, "0014bc", POLICY, "600"),
+        ],
         walletDestination: { scriptPubKey: "0014dd", blindingPublicKey: BLINDING_KEY },
         explicitWalletDestination: { scriptPubKey: "0014dd" },
         feeChangeDestination: { scriptPubKey: "0014dd", blindingPublicKey: BLINDING_KEY },
@@ -258,6 +315,7 @@ describe("new lending action preparation", () => {
     );
 
     expect(buildSpec?.locktime).toBe(2_604_140);
+    expect(buildSpec?.inputs).toHaveLength(4);
     expect(buildSpec?.inputs[0].sequence).toBe(0xffff_fffe);
     expect(finalizations[0]?.extra_leaf_payloads[0]).toBe(`${"00".repeat(31)}01`);
   });

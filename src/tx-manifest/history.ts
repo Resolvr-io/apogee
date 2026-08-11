@@ -21,6 +21,7 @@ import {
   type ElementsTransactionOutput,
   type ElementsTransactionShape,
 } from "@/engine/elements-txout";
+import { MAX_MANIFEST_WALLET_INPUTS_PER_ASSET } from "./coin-selection-policy";
 
 export type TxManifestHistoryAnnotation =
   | {
@@ -151,10 +152,13 @@ function lendingActionShapeMatches(action: string, shape: ElementsTransactionSha
   const scripts = shape.outputs.map((output) => hex(output.scriptPubKey));
   const nonData = (index: number) => Boolean(scripts[index]) && !scripts[index]!.startsWith("6a");
   const burn = (index: number) => scripts[index] === "6a046275726e";
+  const inputCountBetween = (minimum: number, fixedPrefix: number, walletAssetPools: number) =>
+    shape.inputCount >= minimum &&
+    shape.inputCount <= fixedPrefix + walletAssetPools * MAX_MANIFEST_WALLET_INPUTS_PER_ASSET;
 
   if (action === SIMPLICITY_LENDING_V3_CREATE_FACTORY) {
     return (
-      shape.inputCount === 1 &&
+      inputCountBetween(1, 0, 1) &&
       scripts.length >= 5 &&
       nonData(0) &&
       nonData(1) &&
@@ -163,34 +167,34 @@ function lendingActionShapeMatches(action: string, shape: ElementsTransactionSha
   }
   if (action === SIMPLICITY_LENDING_V3_CREATE_OFFER) {
     return (
-      (shape.inputCount === 3 || shape.inputCount === 4) &&
+      inputCountBetween(3, 2, 2) &&
       scripts.length >= 8 &&
       [0, 1, 2, 3, 5].every(nonData) &&
       /^6a32a9b4ade7[0-9a-f]{92}$/.test(scripts[4] ?? "")
     );
   }
   if (action === SIMPLICITY_LENDING_V3_ACCEPT_OFFER) {
-    return shape.inputCount === 4 && scripts.length >= 5 && [0, 1, 2].every(nonData);
+    return inputCountBetween(3, 2, 2) && scripts.length >= 5 && [0, 1, 2].every(nonData);
   }
   if (action === SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL) {
-    return shape.inputCount === 3 && scripts.length >= 4 && [0, 1].every(nonData);
+    return inputCountBetween(3, 2, 1) && scripts.length >= 4 && [0, 1].every(nonData);
   }
   if (action === SIMPLICITY_LENDING_V3_CANCEL_OFFER) {
-    return shape.inputCount === 4 && scripts.length >= 5 && burn(0) && burn(1) && nonData(2);
+    return inputCountBetween(4, 3, 1) && scripts.length >= 5 && burn(0) && burn(1) && nonData(2);
   }
   if (action === SIMPLICITY_LENDING_V3_REPAY_LOAN) {
     return (
-      (shape.inputCount === 3 || shape.inputCount === 4) &&
+      inputCountBetween(3, 2, 2) &&
       scripts.length >= 6 &&
       burn(0) &&
       [1, 2, 3].every(nonData)
     );
   }
   if (action === SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER) {
-    return shape.inputCount === 3 && scripts.length >= 4 && burn(0) && nonData(1);
+    return inputCountBetween(3, 2, 1) && scripts.length >= 4 && burn(0) && nonData(1);
   }
   if (action === SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT) {
-    return shape.inputCount === 3 && scripts.length >= 4 && burn(0) && nonData(1);
+    return inputCountBetween(3, 2, 1) && scripts.length >= 4 && burn(0) && nonData(1);
   }
   return false;
 }

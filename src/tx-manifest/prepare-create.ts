@@ -1,4 +1,5 @@
 import { SIMPLICITY_LENDING_V3_BUNDLE } from "./builtins/simplicity-lending-v3";
+import { MAX_MANIFEST_WALLET_INPUTS_PER_ASSET } from "./coin-selection-policy";
 import { taggedCanonicalJsonHash } from "./bundle";
 import { trustedTxManifestActionHintScript } from "./registry";
 import { deriveSimplicityLendingAsset } from "./issuance";
@@ -47,7 +48,7 @@ export type CreateFactoryChainWalletSnapshot = {
   tipHeight: number;
   policyAssetId: string;
   assetContractDomain: string;
-  fundingInput: AcceptOfferResolvedInput;
+  fundingInputs: AcceptOfferResolvedInput[];
   explicitWalletDestination: AcceptOfferDestination;
   feeChangeDestination?: AcceptOfferDestination;
   fee: string;
@@ -76,14 +77,22 @@ export async function prepareLendingV3CreateFactory(
   runtime: CreateRuntime = DEFAULT_RUNTIME,
 ): Promise<PreparedCreateFactoryExecution> {
   validateCommon(plan, snapshot);
-  requireWalletInput(snapshot.fundingInput, snapshot.policyAssetId, snapshot.fee, "factory funding input");
+  requireWalletInputs(
+    snapshot.fundingInputs,
+    snapshot.policyAssetId,
+    snapshot.fee,
+    "factory funding inputs",
+  );
+  distinct(snapshot.fundingInputs);
+  const issuanceInput = snapshot.fundingInputs[0]!;
   const issued = await runtime.deriveAsset(
     snapshot.assetContractDomain,
-    outpoint(snapshot.fundingInput),
+    outpoint(issuanceInput),
     "factory",
   );
   const factory = await runtime.compileFactory(undefined, snapshot.network);
-  const feeChange = (BigInt(snapshot.fundingInput.amount) - BigInt(snapshot.fee)).toString();
+  const fundingAmount = sumInputs(snapshot.fundingInputs);
+  const feeChange = (fundingAmount - BigInt(snapshot.fee)).toString();
   const outputs: TxManifestPsetBuildSpec["outputs"] = [
     output(snapshot.explicitWalletDestination, issued.assetId, "1"),
     { script_pub_key: factory.covenant.script_pub_key, asset: issued.assetId, amount: "1" },
@@ -99,10 +108,13 @@ export async function prepareLendingV3CreateFactory(
     amount: "0",
   });
   const buildSpec: TxManifestPsetBuildSpec = {
-    inputs: [{
-      ...psetInput(snapshot.fundingInput),
-      issuance: { contract_hash: issued.contractHash, asset_amount: "2" },
-    }],
+    inputs: [
+      {
+        ...psetInput(issuanceInput),
+        issuance: { contract_hash: issued.contractHash, asset_amount: "2" },
+      },
+      ...snapshot.fundingInputs.slice(1).map(psetInput),
+    ],
     outputs,
     fee: { asset: snapshot.policyAssetId, amount: snapshot.fee },
   };
@@ -129,11 +141,11 @@ export async function prepareLendingV3CreateFactory(
     covenantExecutions: [],
     review: {
       factoryAssetId: issued.assetId,
-      fundingAmount: snapshot.fundingInput.amount,
+      fundingAmount: fundingAmount.toString(),
       feeAssetId: snapshot.policyAssetId,
       fee: snapshot.fee,
       feeChange,
-      walletInputOutpoints: [outpoint(snapshot.fundingInput)],
+      walletInputOutpoints: snapshot.fundingInputs.map(outpoint),
     },
   };
 }
@@ -146,8 +158,8 @@ export type CreateOfferChainWalletSnapshot = {
   assetContractDomain: string;
   factoryAuthInput: AcceptOfferResolvedInput;
   factoryCovenant: AcceptOfferResolvedInput;
-  collateralInput: AcceptOfferResolvedInput;
-  feeInput: AcceptOfferResolvedInput;
+  collateralInputs: AcceptOfferResolvedInput[];
+  feeInputs: AcceptOfferResolvedInput[];
   explicitWalletDestination: AcceptOfferDestination;
   changeDestination?: AcceptOfferDestination;
   fee: string;
@@ -190,29 +202,33 @@ export async function prepareLendingV3CreateOffer(
     throw new Error("The borrow offer expiration must be in the future.");
   }
   requireWalletInput(snapshot.factoryAuthInput, plan.factoryAssetId, "1", "factory auth NFT", plan.walletInputs[0].outpoint);
-  requireWalletInput(snapshot.collateralInput, plan.intent.collateralAssetId, plan.intent.collateralAmount, "collateral input");
-  requireWalletInput(snapshot.feeInput, snapshot.policyAssetId, snapshot.fee, "fee input");
-  const combinedCollateralAndFee = sameOutpoint(snapshot.collateralInput, snapshot.feeInput);
+  const combinedCollateralAndFee = snapshot.feeInputs.length === 0;
   if (combinedCollateralAndFee && plan.intent.collateralAssetId !== snapshot.policyAssetId) {
-    throw new Error("Only an L-BTC collateral input may also pay the network fee.");
+    throw new Error("Only L-BTC collateral inputs may also pay the network fee.");
   }
-  if (
-    combinedCollateralAndFee &&
-    BigInt(snapshot.collateralInput.amount) <
-      BigInt(plan.intent.collateralAmount) + BigInt(snapshot.fee)
-  ) {
-    throw new Error("The combined collateral input cannot also cover the network fee.");
+  requireWalletInputs(
+    snapshot.collateralInputs,
+    plan.intent.collateralAssetId,
+    (
+      BigInt(plan.intent.collateralAmount) +
+      (combinedCollateralAndFee ? BigInt(snapshot.fee) : 0n)
+    ).toString(),
+    "collateral inputs",
+  );
+  if (!combinedCollateralAndFee) {
+    requireWalletInputs(snapshot.feeInputs, snapshot.policyAssetId, snapshot.fee, "fee inputs");
   }
   distinct([
     snapshot.factoryAuthInput,
     snapshot.factoryCovenant,
-    snapshot.collateralInput,
-    ...(combinedCollateralAndFee ? [] : [snapshot.feeInput]),
+    ...snapshot.collateralInputs,
+    ...snapshot.feeInputs,
   ]);
+  const collateralIssuanceInput = snapshot.collateralInputs[0]!;
 
   const [borrowerIssuance, lenderIssuance, factory] = await Promise.all([
     runtime.deriveAsset(snapshot.assetContractDomain, outpoint(snapshot.factoryCovenant), "borrower-nft"),
-    runtime.deriveAsset(snapshot.assetContractDomain, outpoint(snapshot.collateralInput), "lender-nft"),
+    runtime.deriveAsset(snapshot.assetContractDomain, outpoint(collateralIssuanceInput), "lender-nft"),
     runtime.compileFactory(undefined, snapshot.network),
   ]);
   requireChainInput(snapshot.factoryCovenant, plan.covenantInputs[0].outpoint, plan.factoryAssetId, "1", factory.covenant.script_pub_key, "factory covenant");
@@ -226,13 +242,13 @@ export async function prepareLendingV3CreateOffer(
     snapshot.network,
   );
   const collateralChange = (
-    BigInt(snapshot.collateralInput.amount) -
+    sumInputs(snapshot.collateralInputs) -
     BigInt(plan.intent.collateralAmount) -
     (combinedCollateralAndFee ? BigInt(snapshot.fee) : 0n)
   ).toString();
   const feeChange = combinedCollateralAndFee
     ? "0"
-    : (BigInt(snapshot.feeInput.amount) - BigInt(snapshot.fee)).toString();
+    : (sumInputs(snapshot.feeInputs) - BigInt(snapshot.fee)).toString();
   const outputs: TxManifestPsetBuildSpec["outputs"] = [
     output(snapshot.explicitWalletDestination, plan.factoryAssetId, "1"),
     { script_pub_key: factory.covenant.script_pub_key, asset: plan.factoryAssetId, amount: "1" },
@@ -247,7 +263,14 @@ export async function prepareLendingV3CreateOffer(
   }
   if (feeChange !== "0") {
     if (!snapshot.changeDestination) throw new Error("changeDestination is required for fee change.");
-    outputs.push(confidentialOutput(snapshot.changeDestination, snapshot.policyAssetId, feeChange, 3));
+    outputs.push(
+      confidentialOutput(
+        snapshot.changeDestination,
+        snapshot.policyAssetId,
+        feeChange,
+        2 + snapshot.collateralInputs.length,
+      ),
+    );
   }
   outputs.push({
     script_pub_key: await trustedTxManifestActionHintScript(plan.bundleHash, plan.action),
@@ -259,8 +282,9 @@ export async function prepareLendingV3CreateOffer(
     inputs: [
       psetInput(snapshot.factoryAuthInput),
       { ...psetInput(snapshot.factoryCovenant), issuance: { contract_hash: borrowerIssuance.contractHash, asset_amount: "1" } },
-      { ...psetInput(snapshot.collateralInput), issuance: { contract_hash: lenderIssuance.contractHash, asset_amount: "1" } },
-      ...(combinedCollateralAndFee ? [] : [psetInput(snapshot.feeInput)]),
+      { ...psetInput(collateralIssuanceInput), issuance: { contract_hash: lenderIssuance.contractHash, asset_amount: "1" } },
+      ...snapshot.collateralInputs.slice(1).map(psetInput),
+      ...snapshot.feeInputs.map(psetInput),
     ],
     outputs,
     fee: { asset: snapshot.policyAssetId, amount: snapshot.fee },
@@ -318,8 +342,8 @@ export async function prepareLendingV3CreateOffer(
       collateralChange,
       walletInputOutpoints: [
         outpoint(snapshot.factoryAuthInput),
-        outpoint(snapshot.collateralInput),
-        ...(combinedCollateralAndFee ? [] : [outpoint(snapshot.feeInput)]),
+        ...snapshot.collateralInputs.map(outpoint),
+        ...snapshot.feeInputs.map(outpoint),
       ],
     },
   };
@@ -358,6 +382,28 @@ function requireWalletInput(actual: AcceptOfferResolvedInput, assetId: string, m
   if (outpoint_ && !sameOutpoint(actual, outpoint_)) throw new Error(`Resolved ${label} outpoint changed.`);
   if (actual.assetId !== assetId || BigInt(actual.amount) < BigInt(minimum)) throw new Error(`Resolved ${label} does not satisfy the required asset and amount.`);
   if ((actual.assetBlindingFactor === undefined) !== (actual.valueBlindingFactor === undefined)) throw new Error(`Resolved ${label} must include both blinding factors or neither.`);
+}
+
+function requireWalletInputs(
+  inputs: readonly AcceptOfferResolvedInput[],
+  assetId: string,
+  minimum: string,
+  label: string,
+): void {
+  if (inputs.length === 0) throw new Error(`${label} must contain at least one input.`);
+  if (inputs.length > MAX_MANIFEST_WALLET_INPUTS_PER_ASSET) {
+    throw new Error(`${label} must contain at most ${MAX_MANIFEST_WALLET_INPUTS_PER_ASSET} inputs.`);
+  }
+  inputs.forEach((input, index) =>
+    requireWalletInput(input, assetId, "0", `${label}[${index}]`),
+  );
+  if (sumInputs(inputs) < BigInt(minimum)) {
+    throw new Error(`Resolved ${label} do not satisfy the required asset and amount.`);
+  }
+}
+
+function sumInputs(inputs: readonly AcceptOfferResolvedInput[]): bigint {
+  return inputs.reduce((total, input) => total + BigInt(input.amount), 0n);
 }
 
 function distinct(inputs: AcceptOfferResolvedInput[]): void {

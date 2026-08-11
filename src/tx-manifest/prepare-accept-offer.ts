@@ -15,6 +15,7 @@ import {
   type TxManifestPsetBuildSpec,
 } from "./runtime";
 import { SIMPLICITY_LENDING_V3_BUNDLE } from "./builtins/simplicity-lending-v3";
+import { MAX_MANIFEST_WALLET_INPUTS_PER_ASSET } from "./coin-selection-policy";
 
 export type AcceptOfferResolvedInput = TxManifestOutpoint & {
   txOut: string;
@@ -38,8 +39,8 @@ export type AcceptOfferChainWalletSnapshot = {
   policyAssetId: string;
   pendingOffer: AcceptOfferResolvedInput;
   lenderNftAuthorization: AcceptOfferResolvedInput;
-  principalInput: AcceptOfferResolvedInput;
-  feeInput: AcceptOfferResolvedInput;
+  principalInputs: AcceptOfferResolvedInput[];
+  feeInputs: AcceptOfferResolvedInput[];
   lenderNftDestination: AcceptOfferDestination;
   principalChangeDestination?: AcceptOfferDestination;
   feeChangeDestination?: AcceptOfferDestination;
@@ -110,10 +111,15 @@ export async function prepareLendingV3AcceptOffer(
     "lender NFT authorization",
   );
 
+  const combinedPrincipalAndFee = snapshot.feeInputs.length === 0;
   const principalChange = (
-    BigInt(snapshot.principalInput.amount) - BigInt(plan.intent.principalAmount)
+    sumInputs(snapshot.principalInputs) -
+    BigInt(plan.intent.principalAmount) -
+    (combinedPrincipalAndFee ? BigInt(snapshot.fee) : 0n)
   ).toString();
-  const feeChange = (BigInt(snapshot.feeInput.amount) - BigInt(snapshot.fee)).toString();
+  const feeChange = combinedPrincipalAndFee
+    ? "0"
+    : (sumInputs(snapshot.feeInputs) - BigInt(snapshot.fee)).toString();
   const outputs: TxManifestPsetBuildSpec["outputs"] = [
     {
       script_pub_key: covenants.activeOffer.script_pub_key,
@@ -148,7 +154,7 @@ export async function prepareLendingV3AcceptOffer(
         snapshot.feeChangeDestination,
         snapshot.policyAssetId,
         feeChange,
-        3,
+        2 + snapshot.principalInputs.length,
         "feeChangeDestination",
       ),
     );
@@ -162,8 +168,8 @@ export async function prepareLendingV3AcceptOffer(
   const inputs = [
     psetInput(snapshot.pendingOffer),
     psetInput(snapshot.lenderNftAuthorization),
-    psetInput(snapshot.principalInput),
-    psetInput(snapshot.feeInput),
+    ...snapshot.principalInputs.map(psetInput),
+    ...snapshot.feeInputs.map(psetInput),
   ];
   const buildSpec: TxManifestPsetBuildSpec = {
     inputs,
@@ -231,8 +237,8 @@ export async function prepareLendingV3AcceptOffer(
       principalChange,
       feeChange,
       walletInputOutpoints: [
-        outpoint(snapshot.principalInput),
-        outpoint(snapshot.feeInput),
+        ...snapshot.principalInputs.map(outpoint),
+        ...snapshot.feeInputs.map(outpoint),
       ],
     },
   };
@@ -295,16 +301,28 @@ function validateSnapshot(
   ) {
     throw new Error("The selected network fee exceeds the approved maximum.");
   }
-  requireWalletInput(
-    snapshot.principalInput,
-    plan.intent.principalAssetId,
-    plan.intent.principalAmount,
-    "principalInput",
-  );
-  requireWalletInput(snapshot.feeInput, snapshot.policyAssetId, snapshot.fee, "feeInput");
-  if (sameOutpoint(snapshot.principalInput, snapshot.feeInput)) {
-    throw new Error("The first slice requires distinct principal and fee inputs.");
+  const combinedPrincipalAndFee = snapshot.feeInputs.length === 0;
+  if (combinedPrincipalAndFee && plan.intent.principalAssetId !== snapshot.policyAssetId) {
+    throw new Error("Only L-BTC principal inputs may also pay the network fee.");
   }
+  requireWalletInputs(
+    snapshot.principalInputs,
+    plan.intent.principalAssetId,
+    (
+      BigInt(plan.intent.principalAmount) +
+      (combinedPrincipalAndFee ? BigInt(snapshot.fee) : 0n)
+    ).toString(),
+    "principalInputs",
+  );
+  if (!combinedPrincipalAndFee) {
+    requireWalletInputs(snapshot.feeInputs, snapshot.policyAssetId, snapshot.fee, "feeInputs");
+  }
+  distinct([
+    snapshot.pendingOffer,
+    snapshot.lenderNftAuthorization,
+    ...snapshot.principalInputs,
+    ...snapshot.feeInputs,
+  ]);
 }
 
 function requireInput(
@@ -339,6 +357,35 @@ function requireWalletInput(
     (input.valueBlindingFactor === undefined)
   ) {
     throw new Error(`${path} must include both input blinding factors or neither.`);
+  }
+}
+
+function requireWalletInputs(
+  inputs: readonly AcceptOfferResolvedInput[],
+  expectedAsset: string,
+  minimumAmount: string,
+  path: string,
+): void {
+  if (inputs.length === 0) throw new Error(`${path} must contain at least one input.`);
+  if (inputs.length > MAX_MANIFEST_WALLET_INPUTS_PER_ASSET) {
+    throw new Error(`${path} must contain at most ${MAX_MANIFEST_WALLET_INPUTS_PER_ASSET} inputs.`);
+  }
+  inputs.forEach((input, index) =>
+    requireWalletInput(input, expectedAsset, "0", `${path}[${index}]`),
+  );
+  if (sumInputs(inputs) < BigInt(minimumAmount)) {
+    throw new Error(`${path} do not satisfy the required asset and amount.`);
+  }
+}
+
+function sumInputs(inputs: readonly AcceptOfferResolvedInput[]): bigint {
+  return inputs.reduce((total, input) => total + BigInt(input.amount), 0n);
+}
+
+function distinct(inputs: readonly AcceptOfferResolvedInput[]): void {
+  const keys = inputs.map((input) => `${input.txid}:${input.vout}`);
+  if (new Set(keys).size !== keys.length) {
+    throw new Error("The manifest transaction inputs must use distinct outpoints.");
   }
 }
 

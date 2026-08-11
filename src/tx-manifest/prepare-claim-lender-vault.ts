@@ -1,4 +1,5 @@
 import { SIMPLICITY_LENDING_V3_BUNDLE } from "./builtins/simplicity-lending-v3";
+import { MAX_MANIFEST_WALLET_INPUTS_PER_ASSET } from "./coin-selection-policy";
 import { taggedCanonicalJsonHash } from "./bundle";
 import { trustedTxManifestActionHintScript } from "./registry";
 import {
@@ -25,7 +26,7 @@ export type ClaimLenderVaultChainWalletSnapshot = {
   policyAssetId: string;
   lenderVault: AcceptOfferResolvedInput;
   lenderNftInput: AcceptOfferResolvedInput;
-  feeInput: AcceptOfferResolvedInput;
+  feeInputs: AcceptOfferResolvedInput[];
   principalDestination: AcceptOfferDestination;
   feeChangeDestination?: AcceptOfferDestination;
   fee: string;
@@ -79,11 +80,11 @@ export async function prepareLendingV3ClaimLenderVault(
   const vault = await runtime.compileVault(plan.instance, undefined, snapshot.network);
   requireCovenantInput(snapshot.lenderVault, plan.covenantInputs[0], vault.covenant.script_pub_key);
 
-  const feeChange = (BigInt(snapshot.feeInput.amount) - BigInt(snapshot.fee)).toString();
+  const feeChange = (sumInputs(snapshot.feeInputs) - BigInt(snapshot.fee)).toString();
   const inputs = [
     psetInput(snapshot.lenderVault),
     psetInput(snapshot.lenderNftInput),
-    psetInput(snapshot.feeInput),
+    ...snapshot.feeInputs.map(psetInput),
   ];
   const outputs: TxManifestPsetBuildSpec["outputs"] = [
     {
@@ -161,7 +162,10 @@ export async function prepareLendingV3ClaimLenderVault(
       feeAssetId: snapshot.policyAssetId,
       fee: snapshot.fee,
       feeChange,
-      walletInputOutpoints: [outpoint(snapshot.lenderNftInput), outpoint(snapshot.feeInput)],
+      walletInputOutpoints: [
+        outpoint(snapshot.lenderNftInput),
+        ...snapshot.feeInputs.map(outpoint),
+      ],
     },
   };
 }
@@ -210,20 +214,38 @@ function validateSnapshot(
     "1",
     "lenderNftInput",
   );
-  requireWalletInput(
-    snapshot.feeInput,
-    undefined,
+  requireWalletInputs(
+    snapshot.feeInputs,
     snapshot.policyAssetId,
     snapshot.fee,
-    "feeInput",
+    "feeInputs",
   );
-  if (
-    sameOutpoint(snapshot.lenderVault, snapshot.lenderNftInput) ||
-    sameOutpoint(snapshot.lenderVault, snapshot.feeInput) ||
-    sameOutpoint(snapshot.lenderNftInput, snapshot.feeInput)
-  ) {
+  const allInputs = [snapshot.lenderVault, snapshot.lenderNftInput, ...snapshot.feeInputs];
+  if (new Set(allInputs.map(({ txid, vout }) => `${txid}:${vout}`)).size !== allInputs.length) {
     throw new Error("The lender vault, lender NFT, and fee inputs must be distinct.");
   }
+}
+
+function requireWalletInputs(
+  inputs: readonly AcceptOfferResolvedInput[],
+  assetId: string,
+  minimum: string,
+  label: string,
+): void {
+  if (inputs.length === 0) throw new Error(`${label} must contain at least one input.`);
+  if (inputs.length > MAX_MANIFEST_WALLET_INPUTS_PER_ASSET) {
+    throw new Error(`${label} must contain at most ${MAX_MANIFEST_WALLET_INPUTS_PER_ASSET} inputs.`);
+  }
+  inputs.forEach((input, index) =>
+    requireWalletInput(input, undefined, assetId, "0", `${label}[${index}]`),
+  );
+  if (sumInputs(inputs) < BigInt(minimum)) {
+    throw new Error(`${label} do not satisfy the required asset and amount.`);
+  }
+}
+
+function sumInputs(inputs: readonly AcceptOfferResolvedInput[]): bigint {
+  return inputs.reduce((total, input) => total + BigInt(input.amount), 0n);
 }
 
 function requireCovenantInput(

@@ -1,4 +1,5 @@
 import { SIMPLICITY_LENDING_V3_BUNDLE } from "./builtins/simplicity-lending-v3";
+import { MAX_MANIFEST_WALLET_INPUTS_PER_ASSET } from "./coin-selection-policy";
 import { taggedCanonicalJsonHash } from "./bundle";
 import { trustedTxManifestActionHintScript } from "./registry";
 import {
@@ -39,7 +40,7 @@ type SnapshotBase = {
   genesisHash: string;
   tipHeight: number;
   policyAssetId: string;
-  feeInput: AcceptOfferResolvedInput;
+  feeInputs: AcceptOfferResolvedInput[];
   walletDestination: AcceptOfferDestination;
   explicitWalletDestination: AcceptOfferDestination;
   feeChangeDestination?: AcceptOfferDestination;
@@ -63,7 +64,7 @@ export type RepayLoanChainWalletSnapshot = SnapshotBase & {
   kind: "repayLoan";
   activeOffer: AcceptOfferResolvedInput;
   borrowerNftInput: AcceptOfferResolvedInput;
-  repaymentInput: AcceptOfferResolvedInput;
+  repaymentInputs: AcceptOfferResolvedInput[];
   principalChangeDestination?: AcceptOfferDestination;
 };
 
@@ -200,8 +201,8 @@ function prepareAction(
   if (plan.action === "lending_contract.ClaimPrincipal" && snapshot.kind === "claimPrincipal") {
     requireChainInput(snapshot.principalAssetAuth, plan.covenantInputs[0].outpoint, plan.intent.principalAssetId, plan.intent.principalAmount, covenants.principalOutput.script_pub_key, "principal covenant");
     requireWalletInput(snapshot.borrowerNftInput, plan.walletInputs[0].outpoint, plan.intent.borrowerNftAssetId, "1", "borrower NFT");
-    distinct([snapshot.principalAssetAuth, snapshot.borrowerNftInput, snapshot.feeInput]);
-    const inputs = [snapshot.principalAssetAuth, snapshot.borrowerNftInput, snapshot.feeInput];
+    distinct([snapshot.principalAssetAuth, snapshot.borrowerNftInput, ...snapshot.feeInputs]);
+    const inputs = [snapshot.principalAssetAuth, snapshot.borrowerNftInput, ...snapshot.feeInputs];
     const outputs: TxManifestPsetBuildSpec["outputs"] = [
       output(snapshot.explicitWalletDestination, plan.intent.borrowerNftAssetId, "1"),
       confidentialOutput(snapshot.walletDestination, plan.intent.principalAssetId, plan.intent.principalAmount, 0),
@@ -222,7 +223,7 @@ function prepareAction(
         include_debug_symbols: true,
       }],
       covenantCommitments: { principalAssetAuth: covenants.principalOutput.script_pub_key },
-      walletInputs: [snapshot.borrowerNftInput, snapshot.feeInput],
+      walletInputs: [snapshot.borrowerNftInput, ...snapshot.feeInputs],
       principalChange: "0",
       feeChange,
     };
@@ -232,8 +233,18 @@ function prepareAction(
     requireChainInput(snapshot.pendingOffer, plan.covenantInputs[0].outpoint, plan.intent.collateralAssetId, plan.intent.collateralAmount, covenants.pendingOffer.script_pub_key, "pending offer");
     requireChainInput(snapshot.lenderNftAuthorization, plan.covenantInputs[1].outpoint, plan.intent.lenderNftAssetId, "1", covenants.lenderNftAuthorization.script_pub_key, "lender NFT authorization");
     requireWalletInput(snapshot.borrowerNftInput, plan.walletInputs[0].outpoint, plan.intent.borrowerNftAssetId, "1", "borrower NFT");
-    distinct([snapshot.pendingOffer, snapshot.lenderNftAuthorization, snapshot.borrowerNftInput, snapshot.feeInput]);
-    const inputs = [snapshot.pendingOffer, snapshot.lenderNftAuthorization, snapshot.borrowerNftInput, snapshot.feeInput];
+    distinct([
+      snapshot.pendingOffer,
+      snapshot.lenderNftAuthorization,
+      snapshot.borrowerNftInput,
+      ...snapshot.feeInputs,
+    ]);
+    const inputs = [
+      snapshot.pendingOffer,
+      snapshot.lenderNftAuthorization,
+      snapshot.borrowerNftInput,
+      ...snapshot.feeInputs,
+    ];
     const outputs: TxManifestPsetBuildSpec["outputs"] = [
       { script_pub_key: BURN_SCRIPT, asset: plan.intent.lenderNftAssetId, amount: "1" },
       { script_pub_key: BURN_SCRIPT, asset: plan.intent.borrowerNftAssetId, amount: "1" },
@@ -266,7 +277,7 @@ function prepareAction(
         pendingOffer: covenants.pendingOffer.script_pub_key,
         lenderNftAuthorization: covenants.lenderNftAuthorization.script_pub_key,
       },
-      walletInputs: [snapshot.borrowerNftInput, snapshot.feeInput],
+      walletInputs: [snapshot.borrowerNftInput, ...snapshot.feeInputs],
       principalChange: "0",
       feeChange,
     };
@@ -275,33 +286,43 @@ function prepareAction(
   if (plan.action === "lending_contract.RepayLoan" && snapshot.kind === "repayLoan") {
     requireWalletInput(snapshot.borrowerNftInput, plan.walletInputs[0].outpoint, plan.intent.borrowerNftAssetId, "1", "borrower NFT");
     requireChainInput(snapshot.activeOffer, plan.covenantInputs[0].outpoint, plan.intent.collateralAssetId, plan.intent.collateralAmount, covenants.activeOffer.script_pub_key, "active offer");
-    requireWalletInput(snapshot.repaymentInput, undefined, plan.intent.principalAssetId, plan.intent.totalDebt, "repayment input");
-    const combinedRepaymentAndFee = sameOutpoint(snapshot.repaymentInput, snapshot.feeInput);
+    const combinedRepaymentAndFee = snapshot.feeInputs.length === 0;
     if (combinedRepaymentAndFee && plan.intent.principalAssetId !== snapshot.policyAssetId) {
-      throw new Error("Only an L-BTC repayment input may also pay the network fee.");
+      throw new Error("Only L-BTC repayment inputs may also pay the network fee.");
     }
-    if (
-      combinedRepaymentAndFee &&
-      BigInt(snapshot.repaymentInput.amount) < BigInt(plan.intent.totalDebt) + BigInt(snapshot.fee)
-    ) {
-      throw new Error("The combined repayment input cannot also cover the network fee.");
+    requireWalletInputs(
+      snapshot.repaymentInputs,
+      plan.intent.principalAssetId,
+      (
+        BigInt(plan.intent.totalDebt) +
+        (combinedRepaymentAndFee ? BigInt(snapshot.fee) : 0n)
+      ).toString(),
+      "repayment inputs",
+    );
+    if (!combinedRepaymentAndFee) {
+      requireWalletInputs(
+        snapshot.feeInputs,
+        snapshot.policyAssetId,
+        snapshot.fee,
+        "fee inputs",
+      );
     }
     distinct([
       snapshot.borrowerNftInput,
       snapshot.activeOffer,
-      snapshot.repaymentInput,
-      ...(combinedRepaymentAndFee ? [] : [snapshot.feeInput]),
+      ...snapshot.repaymentInputs,
+      ...snapshot.feeInputs,
     ]);
     const principalChange = (
-      BigInt(snapshot.repaymentInput.amount) -
+      sumInputs(snapshot.repaymentInputs) -
       BigInt(plan.intent.totalDebt) -
       (combinedRepaymentAndFee ? BigInt(snapshot.fee) : 0n)
     ).toString();
     const inputs = [
       snapshot.borrowerNftInput,
       snapshot.activeOffer,
-      snapshot.repaymentInput,
-      ...(combinedRepaymentAndFee ? [] : [snapshot.feeInput]),
+      ...snapshot.repaymentInputs,
+      ...snapshot.feeInputs,
     ];
     const outputs: TxManifestPsetBuildSpec["outputs"] = [
       { script_pub_key: BURN_SCRIPT, asset: plan.intent.borrowerNftAssetId, amount: "1" },
@@ -313,7 +334,9 @@ function prepareAction(
       if (!snapshot.principalChangeDestination) throw new Error("principalChangeDestination is required for repayment change.");
       outputs.push(confidentialOutput(snapshot.principalChangeDestination, plan.intent.principalAssetId, principalChange, 2));
     }
-    const feeChange = combinedRepaymentAndFee ? "0" : addFeeChange(outputs, snapshot, 3);
+    const feeChange = combinedRepaymentAndFee
+      ? "0"
+      : addFeeChange(outputs, snapshot, 2 + snapshot.repaymentInputs.length);
     return {
       buildSpec: buildSpec(inputs, outputs, snapshot),
       covenantExecutions: [
@@ -333,8 +356,8 @@ function prepareAction(
       },
       walletInputs: [
         snapshot.borrowerNftInput,
-        snapshot.repaymentInput,
-        ...(combinedRepaymentAndFee ? [] : [snapshot.feeInput]),
+        ...snapshot.repaymentInputs,
+        ...snapshot.feeInputs,
       ],
       principalChange,
       feeChange,
@@ -345,11 +368,11 @@ function prepareAction(
     if (snapshot.tipHeight < plan.intent.expirationHeight) throw new Error("This loan has not reached its liquidation height.");
     requireChainInput(snapshot.activeOffer, plan.covenantInputs[0].outpoint, plan.intent.collateralAssetId, plan.intent.collateralAmount, covenants.activeOffer.script_pub_key, "active offer");
     requireWalletInput(snapshot.lenderNftInput, plan.walletInputs[0].outpoint, plan.intent.lenderNftAssetId, "1", "lender NFT");
-    distinct([snapshot.activeOffer, snapshot.lenderNftInput, snapshot.feeInput]);
+    distinct([snapshot.activeOffer, snapshot.lenderNftInput, ...snapshot.feeInputs]);
     const inputs = [
       { ...snapshot.activeOffer, sequence: ACTIVE_SEQUENCE },
       snapshot.lenderNftInput,
-      snapshot.feeInput,
+      ...snapshot.feeInputs,
     ];
     const outputs: TxManifestPsetBuildSpec["outputs"] = [
       { script_pub_key: BURN_SCRIPT, asset: plan.intent.lenderNftAssetId, amount: "1" },
@@ -369,7 +392,7 @@ function prepareAction(
         ),
       ],
       covenantCommitments: { activeOffer: covenants.activeOffer.script_pub_key },
-      walletInputs: [snapshot.lenderNftInput, snapshot.feeInput],
+      walletInputs: [snapshot.lenderNftInput, ...snapshot.feeInputs],
       principalChange: "0",
       feeChange,
     };
@@ -397,7 +420,10 @@ function lendingExecution(
   };
 }
 
-function validateCommon(plan: BorrowerLendingRequirementPlan, snapshot: SnapshotBase): void {
+function validateCommon(
+  plan: BorrowerLendingRequirementPlan,
+  snapshot: BorrowerLendingChainWalletSnapshot,
+): void {
   if (!/^[0-9a-f]{64}$/.test(snapshot.genesisHash)) throw new Error("Invalid genesis hash.");
   asset(snapshot.policyAssetId, "policyAssetId");
   if (!Number.isInteger(snapshot.tipHeight) || snapshot.tipHeight < 0) throw new Error("Invalid tip height.");
@@ -408,7 +434,11 @@ function validateCommon(plan: BorrowerLendingRequirementPlan, snapshot: Snapshot
   if (plan.constraints.maxFee !== undefined && BigInt(snapshot.fee) > BigInt(plan.constraints.maxFee)) {
     throw new Error("The selected network fee exceeds the approved maximum.");
   }
-  requireWalletInput(snapshot.feeInput, undefined, snapshot.policyAssetId, snapshot.fee, "fee input");
+  if (snapshot.feeInputs.length > 0) {
+    requireWalletInputs(snapshot.feeInputs, snapshot.policyAssetId, snapshot.fee, "fee inputs");
+  } else if (snapshot.kind !== "repayLoan") {
+    throw new Error("fee inputs must contain at least one input.");
+  }
 }
 
 function buildSpec(inputs: AcceptOfferResolvedInput[], outputs: TxManifestPsetBuildSpec["outputs"], snapshot: SnapshotBase): TxManifestPsetBuildSpec {
@@ -416,7 +446,7 @@ function buildSpec(inputs: AcceptOfferResolvedInput[], outputs: TxManifestPsetBu
 }
 
 function addFeeChange(outputs: TxManifestPsetBuildSpec["outputs"], snapshot: SnapshotBase, blinderIndex: number): string {
-  const change = (BigInt(snapshot.feeInput.amount) - BigInt(snapshot.fee)).toString();
+  const change = (sumInputs(snapshot.feeInputs) - BigInt(snapshot.fee)).toString();
   if (change !== "0") {
     if (!snapshot.feeChangeDestination) throw new Error("feeChangeDestination is required for non-zero change.");
     outputs.push(confidentialOutput(snapshot.feeChangeDestination, snapshot.policyAssetId, change, blinderIndex));
@@ -434,6 +464,28 @@ function requireWalletInput(actual: AcceptOfferResolvedInput, outpoint_: TxManif
   if (outpoint_ && !sameOutpoint(actual, outpoint_)) throw new Error(`Resolved ${label} outpoint changed.`);
   if (actual.assetId !== assetId || BigInt(actual.amount) < BigInt(minimum)) throw new Error(`Resolved ${label} does not satisfy the required asset and amount.`);
   if ((actual.assetBlindingFactor === undefined) !== (actual.valueBlindingFactor === undefined)) throw new Error(`Resolved ${label} must include both blinding factors or neither.`);
+}
+
+function requireWalletInputs(
+  inputs: readonly AcceptOfferResolvedInput[],
+  assetId: string,
+  minimum: string,
+  label: string,
+): void {
+  if (inputs.length === 0) throw new Error(`${label} must contain at least one input.`);
+  if (inputs.length > MAX_MANIFEST_WALLET_INPUTS_PER_ASSET) {
+    throw new Error(`${label} must contain at most ${MAX_MANIFEST_WALLET_INPUTS_PER_ASSET} inputs.`);
+  }
+  inputs.forEach((input, index) =>
+    requireWalletInput(input, undefined, assetId, "0", `${label}[${index}]`),
+  );
+  if (sumInputs(inputs) < BigInt(minimum)) {
+    throw new Error(`Resolved ${label} do not satisfy the required asset and amount.`);
+  }
+}
+
+function sumInputs(inputs: readonly AcceptOfferResolvedInput[]): bigint {
+  return inputs.reduce((total, input) => total + BigInt(input.amount), 0n);
 }
 
 function distinct(inputs: AcceptOfferResolvedInput[]): void {

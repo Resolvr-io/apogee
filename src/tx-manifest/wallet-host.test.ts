@@ -3,6 +3,7 @@ import {
   recoverExplicitWalletInputCandidate,
   selectAcceptOfferWalletInputs,
   selectClaimLenderVaultWalletInputs,
+  selectManifestWalletInputs,
   type AcceptOfferWalletCandidate,
 } from "./wallet-host";
 
@@ -43,24 +44,70 @@ describe("selectAcceptOfferWalletInputs", () => {
       POLICY,
       "1000",
     );
-    expect(selection.principalInput.amount).toBe("3000");
-    expect(selection.feeInput.amount).toBe("1000");
+    expect(selection.principalInputs.map(({ amount }) => amount)).toEqual(["3000"]);
+    expect(selection.feeInputs.map(({ amount }) => amount)).toEqual(["1000"]);
   });
 
-  it("requires distinct coins even when principal is L-BTC", () => {
-    const shared = coin("a", 0, POLICY, "5000");
-    expect(() =>
-      selectAcceptOfferWalletInputs([shared], POLICY, "3000", POLICY, "1000"),
-    ).toThrow("distinct L-BTC input");
-    expect(
-      selectAcceptOfferWalletInputs(
-        [shared, coin("b", 0, POLICY, "1000")],
-        POLICY,
-        "3000",
-        POLICY,
-        "1000",
-      ).feeInput.txid,
-    ).toBe("b".repeat(64));
+  it("combines L-BTC principal and fee into one deterministic funding target", () => {
+    const selection = selectAcceptOfferWalletInputs(
+      [coin("c", 0, POLICY, "2500"), coin("a", 0, POLICY, "2000")],
+      POLICY,
+      "3000",
+      POLICY,
+      "1000",
+    );
+    expect(selection.principalInputs.map(({ txid }) => txid[0])).toEqual(["a", "c"]);
+    expect(selection.feeInputs).toEqual([]);
+  });
+});
+
+describe("selectManifestWalletInputs", () => {
+  it("finds an exact fragmented subset and returns canonical outpoint order", () => {
+    const selected = selectManifestWalletInputs(
+      [
+        coin("d", 0, PRINCIPAL, "1200"),
+        coin("b", 1, PRINCIPAL, "800"),
+        coin("a", 2, PRINCIPAL, "700"),
+      ],
+      PRINCIPAL,
+      "2000",
+    );
+    expect(selected.map(({ txid }) => txid[0])).toEqual(["b", "d"]);
+  });
+
+  it("uses stable outpoints to break otherwise identical selections", () => {
+    const selected = selectManifestWalletInputs(
+      [
+        coin("d", 0, PRINCIPAL, "600"),
+        coin("c", 0, PRINCIPAL, "600"),
+        coin("b", 0, PRINCIPAL, "400"),
+        coin("a", 0, PRINCIPAL, "400"),
+      ],
+      PRINCIPAL,
+      "1000",
+    );
+    expect(selected.map(({ txid }) => txid[0])).toEqual(["a", "c"]);
+  });
+
+  it("prefers dust-safe change when the caller supplies a minimum-change floor", () => {
+    const selected = selectManifestWalletInputs(
+      [coin("a", 0, PRINCIPAL, "1001"), coin("b", 0, PRINCIPAL, "1200")],
+      PRINCIPAL,
+      "1000",
+      [],
+      "principal inputs",
+      "100",
+    );
+    expect(selected.map(({ amount }) => amount)).toEqual(["1200"]);
+  });
+
+  it("rejects balances requiring more than the bounded input count", () => {
+    const fragmented = Array.from({ length: 13 }, (_, index) =>
+      coin(index.toString(16), 0, PRINCIPAL, "1"),
+    );
+    expect(() => selectManifestWalletInputs(fragmented, PRINCIPAL, "13")).toThrow(
+      /at most 12 inputs/,
+    );
   });
 });
 
@@ -75,7 +122,7 @@ describe("selectClaimLenderVaultWalletInputs", () => {
       POLICY,
       "1000",
     );
-    expect(selected).toEqual({ lenderNftInput: nft, feeInput: fee });
+    expect(selected).toEqual({ lenderNftInput: nft, feeInputs: [fee] });
   });
 
   it("rejects a supplied NFT that the wallet does not own", () => {

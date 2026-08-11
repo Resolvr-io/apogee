@@ -55,8 +55,10 @@ test("real lending UI executes every trusted lending action through Apogee", asy
   try {
     const extensionId = await extensionIdentity(context);
     const address = await seedRegtestWallet(context, extensionId, TEST_MNEMONIC, "borrower");
-    await sendAsset(address, 1);
-    await sendAsset(address, 2, PRINCIPAL_ASSET_ID);
+    await sendAssetFragments(address, Array(8).fill(0.006));
+    // Regtest USDT has two display decimals, but Elements RPC amounts always
+    // use eight. Forty base units is therefore 0.00000040 at the RPC boundary.
+    await sendAssetFragments(address, Array(5).fill(0.0000004), PRINCIPAL_ASSET_ID);
     await mineBlock();
     await waitForEsploraTip();
 
@@ -85,8 +87,12 @@ test("real lending UI executes every trusted lending action through Apogee", asy
       "legal winner thank year wave sausage worth useful legal winner thank yellow",
       "lender",
     );
-    await sendAsset(lenderAddress, 1);
-    await sendAsset(lenderAddress, 2, PRINCIPAL_ASSET_ID);
+    await sendAssetFragments(lenderAddress, Array(4).fill(0.006));
+    await sendAssetFragments(
+      lenderAddress,
+      Array(4).fill(0.0000006),
+      PRINCIPAL_ASSET_ID,
+    );
     await mineBlock();
     await waitForEsploraTip();
     const lenderPage = await connectLendingDapp(lenderContext);
@@ -176,6 +182,24 @@ test("real lending UI executes every trusted lending action through Apogee", asy
       [SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER]: 1,
       [SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT]: 1,
     });
+    expect(
+      observed.some(
+        ({ action, inputCount }) =>
+          action === SIMPLICITY_LENDING_V3_CREATE_OFFER && inputCount > 3,
+      ),
+    ).toBe(true);
+    expect(
+      observed.some(
+        ({ action, inputCount }) =>
+          action === SIMPLICITY_LENDING_V3_ACCEPT_OFFER && inputCount > 4,
+      ),
+    ).toBe(true);
+    expect(
+      observed.some(
+        ({ action, inputCount }) =>
+          action === SIMPLICITY_LENDING_V3_REPAY_LOAN && inputCount > 4,
+      ),
+    ).toBe(true);
 
     const borrowerAfterRecords = await restoreAndReadTransactions(
       context,
@@ -229,6 +253,7 @@ type ActionHintObservation = {
   action: (typeof LENDING_ACTIONS)[number];
   markerOutputIndex: number;
   outputCount: number;
+  inputCount: number;
 };
 
 type WalletHistoryRecord = {
@@ -244,6 +269,7 @@ async function inspectActionHints(txids: string[]): Promise<ActionHintObservatio
   const observations: ActionHintObservation[] = [];
   for (const txid of txids) {
     const transaction = await rpc("getrawtransaction", [txid, true]) as {
+      vin: unknown[];
       vout: Array<{ n: number; scriptPubKey: { hex: string } }>;
     };
     const found = transaction.vout.flatMap((output) => {
@@ -265,6 +291,7 @@ async function inspectActionHints(txids: string[]): Promise<ActionHintObservatio
       action: matches[0]!,
       markerOutputIndex: found[0]!.output.n,
       outputCount: transaction.vout.length,
+      inputCount: transaction.vin.length,
     });
   }
   return observations;
@@ -598,6 +625,14 @@ async function sendAsset(address: string, amount: number, assetId?: string): Pro
   const params: unknown[] = [address, amount];
   if (assetId) params.push("", "", false, true, 1, "UNSET", false, assetId);
   await rpc("sendtoaddress", params);
+}
+
+async function sendAssetFragments(
+  address: string,
+  amounts: readonly number[],
+  assetId?: string,
+): Promise<void> {
+  for (const amount of amounts) await sendAsset(address, amount, assetId);
 }
 
 async function waitForEsploraTip(): Promise<void> {
