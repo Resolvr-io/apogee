@@ -19,9 +19,14 @@ jobs:
   chromium:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apogee
     steps:
       - name: Checkout Apogee
         uses: actions/checkout@v4
+        with:
+          path: apogee
 
       - name: Checkout the pinned lending integration
         uses: actions/checkout@v4
@@ -31,13 +36,15 @@ jobs:
           path: simplicity-lending
 
       - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: |
-            pnpm-lock.yaml
+            apogee/pnpm-lock.yaml
             simplicity-lending/web/pnpm-lock.yaml
 
       - name: Setup Rust
@@ -54,7 +61,7 @@ jobs:
       - name: Install dependencies
         run: |
           pnpm install --frozen-lockfile
-          pnpm --dir simplicity-lending/web install --frozen-lockfile
+          pnpm --dir ../simplicity-lending/web install --frozen-lockfile
 
       - name: Install pinned Simplex CLI
         shell: bash
@@ -82,7 +89,7 @@ jobs:
         with:
           name: lending-regtest-results
           path: |
-            test-results/
-            playwright-report/
+            apogee/test-results/
+            apogee/playwright-report/
           if-no-files-found: ignore
           retention-days: 7
