@@ -3,7 +3,20 @@ import type {
   PreparedAcceptOfferExecution,
 } from "./prepare-accept-offer";
 import type { PreparedClaimLenderVaultExecution } from "./prepare-claim-lender-vault";
-import type { TxManifestOutpoint } from "./requirements";
+import type {
+  CancelOfferRequirementPlan,
+  ClaimPrincipalRequirementPlan,
+  CreateFactoryRequirementPlan,
+  CreateOfferRequirementPlan,
+  LiquidateOfferRequirementPlan,
+  RepayLoanRequirementPlan,
+  TxManifestOutpoint,
+} from "./requirements";
+import type {
+  PreparedCreateFactoryExecution,
+  PreparedCreateOfferExecution,
+} from "./prepare-create";
+import type { PreparedBorrowerLendingExecution } from "./prepare-lending-action";
 
 export type AcceptOfferWalletCandidate = AcceptOfferResolvedInput & {
   address: string;
@@ -47,6 +60,69 @@ export type ClaimLenderVaultWalletSelection = {
   lenderNftInput: AcceptOfferWalletCandidate;
   feeInput: AcceptOfferWalletCandidate;
 };
+
+export type WalletDestination = {
+  address: string;
+  scriptPubKey: string;
+};
+
+export type NewLendingRequirementPlan =
+  | CreateFactoryRequirementPlan
+  | CreateOfferRequirementPlan
+  | ClaimPrincipalRequirementPlan
+  | CancelOfferRequirementPlan
+  | RepayLoanRequirementPlan
+  | LiquidateOfferRequirementPlan;
+
+export type NewLendingVerifiedChainSnapshot = {
+  genesisHash: string;
+  tipHeight: number;
+  policyAssetId: string;
+  inputs: Record<string, AcceptOfferResolvedInput>;
+  parentTransactions: string[];
+  fee: string;
+};
+
+export type HostedPreparedNewLendingExecution = (
+  | PreparedCreateFactoryExecution
+  | PreparedCreateOfferExecution
+  | PreparedBorrowerLendingExecution
+) & { parentTransactions: string[] };
+
+/**
+ * Recover an explicit wallet output that LWK cannot place in `wollet.utxos()`.
+ *
+ * Simplicity Lending intentionally returns the lender NFT as an explicit output.
+ * LWK currently omits that output from the UTXO set of a confidential descriptor,
+ * even when another output in the same transaction proves that the script belongs
+ * to the wallet. Keep the exception narrow: only the requested outpoint may be
+ * recovered, and its verified chain script must match an independently derived or
+ * already-recognized wallet destination.
+ */
+export function recoverExplicitWalletInputCandidate(
+  candidates: readonly AcceptOfferWalletCandidate[],
+  requestedOutpoint: TxManifestOutpoint,
+  resolvedInput: AcceptOfferResolvedInput,
+  walletDestinations: readonly WalletDestination[],
+  parentTransaction: string | undefined,
+): readonly AcceptOfferWalletCandidate[] {
+  if (candidates.some((candidate) => sameOutpoint(candidate, requestedOutpoint))) {
+    return candidates;
+  }
+  if (!sameOutpoint(resolvedInput, requestedOutpoint) || !parentTransaction) return candidates;
+  const destination = walletDestinations.find(
+    (candidate) => candidate.scriptPubKey === resolvedInput.scriptPubKey,
+  );
+  if (!destination) return candidates;
+  return [
+    ...candidates,
+    {
+      ...resolvedInput,
+      address: destination.address,
+      parentTransaction,
+    },
+  ];
+}
 
 /** Deterministically select the smallest sufficient distinct principal and fee coins. */
 export function selectAcceptOfferWalletInputs(
@@ -93,6 +169,41 @@ export function selectClaimLenderVaultWalletInputs(
     throw new Error("The connected wallet has no distinct L-BTC input large enough for the network fee.");
   }
   return { lenderNftInput, feeInput };
+}
+
+/** Select the smallest sufficient wallet input excluding already fixed transaction inputs. */
+export function selectManifestWalletInput(
+  candidates: readonly AcceptOfferWalletCandidate[],
+  assetId: string,
+  minimumAmount: string,
+  excluded: readonly TxManifestOutpoint[] = [],
+  label = "wallet input",
+): AcceptOfferWalletCandidate {
+  const selected = sufficient(candidates, assetId, minimumAmount).find(
+    (candidate) => !excluded.some((outpoint) => sameOutpoint(candidate, outpoint)),
+  );
+  if (!selected) {
+    throw new Error(`The connected wallet has no ${label} large enough for this action.`);
+  }
+  return selected;
+}
+
+/** Require an exact supplied outpoint to be a current coin owned by the wallet. */
+export function selectManifestWalletInputByOutpoint(
+  candidates: readonly AcceptOfferWalletCandidate[],
+  requested: TxManifestOutpoint,
+  assetId: string,
+  minimumAmount: string,
+  label: string,
+): AcceptOfferWalletCandidate {
+  const selected = candidates.find(
+    (candidate) =>
+      sameOutpoint(candidate, requested) &&
+      candidate.assetId === assetId &&
+      BigInt(candidate.amount) >= BigInt(minimumAmount),
+  );
+  if (!selected) throw new Error(`The requested ${label} is not an unspent coin owned by this wallet.`);
+  return selected;
 }
 
 function sufficient(

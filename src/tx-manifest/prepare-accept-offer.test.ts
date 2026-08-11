@@ -72,6 +72,7 @@ function covenants(): LendingV3AcceptOfferCovenants {
     pendingOffer: commitment("o"),
     activeOffer: commitment("x"),
     lenderNftAuthorization: commitment("n"),
+    principalArguments: { A: { value: "1", type: "u64" } },
     lendingArguments: { A: { value: "1", type: "u64" } },
   };
 }

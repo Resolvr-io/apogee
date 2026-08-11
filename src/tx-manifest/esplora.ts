@@ -1,8 +1,22 @@
 import type {
   AcceptOfferRequirementPlan,
+  CancelOfferRequirementPlan,
   ClaimLenderVaultRequirementPlan,
+  ClaimPrincipalRequirementPlan,
+  CreateFactoryRequirementPlan,
+  CreateOfferRequirementPlan,
+  LiquidateOfferRequirementPlan,
+  RepayLoanRequirementPlan,
   TxManifestOutpoint,
 } from "./requirements";
+import {
+  SIMPLICITY_LENDING_V3_CANCEL_OFFER,
+  SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL,
+  SIMPLICITY_LENDING_V3_CREATE_FACTORY,
+  SIMPLICITY_LENDING_V3_CREATE_OFFER,
+  SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER,
+  SIMPLICITY_LENDING_V3_REPAY_LOAN,
+} from "./builtins/simplicity-lending-v3";
 import type {
   AcceptOfferVerifiedChainSnapshot,
   ClaimLenderVaultVerifiedChainSnapshot,
@@ -33,6 +47,111 @@ export type ClaimLenderVaultChainResolution = {
   esploraUrl: string;
   snapshot: ClaimLenderVaultVerifiedChainSnapshot;
 };
+
+export type NewLendingActionRequirementPlan =
+  | CreateFactoryRequirementPlan
+  | CreateOfferRequirementPlan
+  | ClaimPrincipalRequirementPlan
+  | CancelOfferRequirementPlan
+  | RepayLoanRequirementPlan
+  | LiquidateOfferRequirementPlan;
+
+export type NewLendingActionChainResolution = {
+  esploraUrl: string;
+  snapshot: {
+    genesisHash: string;
+    tipHeight: number;
+    policyAssetId: string;
+    inputs: Record<string, AcceptOfferVerifiedChainSnapshot["pendingOffer"]>;
+    parentTransactions: string[];
+    fee: string;
+  };
+};
+
+/** Resolve every dapp-named input for the borrower and liquidation actions. */
+export async function resolveNewLendingActionChainSnapshot(
+  plan: NewLendingActionRequirementPlan,
+  policyAssetId: string,
+  inspectOutput: InspectOutput,
+  configuredEsplora?: string,
+  fetcher: FetchLike = fetch,
+): Promise<NewLendingActionChainResolution> {
+  requireSupportedFee(plan.constraints.maxFee);
+  const requested = newActionOutpoints(plan);
+  const candidates = configuredEsplora
+    ? [normalizeBase(configuredEsplora)]
+    : [...LIQUID_TESTNET_ESPLORA];
+  let lastError: unknown;
+  for (const esploraUrl of candidates) {
+    try {
+      const [genesisHash, tipHeight] = await Promise.all([
+        text(fetcher, `${esploraUrl}/block-height/0`),
+        text(fetcher, `${esploraUrl}/blocks/tip/height`).then(parseHeight),
+      ]);
+      if (genesisHash !== LIQUID_TESTNET_GENESIS_HASH) {
+        throw new Error("The configured chain server is not Liquid testnet.");
+      }
+      const resolved = await Promise.all(
+        requested.map(async ([name, outpoint]) => [
+          name,
+          await resolveOutpoint(fetcher, esploraUrl, outpoint, inspectOutput),
+        ] as const),
+      );
+      return {
+        esploraUrl,
+        snapshot: {
+          genesisHash,
+          tipHeight,
+          policyAssetId,
+          inputs: Object.fromEntries(resolved.map(([name, value]) => [name, value.input])),
+          parentTransactions: [...new Set(resolved.map(([, value]) => value.transactionHex))],
+          fee: TX_MANIFEST_DEFAULT_FEE,
+        },
+      };
+    } catch (error) {
+      lastError = error;
+      if (configuredEsplora) break;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("No Liquid testnet chain server is available.");
+}
+
+function newActionOutpoints(
+  plan: NewLendingActionRequirementPlan,
+): Array<[string, TxManifestOutpoint]> {
+  switch (plan.action) {
+    case SIMPLICITY_LENDING_V3_CREATE_FACTORY:
+      return [];
+    case SIMPLICITY_LENDING_V3_CREATE_OFFER:
+      return [
+        ["factory_auth_in", plan.walletInputs[0].outpoint],
+        ["factory_covenant_in", plan.covenantInputs[0].outpoint],
+      ];
+    case SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL:
+      return [
+        ["principal_asset_auth_in", plan.covenantInputs[0].outpoint],
+        ["borrower_nft_in", plan.walletInputs[0].outpoint],
+      ];
+    case SIMPLICITY_LENDING_V3_CANCEL_OFFER:
+      return [
+        ["pending_offer_in", plan.covenantInputs[0].outpoint],
+        ["lender_nft_in", plan.covenantInputs[1].outpoint],
+        ["borrower_nft_in", plan.walletInputs[0].outpoint],
+      ];
+    case SIMPLICITY_LENDING_V3_REPAY_LOAN:
+      return [
+        ["active_offer_in", plan.covenantInputs[0].outpoint],
+        ["borrower_nft_in", plan.walletInputs[0].outpoint],
+      ];
+    case SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER:
+      return [
+        ["active_offer_in", plan.covenantInputs[0].outpoint],
+        ["lender_nft_in", plan.walletInputs[0].outpoint],
+      ];
+  }
+}
 
 /** Choose one correctly-networked Esplora endpoint and take a fresh covenant snapshot. */
 export async function resolveAcceptOfferChainSnapshot(

@@ -1,7 +1,13 @@
 import {
   SIMPLICITY_LENDING_V3_ACCEPT_OFFER,
   SIMPLICITY_LENDING_V3_BUNDLE,
+  SIMPLICITY_LENDING_V3_CANCEL_OFFER,
   SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT,
+  SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL,
+  SIMPLICITY_LENDING_V3_CREATE_FACTORY,
+  SIMPLICITY_LENDING_V3_CREATE_OFFER,
+  SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER,
+  SIMPLICITY_LENDING_V3_REPAY_LOAN,
   SIMPLICITY_LENDING_V3_TESTNET_CHAIN,
 } from "./builtins/simplicity-lending-v3";
 import {
@@ -14,7 +20,7 @@ import {
 export type TxManifestBundleHash = `sha256:${string}`;
 
 export const SIMPLICITY_LENDING_V3_BUNDLE_HASH =
-  "sha256:0a57b34e20a46f0a3ec60d6be4904eebc9d3807bb6a2fbab0c66abdcdc05af8e" as const;
+  "sha256:debdae89777fdd21fec2d763efe028876f267ff214aca9ddf9b3735d7657be15" as const;
 
 export type TrustedTxManifest = {
   bundleHash: TxManifestBundleHash;
@@ -38,7 +44,13 @@ export const TRUSTED_TX_MANIFESTS: readonly TrustedTxManifest[] = Object.freeze(
     version: "v3",
     chainIds: [SIMPLICITY_LENDING_V3_TESTNET_CHAIN],
     actions: [
+      SIMPLICITY_LENDING_V3_CREATE_FACTORY,
+      SIMPLICITY_LENDING_V3_CREATE_OFFER,
       SIMPLICITY_LENDING_V3_ACCEPT_OFFER,
+      SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL,
+      SIMPLICITY_LENDING_V3_REPAY_LOAN,
+      SIMPLICITY_LENDING_V3_CANCEL_OFFER,
+      SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER,
       SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT,
     ],
     compilerRevision: TX_MANIFEST_PINNED_REVISIONS.simplicityHl,
@@ -46,7 +58,13 @@ export const TRUSTED_TX_MANIFESTS: readonly TrustedTxManifest[] = Object.freeze(
     review: {
       protocolLabel: "Simplicity Lending",
       actionLabels: {
+        [SIMPLICITY_LENDING_V3_CREATE_FACTORY]: "Enable borrowing",
+        [SIMPLICITY_LENDING_V3_CREATE_OFFER]: "Create borrow offer",
         [SIMPLICITY_LENDING_V3_ACCEPT_OFFER]: "Fund loan offer",
+        [SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL]: "Claim borrowed funds",
+        [SIMPLICITY_LENDING_V3_REPAY_LOAN]: "Repay loan in full",
+        [SIMPLICITY_LENDING_V3_CANCEL_OFFER]: "Cancel borrow offer",
+        [SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER]: "Liquidate expired loan",
         [SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT]: "Collect loan repayment",
       },
     },

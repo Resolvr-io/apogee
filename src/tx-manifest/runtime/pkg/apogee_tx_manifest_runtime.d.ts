@@ -34,6 +34,11 @@ export function compile_cmr_from_source(source: string, arguments_json: string, 
 export function compile_covenant_json(spec_json: string): string;
 
 /**
+ * Derive the asset id committed by one explicit new issuance.
+ */
+export function derive_issuance_asset_json(spec_json: string): string;
+
+/**
  * Execute a finalized covenant transaction entirely from caller-supplied bytes.
  * Parent transactions are verified against every prevout before execution.
  */
@@ -76,6 +81,7 @@ export interface InitOutput {
     readonly build_manifest_pset_json: (a: number, b: number, c: number) => void;
     readonly compile_cmr_from_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly compile_covenant_json: (a: number, b: number, c: number) => void;
+    readonly derive_issuance_asset_json: (a: number, b: number, c: number) => void;
     readonly dry_run_covenant_json: (a: number, b: number, c: number) => void;
     readonly execute_core_self_test: (a: number) => void;
     readonly finalize_covenant_pset_json: (a: number, b: number, c: number) => void;

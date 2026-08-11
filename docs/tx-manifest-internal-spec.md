@@ -5,11 +5,14 @@ Normative terms such as MUST and MUST NOT apply to Apogee's implementation, not 
 the upstream TX Manifest proposal.
 
 Implementation status: the event-discovered provider exposes both experimental
-methods. The built-in AcceptOffer and ClaimLenderVault paths perform fresh-chain
+methods. The built-in Simplicity Lending paths cover Enable borrowing
+(CreateFactory), CreateOffer, AcceptOffer, ClaimPrincipal, full RepayLoan,
+CancelOffer, LiquidateOffer, and ClaimLenderVault. Every path performs fresh-chain
 snapshot acquisition, deterministic wallet input selection, balanced multi-asset
 construction/blinding, approval digest binding, post-approval rebuild,
 software-wallet signing, exact final-transaction Simplicity dry-run, broadcast,
-and terminal-result idempotency.
+and terminal-result idempotency. Issued assets are derived inside Apogee from the
+wallet-selected issuance outpoint and the requesting origin's ELIP-0100 contract.
 
 ## Scope and invariants
 
@@ -110,9 +113,10 @@ not download executable compiler code at runtime.
 
 The first built-in is the current simplicity-lending v3 source revision
 `8f8ace33963788a0ed901c160a1187f8489e2c55`, with bundle identity
-`sha256:0a57b34e20a46f0a3ec60d6be4904eebc9d3807bb6a2fbab0c66abdcdc05af8e`.
-`lending_contract.AcceptOffer` and `lending_contract.ClaimLenderVault` are enabled,
-and only on Liquid testnet.
+`sha256:debdae89777fdd21fec2d763efe028876f267ff214aca9ddf9b3735d7657be15`.
+The eight lifecycle actions listed above are enabled, only on Liquid testnet.
+Approval labels come from this registry. The wallet selects fresh destinations;
+the bundle does not require address index 0.
 
 ## Support request
 
@@ -248,8 +252,11 @@ it requires a signed-transaction broadcast checkpoint and retry/resume state.
 - Liquid testnet only.
 - Built-in bundles only.
 - Software signer first; Jade is blocked on explicit BIP340 path/capability proof.
-- Exactly one principal input and one distinct L-BTC fee input.
+- Exactly one sufficient wallet input per asset role. When collateral or repayment
+  is L-BTC, the same input may also fund the network fee; otherwise the fee input is
+  distinct.
 - A conservative fixed 1,000-sat network fee; a lower dapp fee cap is rejected.
+- Full repayment only; partial-repayment vault continuation is not yet enabled.
 - No remote registry or manifest installation.
 - No full protocol indexer in Apogee.
 - No signed-PSET return mode.

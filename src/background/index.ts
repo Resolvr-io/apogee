@@ -98,21 +98,32 @@ import {
   serializeLiquidRpcError,
 } from "@/provider/liquid-rpc-errors";
 import { finalizeAndBroadcastProviderPset } from "@/provider/liquid-provider-pset-broadcast";
-import { SIMPLICITY_LENDING_V3_ACCEPT_OFFER } from "@/tx-manifest/builtins/simplicity-lending-v3";
+import {
+  SIMPLICITY_LENDING_V3_ACCEPT_OFFER,
+  SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT,
+} from "@/tx-manifest/builtins/simplicity-lending-v3";
 import { taggedCanonicalJsonHash } from "@/tx-manifest/bundle";
 import type {
   AcceptOfferRequirementPlan,
   ClaimLenderVaultRequirementPlan,
+  CreateFactoryRequirementPlan,
+  CreateOfferRequirementPlan,
+  CancelOfferRequirementPlan,
+  ClaimPrincipalRequirementPlan,
+  LiquidateOfferRequirementPlan,
+  RepayLoanRequirementPlan,
   TxManifestRequirementPlan,
 } from "@/tx-manifest/requirements";
 import type {
   HostedPreparedAcceptOfferExecution,
   HostedPreparedClaimLenderVaultExecution,
+  HostedPreparedNewLendingExecution,
 } from "@/tx-manifest/wallet-host";
 import type { TxManifestTransactionOutputInspection } from "@/tx-manifest/runtime";
 import {
   resolveAcceptOfferChainSnapshot,
   resolveClaimLenderVaultChainSnapshot,
+  resolveNewLendingActionChainSnapshot,
 } from "@/tx-manifest/esplora";
 import {
   TxManifestIdempotency,
@@ -2062,6 +2073,18 @@ type PreparedProviderTxManifest =
       plan: ClaimLenderVaultRequirementPlan;
       prepared: HostedPreparedClaimLenderVaultExecution;
       genesisHash: string;
+    }
+  | {
+      kind: "newLendingAction";
+      plan:
+        | CreateFactoryRequirementPlan
+        | CreateOfferRequirementPlan
+        | ClaimPrincipalRequirementPlan
+        | CancelOfferRequirementPlan
+        | RepayLoanRequirementPlan
+        | LiquidateOfferRequirementPlan;
+      prepared: HostedPreparedNewLendingExecution;
+      genesisHash: string;
     };
 
 async function executeProviderTxManifest(
@@ -2199,9 +2222,8 @@ async function prepareProviderTxManifest(
       vout,
     });
   const configuredServer = await chainServer(info.network);
-  const execution =
-    plan.action === SIMPLICITY_LENDING_V3_ACCEPT_OFFER
-      ? await prepareProviderAcceptOffer(
+  const execution = plan.action === SIMPLICITY_LENDING_V3_ACCEPT_OFFER
+    ? await prepareProviderAcceptOffer(
           plan,
           info.descriptor,
           info.network,
@@ -2209,7 +2231,17 @@ async function prepareProviderTxManifest(
           inspectOutput,
           configuredServer,
         )
-      : await prepareProviderClaimLenderVault(
+    : plan.action === SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT
+      ? await prepareProviderClaimLenderVault(
+          plan,
+          info.descriptor,
+          info.network,
+          policyAssetId,
+          inspectOutput,
+          configuredServer,
+        )
+      : await prepareProviderNewLendingAction(
+          origin,
           plan,
           info.descriptor,
           info.network,
@@ -2281,6 +2313,43 @@ async function prepareProviderClaimLenderVault(
   return { kind: "claimLenderVault", plan, prepared, genesisHash: resolved.snapshot.genesisHash };
 }
 
+async function prepareProviderNewLendingAction(
+  origin: string,
+  plan:
+    | CreateFactoryRequirementPlan
+    | CreateOfferRequirementPlan
+    | ClaimPrincipalRequirementPlan
+    | CancelOfferRequirementPlan
+    | RepayLoanRequirementPlan
+    | LiquidateOfferRequirementPlan,
+  descriptor: string,
+  network: LiquidNetwork,
+  policyAssetId: string,
+  inspectOutput: (transactionHex: string, vout: number) => Promise<TxManifestTransactionOutputInspection>,
+  configuredServer: string | undefined,
+): Promise<Extract<PreparedProviderTxManifest, { kind: "newLendingAction" }>> {
+  const resolved = await resolveNewLendingActionChainSnapshot(
+    plan,
+    policyAssetId,
+    inspectOutput,
+    configuredServer,
+  );
+  const prepared = await engine<HostedPreparedNewLendingExecution>({
+    kind: "prepareLendingV3NewActionWithWallet",
+    descriptor,
+    network,
+    assetContractDomain: new URL(origin).hostname.toLowerCase(),
+    plan,
+    chainSnapshot: resolved.snapshot,
+  });
+  return {
+    kind: "newLendingAction",
+    plan,
+    prepared,
+    genesisHash: resolved.snapshot.genesisHash,
+  };
+}
+
 function txManifestApprovalReview(
   context: PreparedProviderTxManifest,
 ): TxManifestApprovalReviewDTO {
@@ -2309,7 +2378,7 @@ function txManifestApprovalReview(
       principalChange: context.prepared.review.principalChange,
     };
   }
-  return {
+  if (context.kind === "claimLenderVault") return {
     ...common,
     kind: "claimLenderVault",
     principalAssetId: context.plan.intent.principalAssetId,
@@ -2318,6 +2387,48 @@ function txManifestApprovalReview(
     interestAmount: context.plan.intent.interestAmount,
     protocolFeeAmount: context.plan.intent.protocolFeeAmount,
     lenderNftAssetId: context.plan.intent.lenderNftAssetId,
+  };
+  const prepared = context.prepared;
+  if (prepared.kind === "createFactory") {
+    return {
+      ...common,
+      kind: "createFactory",
+      factoryAssetId: prepared.review.factoryAssetId,
+      fundingAmount: prepared.review.fundingAmount,
+    };
+  }
+  if (prepared.kind === "createOffer") {
+    return {
+      ...common,
+      kind: "createOffer",
+      factoryAssetId: prepared.review.factoryAssetId,
+      borrowerNftAssetId: prepared.review.borrowerNftAssetId,
+      lenderNftAssetId: prepared.review.lenderNftAssetId,
+      principalAssetId: prepared.review.principalAssetId,
+      principalAmount: prepared.review.principalAmount,
+      collateralAssetId: prepared.review.collateralAssetId,
+      collateralAmount: prepared.review.collateralAmount,
+      interestRateBasisPoints: prepared.review.interestRateBasisPoints,
+      totalDebt: prepared.review.totalDebt,
+      expirationHeight: prepared.review.expirationHeight,
+      collateralChange: prepared.review.collateralChange,
+    };
+  }
+  return {
+    ...common,
+    kind: prepared.kind,
+    principalAssetId: prepared.review.principalAssetId,
+    principalAmount: prepared.review.principalAmount,
+    collateralAssetId: prepared.review.collateralAssetId,
+    collateralAmount: prepared.review.collateralAmount,
+    borrowerNftAssetId: prepared.review.borrowerNftAssetId,
+    lenderNftAssetId: prepared.review.lenderNftAssetId,
+    expirationHeight: prepared.review.expirationHeight,
+    ...(prepared.review.totalDebt === undefined ? {} : { totalDebt: prepared.review.totalDebt }),
+    ...(prepared.review.interestAmount === undefined ? {} : { interestAmount: prepared.review.interestAmount }),
+    ...(prepared.review.protocolFeeAmount === undefined ? {} : { protocolFeeAmount: prepared.review.protocolFeeAmount }),
+    ...(prepared.review.lenderVaultAmount === undefined ? {} : { lenderVaultAmount: prepared.review.lenderVaultAmount }),
+    principalChange: prepared.review.principalChange,
   };
 }
 
@@ -3151,7 +3262,7 @@ async function handleApprovalDecision(
           genesisHash: refreshed.genesisHash,
           covenants: refreshed.prepared.covenants,
         });
-      } else {
+      } else if (refreshed.kind === "claimLenderVault") {
         await engine<true>({
           kind: "dryRunLendingV3ClaimLenderVault",
           transactionHex: extracted.transactionHex,
@@ -3159,6 +3270,17 @@ async function handleApprovalDecision(
           genesisHash: refreshed.genesisHash,
           vault: refreshed.prepared.vault,
         });
+      } else {
+        for (const covenant of refreshed.prepared.covenantExecutions) {
+          await engine<true>({
+            kind: "dryRunTxManifestCovenant",
+            spec: {
+              ...covenant,
+              transaction_hex: extracted.transactionHex,
+              parent_transactions: refreshed.prepared.parentTransactions,
+            },
+          });
+        }
       }
       let esploraUrl: string | undefined;
       await requireProviderPsetAuthorization(

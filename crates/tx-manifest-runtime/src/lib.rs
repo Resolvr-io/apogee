@@ -8,8 +8,8 @@ use elements::{
     pset::{Input, Output, PartiallySignedTransaction},
     secp256k1_zkp::{Secp256k1, XOnlyPublicKey},
     taproot::{ControlBlock, TapNodeHash, TaprootMerkleBranch, TaprootSpendInfo},
-    Address, AddressParams, AssetId, BlockHash, OutPoint, Script, Sequence, Transaction, TxOut,
-    TxOutSecrets, TxOutWitness, Txid,
+    Address, AddressParams, AssetId, BlockHash, ContractHash, LockTime, OutPoint, Script, Sequence,
+    Transaction, TxOut, TxOutSecrets, TxOutWitness, Txid,
 };
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -129,6 +129,16 @@ pub fn inspect_address_json(spec_json: &str) -> Result<String, JsValue> {
         blinding_public_key,
     };
     serde_json::to_string(&result).map_err(|error| js_error(error.to_string()))
+}
+
+/// Derive the asset id committed by one explicit new issuance.
+#[wasm_bindgen]
+pub fn derive_issuance_asset_json(spec_json: &str) -> Result<String, JsValue> {
+    let spec: IssuanceAssetSpec =
+        serde_json::from_str(spec_json).map_err(|error| js_error(error.to_string()))?;
+    let txid = Txid::from_str(&spec.txid).map_err(|error| js_error(error.to_string()))?;
+    let contract_hash = contract_hash(&spec.contract_hash, "contract_hash").map_err(js_error)?;
+    Ok(AssetId::new_issuance(OutPoint::new(txid, spec.vout), contract_hash).to_string())
 }
 
 fn compile_covenant(spec: &CovenantCompileSpec) -> Result<CovenantCommitments, String> {
@@ -501,6 +511,9 @@ fn build_manifest_pset(spec: &ManifestPsetSpec) -> Result<String, String> {
         return Err("manifest PSET must contain at least one input".to_owned());
     }
     let mut pset = PartiallySignedTransaction::new_v2();
+    if let Some(locktime) = spec.locktime {
+        pset.global.tx_data.fallback_locktime = Some(LockTime::from_consensus(locktime));
+    }
     let mut secrets = std::collections::HashMap::with_capacity(spec.inputs.len());
     let mut balances = std::collections::HashMap::<AssetId, u128>::new();
 
@@ -511,12 +524,39 @@ fn build_manifest_pset(spec: &ManifestPsetSpec) -> Result<String, String> {
             decode_hex_consensus(&entry.tx_out, &format!("inputs[{index}].tx_out"))?;
         let asset = AssetId::from_str(&entry.asset)
             .map_err(|error| format!("invalid inputs[{index}].asset: {error}"))?;
-        let amount = amount(&entry.amount, &format!("inputs[{index}].amount"))?;
-        *balances.entry(asset).or_default() += u128::from(amount);
+        let input_amount = amount(&entry.amount, &format!("inputs[{index}].amount"))?;
+        *balances.entry(asset).or_default() += u128::from(input_amount);
         let mut input = Input::from_prevout(OutPoint::new(txid, entry.vout));
         input.asset = Some(asset);
-        input.amount = Some(amount);
+        input.amount = Some(input_amount);
         input.sequence = entry.sequence.map(Sequence);
+
+        if let Some(issuance) = &entry.issuance {
+            let contract_hash = contract_hash(
+                &issuance.contract_hash,
+                &format!("inputs[{index}].issuance.contract_hash"),
+            )?;
+            let issuance_amount = amount(
+                &issuance.asset_amount,
+                &format!("inputs[{index}].issuance.asset_amount"),
+            )?;
+            if issuance_amount == 0 {
+                return Err(format!(
+                    "inputs[{index}].issuance.asset_amount must be greater than zero"
+                ));
+            }
+            let issued_asset =
+                AssetId::new_issuance(OutPoint::new(txid, entry.vout), contract_hash);
+            *balances.entry(issued_asset).or_default() += u128::from(issuance_amount);
+            input.issuance_value_amount = Some(issuance_amount);
+            // An issuance with no reissuance tokens must encode a null token
+            // amount. Encoding an explicit zero creates an invalid Elements
+            // value commitment and nodes reject the transaction as unbalanced.
+            input.issuance_inflation_keys = None;
+            input.issuance_blinding_nonce = Some(elements::secp256k1_zkp::ZERO_TWEAK);
+            input.issuance_asset_entropy = Some(contract_hash.to_byte_array());
+            input.blinded_issuance = Some(0);
+        }
 
         let (asset_bf, value_bf) = match (
             entry.asset_blinding_factor.as_deref(),
@@ -539,9 +579,19 @@ fn build_manifest_pset(spec: &ManifestPsetSpec) -> Result<String, String> {
             ))
             }
         };
-        validate_input_secrets(&witness_utxo, asset, amount, asset_bf, value_bf, index)?;
+        validate_input_secrets(
+            &witness_utxo,
+            asset,
+            input_amount,
+            asset_bf,
+            value_bf,
+            index,
+        )?;
         input.witness_utxo = Some(witness_utxo);
-        secrets.insert(index, TxOutSecrets::new(asset, asset_bf, amount, value_bf));
+        secrets.insert(
+            index,
+            TxOutSecrets::new(asset, asset_bf, input_amount, value_bf),
+        );
         pset.add_input(input);
     }
 
@@ -660,6 +710,14 @@ fn spend_balance(
     Ok(())
 }
 
+fn contract_hash(value: &str, path: &str) -> Result<ContractHash, String> {
+    let bytes = hex::decode(value).map_err(|error| format!("invalid {path}: {error}"))?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| format!("invalid {path}: expected 32 bytes"))?;
+    Ok(ContractHash::from_byte_array(bytes))
+}
+
 fn script(value: &str) -> Result<Script, String> {
     hex::decode(value)
         .map(Script::from)
@@ -712,6 +770,14 @@ struct TransactionOutputInspection {
 struct AddressInspectionSpec {
     address: String,
     network: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssuanceAssetSpec {
+    txid: String,
+    vout: u32,
+    contract_hash: String,
 }
 
 #[derive(Serialize)]
@@ -914,6 +980,7 @@ struct ManifestPsetSpec {
     inputs: Vec<ManifestPsetInput>,
     outputs: Vec<ManifestPsetOutput>,
     fee: ExplicitFee,
+    locktime: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -927,6 +994,14 @@ struct ManifestPsetInput {
     asset_blinding_factor: Option<String>,
     value_blinding_factor: Option<String>,
     sequence: Option<u32>,
+    issuance: Option<ManifestPsetIssuance>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManifestPsetIssuance {
+    contract_hash: String,
+    asset_amount: String,
 }
 
 #[derive(Deserialize)]
@@ -1274,6 +1349,49 @@ fn main() {
         assert_eq!(parsed.outputs().len(), 4);
         assert_eq!(parsed.outputs()[0].script_pubkey, Script::from(vec![0x51]));
         assert!(parsed.outputs()[3].script_pubkey.is_empty());
+    }
+
+    #[test]
+    fn builds_new_asset_issuance_with_locktime() {
+        let txid = Txid::from_str(&"44".repeat(32)).unwrap();
+        let contract_hash = ContractHash::from_str(&"00".repeat(32)).unwrap();
+        let issued_asset = AssetId::new_issuance(OutPoint::new(txid, 0), contract_hash);
+        let tx_out = elements::encode::serialize_hex(&TxOut {
+            asset: Asset::Explicit(AssetId::from_str(POLICY_ASSET).unwrap()),
+            value: Value::Explicit(1000),
+            nonce: Nonce::Null,
+            script_pubkey: Script::from(vec![0x51]),
+            witness: TxOutWitness::default(),
+        });
+        let spec = serde_json::json!({
+            "locktime": 123,
+            "inputs": [{
+                "txid": txid.to_string(), "vout": 0, "tx_out": tx_out,
+                "asset": POLICY_ASSET, "amount": "1000",
+                "issuance": { "contract_hash": contract_hash.to_string(), "asset_amount": "2" }
+            }],
+            "outputs": [
+                { "script_pub_key": "51", "asset": issued_asset.to_string(), "amount": "1" },
+                { "script_pub_key": "52", "asset": issued_asset.to_string(), "amount": "1" },
+                { "script_pub_key": "53", "asset": POLICY_ASSET, "amount": "990" }
+            ],
+            "fee": { "asset": POLICY_ASSET, "amount": "10" }
+        });
+        let parsed = PartiallySignedTransaction::from_str(
+            &build_manifest_pset(&serde_json::from_value(spec).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.global.tx_data.fallback_locktime,
+            Some(LockTime::from_consensus(123))
+        );
+        let input = &parsed.inputs()[0];
+        assert_eq!(input.issuance_value_amount, Some(2));
+        assert_eq!(input.issuance_inflation_keys, None);
+        assert_eq!(
+            input.issuance_asset_entropy,
+            Some(contract_hash.to_byte_array())
+        );
     }
 
     #[test]
