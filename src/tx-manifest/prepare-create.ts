@@ -4,6 +4,7 @@ import { deriveSimplicityLendingAsset } from "./issuance";
 import {
   compileLendingV3AcceptOfferCovenants,
   compileLendingV3IssuanceFactory,
+  type CovenantNetwork,
   type LendingV3AcceptOfferCovenants,
   type LendingV3IssuanceFactory,
 } from "./lending-v3";
@@ -40,6 +41,7 @@ const DEFAULT_RUNTIME: CreateRuntime = {
 };
 
 export type CreateFactoryChainWalletSnapshot = {
+  network?: CovenantNetwork;
   genesisHash: string;
   tipHeight: number;
   policyAssetId: string;
@@ -79,7 +81,7 @@ export async function prepareLendingV3CreateFactory(
     outpoint(snapshot.fundingInput),
     "factory",
   );
-  const factory = await runtime.compileFactory();
+  const factory = await runtime.compileFactory(undefined, snapshot.network);
   const feeChange = (BigInt(snapshot.fundingInput.amount) - BigInt(snapshot.fee)).toString();
   const outputs: TxManifestPsetBuildSpec["outputs"] = [
     output(snapshot.explicitWalletDestination, issued.assetId, "1"),
@@ -131,6 +133,7 @@ export async function prepareLendingV3CreateFactory(
 }
 
 export type CreateOfferChainWalletSnapshot = {
+  network?: CovenantNetwork;
   genesisHash: string;
   tipHeight: number;
   policyAssetId: string;
@@ -204,14 +207,18 @@ export async function prepareLendingV3CreateOffer(
   const [borrowerIssuance, lenderIssuance, factory] = await Promise.all([
     runtime.deriveAsset(snapshot.assetContractDomain, outpoint(snapshot.factoryCovenant), "borrower-nft"),
     runtime.deriveAsset(snapshot.assetContractDomain, outpoint(snapshot.collateralInput), "lender-nft"),
-    runtime.compileFactory(),
+    runtime.compileFactory(undefined, snapshot.network),
   ]);
   requireChainInput(snapshot.factoryCovenant, plan.covenantInputs[0].outpoint, plan.factoryAssetId, "1", factory.covenant.script_pub_key, "factory covenant");
-  const covenants = await runtime.compileLending({
-    ...plan.instance,
-    BORROWER_NFT_ASSET_ID: borrowerIssuance.assetId,
-    LENDER_NFT_ASSET_ID: lenderIssuance.assetId,
-  });
+  const covenants = await runtime.compileLending(
+    {
+      ...plan.instance,
+      BORROWER_NFT_ASSET_ID: borrowerIssuance.assetId,
+      LENDER_NFT_ASSET_ID: lenderIssuance.assetId,
+    },
+    undefined,
+    snapshot.network,
+  );
   const collateralChange = (
     BigInt(snapshot.collateralInput.amount) -
     BigInt(plan.intent.collateralAmount) -

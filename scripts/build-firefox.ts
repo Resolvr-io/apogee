@@ -41,6 +41,7 @@ const shared: InlineConfig = {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __GIT_COMMIT__: JSON.stringify(gitCommit()),
     __FIREFOX__: JSON.stringify(true),
+    __TX_MANIFEST_REGTEST__: JSON.stringify(false),
   },
 };
 

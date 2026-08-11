@@ -1,6 +1,7 @@
 import { taggedCanonicalJsonHash } from "./bundle";
 import {
   compileLendingV3AcceptOfferCovenants,
+  type CovenantNetwork,
   type LendingV3AcceptOfferCovenants,
   type LendingV3Instance,
 } from "./lending-v3";
@@ -30,6 +31,7 @@ export type AcceptOfferDestination = {
 };
 
 export type AcceptOfferChainWalletSnapshot = {
+  network?: CovenantNetwork;
   genesisHash: string;
   tipHeight: number;
   policyAssetId: string;
@@ -70,7 +72,7 @@ export type FinalAcceptOfferDryRun = {
 };
 
 type AcceptOfferRuntime = {
-  compileCovenants(instance: LendingV3Instance): Promise<LendingV3AcceptOfferCovenants>;
+  compileCovenants: typeof compileLendingV3AcceptOfferCovenants;
   buildPset(spec: TxManifestPsetBuildSpec): Promise<string>;
   finalizeCovenant(spec: TxManifestCovenantFinalizeSpec): Promise<string>;
 };
@@ -93,7 +95,7 @@ export async function prepareLendingV3AcceptOffer(
 ): Promise<PreparedAcceptOfferExecution> {
   validateSnapshot(plan, snapshot);
   const instance = instanceFromPlan(plan);
-  const covenants = await runtime.compileCovenants(instance);
+  const covenants = await runtime.compileCovenants(instance, undefined, snapshot.network);
   requireInput(
     snapshot.pendingOffer,
     plan.covenantInputs[0],

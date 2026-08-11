@@ -3,9 +3,11 @@ import { SIMPLICITY_LENDING_V3_BUNDLE } from "./builtins/simplicity-lending-v3";
 import { txManifestBundleHash } from "./bundle";
 import {
   SIMPLICITY_LENDING_V3_BUNDLE_HASH,
+  TRUSTED_TX_MANIFESTS,
   getTxManifestSupport,
   resolveTrustedTxManifest,
 } from "./registry";
+import { SIMPLICITY_LENDING_V3_REGTEST_CHAIN } from "./network";
 
 describe("trusted TX Manifest registry", () => {
   it("pins the exact current lending-v3 bundle", async () => {
@@ -32,6 +34,12 @@ describe("trusted TX Manifest registry", () => {
         "lending_contract.ClaimLenderVault",
       ],
     });
+  });
+
+  it("does not trust the regtest chain in normal builds", () => {
+    expect(TRUSTED_TX_MANIFESTS[0].chainIds).not.toContain(
+      SIMPLICITY_LENDING_V3_REGTEST_CHAIN,
+    );
   });
 
   it("rejects an unknown hash and a mismatched supplied bundle", async () => {

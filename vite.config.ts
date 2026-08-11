@@ -33,6 +33,10 @@ export default defineConfig({
     __GIT_COMMIT__: JSON.stringify(getCommitHash()),
     // Chrome/crxjs build. The Firefox target (scripts/build-firefox.ts) sets true.
     __FIREFOX__: JSON.stringify(false),
+    // Regtest TX Manifest execution is a browser-test capability, never a
+    // user-selectable production network. The regtest harness opts in while
+    // building the unpacked extension it controls.
+    __TX_MANIFEST_REGTEST__: JSON.stringify(process.env.APOGEE_TX_MANIFEST_REGTEST === "1"),
   },
   plugins: [
     react(),

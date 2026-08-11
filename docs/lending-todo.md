@@ -18,7 +18,7 @@ event-discovered provider.
 - [ ] Exercise explicit user rejection plus automated retry/idempotency, refresh,
   and reconnect coverage. The controlled demo successfully retried the same
   liquidation request after a rejected broadcast and reconnected between actions.
-- [ ] Add automated browser/extension coverage for all eight manifest actions.
+- [x] Add automated browser/extension coverage for all eight manifest actions.
 - [x] Run the lifecycle against the exact production extension build and record
   transaction IDs, bundle hash, chain height, and observed balances.
 
@@ -41,6 +41,19 @@ event-discovered provider.
 - Final UI state: cancellation offer `Cancelled`, default offer `Liquidated`, repayment
   offer `Claimed`; borrower showed `0.00062974` L-BTC and `1.9` TEST-USDT, lender
   showed `0.00025` L-BTC and `3.09` TEST-USDT.
+
+### Local regtest browser validation (2026-08-10)
+
+- `pnpm test:lending:regtest` passed the complete two-wallet lifecycle in 3.9
+  minutes against the real unpacked Apogee build, lending web, API, indexer,
+  Elements/electrs stack, and disposable Postgres database.
+- The test used only event-based provider discovery and approved all eight trusted
+  actions through Apogee: Enable Borrowing, Create Offer, Cancel Offer, Accept
+  Offer, Claim Principal, Repay in Full, Collect Repayment, and Liquidate Offer.
+- The scenario verified the terminal `Cancelled`, `Claimed`, and `Liquidated` UI
+  states after confirmation and indexer ingestion.
+- Regtest execution remains build-gated test infrastructure; ordinary Chrome,
+  Firefox, unit-test, and release builds do not trust the regtest chain.
 
 ## Contract lifecycle
 

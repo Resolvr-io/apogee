@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-firefox/
+dist-lending-regtest/
 *.zip
 .DS_Store
 *.log
