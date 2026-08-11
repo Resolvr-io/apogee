@@ -1,0 +1,88 @@
+name: Lending regtest lifecycle
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lending-regtest-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SIMPLEX_COMMIT: 1945d11b47fff8838c3e99c210133519a9522324
+
+jobs:
+  chromium:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Apogee
+        uses: actions/checkout@v4
+
+      - name: Checkout the pinned lending integration
+        uses: actions/checkout@v4
+        with:
+          repository: tvolk131/simplicity-lending
+          ref: e829a1cfdda55d5a2d446694cd95dda836a3ca46
+          path: simplicity-lending
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            simplicity-lending/web/pnpm-lock.yaml
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache lending Rust workspace
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: simplicity-lending -> target
+          cache-on-failure: true
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --dir simplicity-lending/web install --frozen-lockfile
+
+      - name: Install pinned Simplex CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 https://smplx.simplicity-lang.org | bash
+          BASE_DIR="${XDG_CONFIG_HOME:-$HOME}"
+          SIMPLEX_DIR="${SIMPLEX_DIR:-$BASE_DIR/.simplex}"
+          SIMPLEX_BIN_DIR="$SIMPLEX_DIR/bin"
+          "$SIMPLEX_BIN_DIR/simplexup" --commit "$SIMPLEX_COMMIT"
+          echo "$SIMPLEX_BIN_DIR" >> "$GITHUB_PATH"
+          "$SIMPLEX_BIN_DIR/simplex" --version
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run the complete lending lifecycle
+        env:
+          SIMPLICITY_LENDING_DIR: ${{ github.workspace }}/simplicity-lending
+        run: pnpm test:lending:regtest
+
+      - name: Upload browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lending-regtest-results
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7

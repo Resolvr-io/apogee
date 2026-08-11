@@ -76,9 +76,9 @@ test.describe.serial("Liquid browser provider", () => {
         "lending_contract.AcceptOffer",
         "lending_contract.ClaimPrincipal",
         "lending_contract.RepayLoan",
-        "lending_contract.ClaimLenderVault",
         "lending_contract.CancelOffer",
         "lending_contract.LiquidateOffer",
+        "lending_contract.ClaimLenderVault",
       ],
     });
 
