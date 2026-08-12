@@ -67,6 +67,7 @@ import type {
   WalletRequest,
   WalletIdentity,
   WalletTxDTO,
+  WalletUtxoDTO,
 } from "@/engine/protocol";
 import {
   LIQUID_BROWSER_PROVIDER_METHODS,
@@ -584,6 +585,15 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       const info = await walletInfo(msg.walletId);
       return engine<WalletTxDTO[]>({
         kind: "getTransactions",
+        descriptor: info.descriptor,
+        network: info.network,
+      });
+    }
+
+    case "wallet/getUtxos": {
+      const info = await walletInfo(msg.walletId);
+      return engine<WalletUtxoDTO[]>({
+        kind: "getWalletUtxos",
         descriptor: info.descriptor,
         network: info.network,
       });

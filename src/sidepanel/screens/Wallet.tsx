@@ -15,9 +15,11 @@ import {
   Activity,
   ChevronDown,
   ChevronLeft,
+  ChevronRight,
   ExternalLink,
   Eye,
   EyeOff,
+  Lock,
   QrCode,
   RefreshCw,
   Telescope,
@@ -31,6 +33,7 @@ import type {
   PriceRange,
   SyncResult,
   WalletTxDTO,
+  WalletUtxoDTO,
 } from "@/engine/protocol";
 import { PriceChart } from "@/sidepanel/components/PriceChart";
 import type { KeystoreState, LiquidNetwork, WalletInfo } from "@/keystore/keystore";
@@ -46,6 +49,7 @@ import { cn, shortenHex } from "@/lib/utils";
 import { browser } from "@/lib/ext";
 import {
   formatAssetAmount,
+  formatAssetAmountExact,
   formatBtc,
   formatFiat,
   formatRelative,
@@ -77,7 +81,7 @@ import { Send } from "@/sidepanel/screens/Send";
 import { Swap } from "@/sidepanel/screens/Swap";
 import type { ToastNotice } from "@/sidepanel/components/Toast";
 
-export type View = "home" | "receive" | "send" | "swap" | "settings";
+export type View = "home" | "receive" | "send" | "swap" | "settings" | "coins";
 
 const HIDE_KEY = "apogee:hideBalance";
 const TX_PAGE = 25; // transactions rendered per lazy-load page
@@ -565,8 +569,10 @@ export function Wallet({
             denom={denom}
             onDenomChange={setDenom}
             onReset={onReset}
+            onView={onView}
           />
         )}
+        {view === "coins" && <Coins walletId={active.id} network={active.network} watchOnly={active.signer === "watch"} />}
       </SubView>
     );
   }
@@ -1258,6 +1264,299 @@ function TxRow({
   );
 }
 
+function Coins({ walletId, network, watchOnly }: { walletId: string; network: LiquidNetwork; watchOnly: boolean }) {
+  const [utxos, setUtxos] = useState<WalletUtxoDTO[] | null>(null);
+  const [assets, setAssets] = useState<Record<string, AssetInfo>>({});
+  const [error, setError] = useState("");
+  const [busyAsset, setBusyAsset] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ tone: "info" | "error"; msg: string } | null>(null);
+
+  const loadUtxos = useCallback(() => {
+    let alive = true;
+    setError("");
+    wallet
+      .getUtxos(walletId)
+      .then((u) => {
+        if (!alive) return;
+        setUtxos(u);
+        const unknown = [...new Set(u.map((x) => x.asset))].filter(
+          (id) => !(id in KNOWN_ASSETS) && !(id in assets),
+        );
+        if (unknown.length === 0) return;
+        void (async () => {
+          const fetched: Record<string, AssetInfo> = {};
+          for (const id of unknown) {
+            try {
+              fetched[id] = await wallet.getAsset(id, network);
+            } catch {
+              /* UI falls back to shortened hex */
+            }
+          }
+          if (alive && Object.keys(fetched).length > 0) {
+            setAssets((prev) => ({ ...prev, ...fetched }));
+          }
+        })();
+      })
+      .catch((e) => {
+        if (alive) setError(errMessage(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [walletId, network, assets]);
+
+  useEffect(() => loadUtxos(), [loadUtxos]);
+
+  // Auto-refresh when a broadcast lands (the background fires this after every
+  // successful send), so the coin list updates without a manual reload.
+  useEffect(() => {
+    const onMsg = (msg: { type?: string }) => {
+      if (msg.type === "apogee/balance-changed") loadUtxos();
+    };
+    browser.runtime.onMessage.addListener(onMsg);
+    return () => browser.runtime.onMessage.removeListener(onMsg);
+  }, [loadUtxos]);
+
+  const [pendingConsolidation, setPendingConsolidation] = useState<{
+    assetId: string;
+    label: string;
+    count: number;
+    fee: string;
+    pset: string;
+    address: string;
+    recipientAmount: string;
+    feeAmount: string;
+    toSelf: boolean;
+    isToken: boolean;
+  } | null>(null);
+
+  async function startConsolidate(assetId: string, isToken: boolean, label: string, count: number) {
+    setBusyAsset(assetId);
+    setNotice(null);
+    try {
+      const addr = await wallet.getAddress(walletId);
+      const prepared = await wallet.prepareSend(
+        addr.address,
+        0,
+        true,
+        isToken ? assetId : undefined,
+      );
+      setPendingConsolidation({
+        assetId,
+        label,
+        count,
+        fee: prepared.feeAmount,
+        pset: prepared.pset,
+        address: addr.address,
+        recipientAmount: prepared.recipientAmount,
+        feeAmount: prepared.feeAmount,
+        toSelf: prepared.toSelf,
+        isToken,
+      });
+    } catch (e) {
+      setNotice({ tone: "error", msg: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusyAsset(null);
+    }
+  }
+
+  async function confirmConsolidate() {
+    const p = pendingConsolidation;
+    if (!p) return;
+    setBusyAsset(p.assetId);
+    setPendingConsolidation(null);
+    setNotice(null);
+    try {
+      await wallet.send(p.pset, {
+        address: p.address,
+        recipientAmount: p.recipientAmount,
+        feeAmount: p.feeAmount,
+        drain: true,
+        toSelf: p.toSelf,
+        ...(p.isToken
+          ? { assetId: p.assetId, assetPrecision: undefined, assetTicker: undefined }
+          : {}),
+      });
+      setNotice({ tone: "info", msg: "Consolidation broadcast." });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/reject|declin|denied|cancel/i.test(msg)) {
+        setNotice({ tone: "info", msg: "Consolidation cancelled." });
+      } else {
+        setNotice({ tone: "error", msg });
+      }
+    } finally {
+      setBusyAsset(null);
+    }
+  }
+
+  if (error) return <ErrorText>{error}</ErrorText>;
+  if (!utxos) return <LoadingPill />;
+
+  if (utxos.length === 0) {
+    return <p className="py-8 text-center text-sm text-[color:var(--text-subtle)]">No unspent outputs.</p>;
+  }
+
+  // Group by asset, L-BTC (policy asset) first, then by asset id.
+  const lbtcMainnet = "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d";
+  const lbtcTestnet = "144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49";
+  const policyAsset = network === "liquid" ? lbtcMainnet : lbtcTestnet;
+  const groups = new Map<string, WalletUtxoDTO[]>();
+  for (const u of utxos) {
+    const arr = groups.get(u.asset) ?? [];
+    arr.push(u);
+    groups.set(u.asset, arr);
+  }
+  const sortedAssets = [...groups.keys()].sort((a, b) => {
+    if (a === policyAsset) return -1;
+    if (b === policyAsset) return 1;
+    return a.localeCompare(b);
+  });
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-xs text-[color:var(--text-subtle)]">
+        {utxos.length} unspent output{utxos.length === 1 ? "" : "s"} across {groups.size} asset{groups.size === 1 ? "" : "s"}.
+      </p>
+      {notice && (
+        <p className={`text-xs ${notice.tone === "error" ? "text-[color:var(--danger-text)]" : "text-[color:var(--text-secondary)]"}`}>
+          {notice.msg}
+        </p>
+      )}
+      {sortedAssets.map((assetId) => {
+        const groupUtxos = groups.get(assetId)!;
+        const info = assets[assetId];
+        const knownLabel = KNOWN_ASSETS[assetId]?.label?.replace(/ \(testnet\)$/, "");
+        const label = knownLabel ?? info?.ticker ?? info?.name ?? shortenHex(assetId, 6, 6);
+        const precision = KNOWN_ASSETS[assetId]?.precision ?? info?.precision ?? null;
+        const total = groupUtxos.reduce((sum, u) => sum + BigInt(u.amount), 0n);
+        const isToken = assetId !== policyAsset;
+        return (
+          <div key={assetId}>
+            <div className="mb-1.5 flex items-center gap-2">
+              <AssetIcon assetId={assetId} label={label} network={network} size="size-5" />
+              <span className="text-sm font-medium text-[color:var(--text-primary)]">{label}</span>
+              <span className="ml-auto text-xs text-[color:var(--text-subtle)]">
+                {formatAssetAmountExact(total.toString(), precision)} · {groupUtxos.length} output{groupUtxos.length === 1 ? "" : "s"}
+              </span>
+            </div>
+            <div className="apogee-panel divide-y divide-[color:var(--border-soft)] overflow-hidden rounded-xl border border-[color:var(--border-default)]">
+              {groupUtxos.map((u) => (
+                <CoinRow key={`${u.txid}:${u.vout}`} utxo={u} assetId={assetId} label={label} precision={precision} network={network} />
+              ))}
+            </div>
+            {groupUtxos.length > 1 && !watchOnly && pendingConsolidation?.assetId !== assetId && (
+              <Button
+                variant="secondary"
+                size="sm"
+                className="mt-2 w-full"
+                disabled={busyAsset !== null}
+                onClick={() => void startConsolidate(assetId, isToken, label, groupUtxos.length)}
+              >
+                {busyAsset === assetId ? <Spinner className="size-3" /> : `Combine ${groupUtxos.length} outputs`}
+              </Button>
+            )}
+            {pendingConsolidation?.assetId === assetId && (
+              <div className="mt-2 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3">
+                <p className="text-sm text-[color:var(--text-primary)]">
+                  Combine {pendingConsolidation.count} outputs into 1?
+                </p>
+                <p className="mt-1 text-xs text-[color:var(--text-subtle)]">
+                  Network fee: {pendingConsolidation.fee} sats
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    size="sm"
+                    className="flex-1"
+                    disabled={busyAsset !== null}
+                    onClick={() => void confirmConsolidate()}
+                  >
+                    {busyAsset ? <Spinner className="size-3" /> : "Confirm"}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="flex-1"
+                    disabled={busyAsset !== null}
+                    onClick={() => setPendingConsolidation(null)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CoinRow({
+  utxo,
+  assetId,
+  label,
+  precision,
+  network,
+}: {
+  utxo: WalletUtxoDTO;
+  assetId: string;
+  label: string;
+  precision: number | null;
+  network: LiquidNetwork;
+}) {
+  const explorer = explorerTxUrl(network, utxo.txid);
+  return (
+    <details className="drawer">
+      <summary className="flex items-center gap-2.5 px-3 py-2">
+        <span
+          aria-label={utxo.confidential ? "Confidential" : "Unconfidential"}
+          className={`flex size-8 shrink-0 items-center justify-center rounded-full ${
+            utxo.confidential
+              ? "bg-[color:var(--accent-soft)] text-[color:var(--accent-strong)]"
+              : "bg-[color:var(--surface-soft)] text-[color:var(--text-subtle)]"
+          }`}
+        >
+          {utxo.confidential ? <Lock size={14} /> : <Eye size={14} />}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-[color:var(--text-subtle)]" title={utxo.address}>
+          {shortenHex(utxo.address, 8, 8)}
+        </span>
+        <span className="ml-auto text-sm text-[color:var(--text-strong)]">
+          <TelemetryNumber value={`${formatAssetAmountExact(utxo.amount, precision)} ${label}`} glow={false} />
+        </span>
+        <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
+      </summary>
+      <div className="flex flex-col gap-2 border-t border-[color:var(--border-soft)] px-3 py-2 text-xs">
+        <div className="flex items-center justify-between gap-3">
+          <span tabIndex={0} title={`${utxo.txid}:${utxo.vout}`} className="cursor-pointer text-[color:var(--text-subtle)]">
+            Outpoint
+          </span>
+          <span className="flex items-center gap-0.5">
+            <CopyIconButton value={`${utxo.txid}:${utxo.vout}`} label="Copy outpoint" />
+            {explorer && (
+              <a
+                href={explorer}
+                target="_blank"
+                rel="noreferrer"
+                title="View in explorer"
+                aria-label="View in explorer"
+                className="icon-btn size-6 shrink-0"
+              >
+                <ExternalLink size={13} />
+              </a>
+            )}
+          </span>
+        </div>
+        <Row label="Address" value={utxo.address} mono />
+        <Row label="Asset" value={assetId} mono />
+        <Row label="Amount" value={`${formatAssetAmountExact(utxo.amount, precision)} ${label}`} />
+        <Row label="Confidential" value={utxo.confidential ? "Yes" : "No"} />
+      </div>
+    </details>
+  );
+}
+
 function Receive({ walletId }: { walletId: string }) {
   const [address, setAddress] = useState("");
   const [qr, setQr] = useState("");
@@ -1342,6 +1641,7 @@ function SettingsBody({
   denom,
   onDenomChange,
   onReset,
+  onView,
 }: {
   wallet: WalletInfo;
   fiat: string;
@@ -1349,6 +1649,7 @@ function SettingsBody({
   denom: Denom;
   onDenomChange: (d: Denom) => void;
   onReset: () => void;
+  onView: (v: View) => void;
 }) {
   const [password, setPassword] = useState("");
   const [seed, setSeed] = useState("");
@@ -1624,6 +1925,17 @@ function SettingsBody({
             ))}
           </select>
         </Field>
+      </Card>
+
+      <Card>
+        <button
+          type="button"
+          onClick={() => onView("coins")}
+          className="flex w-full items-center justify-between text-left"
+        >
+          <span className="console-overline">Coins</span>
+          <ChevronRight size={16} className="text-[color:var(--text-subtle)]" />
+        </button>
       </Card>
 
       {info.signer === "local" && (
@@ -2245,5 +2557,5 @@ function Row({
 }
 
 function titleFor(view: View): string {
-  return view === "receive" ? "Receive" : view === "send" ? "Send" : view === "swap" ? "Swap" : "Settings";
+  return view === "receive" ? "Receive" : view === "send" ? "Send" : view === "swap" ? "Swap" : view === "coins" ? "Coins" : "Settings";
 }

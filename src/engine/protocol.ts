@@ -111,6 +111,8 @@ export type EngineRequest =
   // List the wallet's unspent outputs with their unblinding data (asset, value,
   // and both blinding factors) — what SideSwap's `start_quotes` needs per UTXO.
   | { kind: "getUtxos"; descriptor: string; network: LiquidNetwork }
+  // UI-safe coin list: address and confidentiality, but no blinding factors.
+  | { kind: "getWalletUtxos"; descriptor: string; network: LiquidNetwork }
   // Privacy-safe ELIP browser-provider projection. Unlike `getUtxos`, this
   // request never returns blinding factors; it includes the raw previous TxOut
   // so a dapp can construct a PSET without receiving wallet view material.
@@ -184,6 +186,16 @@ export interface ProviderUtxoDTO {
   address: string;
   scriptPubKey: string; // lowercase consensus-script hex
   txOut: string; // lowercase Elements TxOut consensus serialization, no witness
+  confidential: boolean;
+}
+
+/** UI-safe coin view: address and confidentiality, but no blinding factors. */
+export interface WalletUtxoDTO {
+  txid: string;
+  vout: number;
+  address: string;
+  asset: string; // hex asset id
+  amount: string; // base-10 base-unit amount
   confidential: boolean;
 }
 
@@ -401,6 +413,7 @@ export type WalletRequest =
   | { type: "wallet/getAddress"; walletId?: string; index?: number }
   | { type: "wallet/getBalance"; walletId?: string }
   | { type: "wallet/getTransactions"; walletId?: string }
+  | { type: "wallet/getUtxos"; walletId?: string }
   | { type: "wallet/revealMnemonic"; walletId: string; password: string }
   | { type: "wallet/getRate"; currency: string }
   | { type: "wallet/getPriceHistory"; currency: string; range: PriceRange }

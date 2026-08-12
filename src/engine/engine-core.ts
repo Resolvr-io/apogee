@@ -50,6 +50,7 @@ import type {
   SyncResult,
   UtxoDTO,
   WalletIdentity,
+  WalletUtxoDTO,
   WalletTxDTO,
 } from "@/engine/protocol";
 
@@ -1052,6 +1053,23 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           assetBf: sec.assetBlindingFactor().toString(),
           value: sec.value().toString(),
           valueBf: sec.valueBlindingFactor().toString(),
+        };
+      });
+    }
+
+    case "getWalletUtxos": {
+      // UI-safe coin list: address and confidentiality, no blinding factors.
+      const entry = await ensureWollet(lwk, req.descriptor, req.network);
+      return entry.wollet.utxos().map((u): WalletUtxoDTO => {
+        const op = u.outpoint();
+        const sec = u.unblinded();
+        return {
+          txid: op.txid().toString(),
+          vout: op.vout(),
+          address: u.address().toString(),
+          asset: sec.asset().toString(),
+          amount: sec.value().toString(),
+          confidential: !sec.isExplicit(),
         };
       });
     }
