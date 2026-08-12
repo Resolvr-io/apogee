@@ -16,6 +16,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ExternalLink,
+  FileCode2,
   Eye,
   EyeOff,
   QrCode,
@@ -1119,6 +1120,10 @@ function TxRow({
     tx.balanceChange !== 0 &&
     ((tx.balanceChange > 0 && token[1] < 0) || (tx.balanceChange < 0 && token[1] > 0));
 
+  // A manifest execution (e.g. a lending action) is NOT a plain send even when
+  // the balance went down — the sats went to a contract, not an external address.
+  const isManifest = tx.manifest != null;
+
   const receive = token ? token[1] > 0 : tx.balanceChange >= 0;
   const pending = tx.height === null;
   const explorer = explorerTxUrl(network, tx.txid);
@@ -1170,17 +1175,25 @@ function TxRow({
     <details className="drawer">
       <summary className="flex items-center gap-2.5 px-3 py-2">
         <span
-          aria-label={isSwap ? "Swap" : receive ? "Received" : "Sent"}
+          aria-label={isSwap ? "Swap" : isManifest ? "Contract" : receive ? "Received" : "Sent"}
           className={cn(
             "flex size-8 shrink-0 items-center justify-center rounded-full",
-            isSwap
+            isSwap || isManifest
               ? "bg-[color:var(--accent-soft)] text-[color:var(--accent-strong)]"
               : receive
                 ? "bg-[color:var(--success-bg)] text-[color:var(--success-text)]"
                 : "bg-[color:var(--danger-bg)] text-[color:var(--danger-text)]",
           )}
         >
-          {isSwap ? <ArrowLeftRight size={16} /> : receive ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}
+          {isSwap ? (
+            <ArrowLeftRight size={16} />
+          ) : isManifest ? (
+            <FileCode2 size={16} />
+          ) : receive ? (
+            <ArrowDownLeft size={16} />
+          ) : (
+            <ArrowUpRight size={16} />
+          )}
         </span>
         {isSwap ? (
           <>
@@ -1203,7 +1216,16 @@ function TxRow({
           </>
         ) : (
           <>
-            <span className="text-sm text-[color:var(--text-primary)]">{formatRelative(tx.timestamp)}</span>
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate text-sm text-[color:var(--text-primary)]">
+                {isManifest ? tx.manifest!.actionLabel : formatRelative(tx.timestamp)}
+              </span>
+              {isManifest && (
+                <span className="truncate text-[10px] text-[color:var(--text-subtle)]">
+                  {tx.manifest!.protocolLabel} · {formatRelative(tx.timestamp)}
+                </span>
+              )}
+            </span>
             <span className="ml-auto flex items-center gap-2">
               <span className={cn("text-sm text-[color:var(--text-strong)]", pending && "animate-pulse")}>
                 {hidden ? (
@@ -1243,6 +1265,12 @@ function TxRow({
         </div>
         <Row label="Time" value={formatTimestamp(tx.timestamp)} />
         <Row label="Status" value={pending ? "Unconfirmed" : `Block ${tx.height}`} />
+        {isManifest && (
+          <>
+            <Row label="Protocol" value={tx.manifest!.protocolLabel} />
+            <Row label="Action" value={tx.manifest!.actionLabel} />
+          </>
+        )}
         {isSwap && swapSentText && swapRecvText && (
           <>
             <Row label="Delivered" value={swapSentText.replace(/^[+-]/, "")} />

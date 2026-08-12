@@ -155,6 +155,7 @@ describe("ApprovalOverlay", () => {
         fee: "1000",
         principalChange: "2500",
         feeChange: "9000",
+        assets: { [POLICY_ASSET]: { label: "LBTC", ticker: "LBTC", precision: 8 } },
       },
     };
     const markup = renderToStaticMarkup(
@@ -163,10 +164,10 @@ describe("ApprovalOverlay", () => {
     expect(markup).toContain("Execute contract action");
     expect(markup).toContain("Simplicity Lending");
     expect(markup).toContain("Fund loan offer");
-    expect(markup).toContain("Approval signs and broadcasts it");
+    expect(markup).toContain("approve to sign and broadcast");
     expect(markup).toContain("Approve &amp; execute");
     expect(markup).toContain("Network fee");
-    expect(markup).toContain(",000 ");
+    expect(markup).toContain("Principal");
   });
 
   it("shows the lender's net collection, protocol fee, and NFT burn", () => {
@@ -194,6 +195,7 @@ describe("ApprovalOverlay", () => {
         feeAssetId: POLICY_ASSET,
         fee: "1000",
         feeChange: "9000",
+        assets: { [POLICY_ASSET]: { label: "LBTC", ticker: "LBTC", precision: 8 } },
       },
     };
     const markup = renderToStaticMarkup(

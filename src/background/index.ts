@@ -19,6 +19,9 @@ if (typeof window === "undefined") {
 import type { LiquidNetwork } from "@/keystore/keystore";
 import * as keystore from "@/keystore/keystore";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "@/lib/debug";
+import { KNOWN_ASSETS } from "@/lib/asset-registry";
+import { shortenHex } from "@/lib/utils";
+import type { TxManifestAssetMeta } from "@/engine/protocol";
 import { SCAN_STATE_DB } from "@/engine/protocol";
 import { providerPsetReviewsMatch } from "@/engine/provider-pset-review";
 import { isNoReceiverError, shouldRetryEngineSend } from "@/lib/engine-retry";
@@ -621,11 +624,12 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
 
     case "wallet/getTransactions": {
       const info = await walletInfo(msg.walletId);
-      return engine<WalletTxDTO[]>({
+      const txs = await engine<WalletTxDTO[]>({
         kind: "getTransactions",
         descriptor: info.descriptor,
         network: info.network,
       });
+      return enrichTxsWithManifestLabels(txs);
     }
 
     case "wallet/revealMnemonic": {
@@ -998,6 +1002,32 @@ const PROVIDER_CAPABILITIES = Object.freeze({
 });
 
 const TX_MANIFEST_RESULTS_KEY = "apogee_tx_manifest_results_v1";
+/** txid → human-readable labels, so the activity list can show "Loan repaid"
+ *  instead of an opaque "Sent" for manifest-execution transactions. */
+const MANIFEST_TX_LABELS_KEY = "apogee:manifest-tx-labels";
+
+async function recordManifestTxLabel(
+  txid: string,
+  protocolLabel: string,
+  actionLabel: string,
+): Promise<void> {
+  const stored = await browser.storage.local.get(MANIFEST_TX_LABELS_KEY);
+  const map = (stored[MANIFEST_TX_LABELS_KEY] ?? {}) as Record<string, { protocolLabel: string; actionLabel: string }>;
+  map[txid] = { protocolLabel, actionLabel };
+  await browser.storage.local.set({ [MANIFEST_TX_LABELS_KEY]: map });
+}
+
+async function enrichTxsWithManifestLabels(txs: WalletTxDTO[]): Promise<WalletTxDTO[]> {
+  if (txs.length === 0) return txs;
+  const stored = await browser.storage.local.get(MANIFEST_TX_LABELS_KEY);
+  const map = (stored[MANIFEST_TX_LABELS_KEY] ?? {}) as Record<string, { protocolLabel: string; actionLabel: string }>;
+  // Deliberately NOT pruning: the label is stored the instant a manifest
+  // broadcasts, but the transaction may take a sync or two to appear in the
+  // wallet's scan. Pruning against the current txid list would delete the
+  // label before the transaction it describes is ever seen. Manifest
+  // executions are infrequent, so the store stays small on its own.
+  return txs.map((t) => (map[t.txid] ? { ...t, manifest: map[t.txid] } : t));
+}
 const txManifestIdempotency = new TxManifestIdempotency({
   async load(): Promise<TxManifestTerminalRecord[]> {
     const value = (await browser.storage.local.get(TX_MANIFEST_RESULTS_KEY))[
@@ -2010,7 +2040,7 @@ async function executeProviderTxManifest(
         generation,
         plan,
       );
-      const review = txManifestApprovalReview(preparedContext);
+      const review = await txManifestApprovalReview(preparedContext, info.network);
       const id = `appr-${approvalSeq++}-${Date.now()}`;
       const approval: ApprovalRequest = {
         kind: "executeTxManifest",
@@ -2200,9 +2230,67 @@ async function prepareProviderNewLendingAction(
   };
 }
 
-function txManifestApprovalReview(
+/** Collect every distinct asset id mentioned in a prepared manifest context. */
+function manifestAssetIds(context: PreparedProviderTxManifest): string[] {
+  const ids = new Set<string>();
+  const push = (id: string | undefined) => {
+    if (id) ids.add(id);
+  };
+  push(context.prepared.review.feeAssetId);
+  const intent = context.plan.intent as Record<string, unknown>;
+  for (const key of [
+    "principalAssetId",
+    "collateralAssetId",
+    "factoryAssetId",
+    "borrowerNftAssetId",
+    "lenderNftAssetId",
+  ]) {
+    if (typeof intent[key] === "string") push(intent[key] as string);
+  }
+  const review = context.prepared.review as Record<string, unknown>;
+  for (const key of ["factoryAssetId", "borrowerNftAssetId", "lenderNftAssetId"]) {
+    if (typeof review[key] === "string") push(review[key] as string);
+  }
+  return [...ids];
+}
+
+/**
+ * Resolve display metadata for every asset id in the review, the same way the
+ * wallet's own screens do: KNOWN_ASSETS first (zero-latency for LBTC/USDt),
+ * then the engine's registry fetch. Best-effort — a failure degrades to a
+ * shortened-hex label with no precision, so the approval still renders.
+ */
+async function resolveManifestAssets(
   context: PreparedProviderTxManifest,
-): TxManifestApprovalReviewDTO {
+  network: LiquidNetwork,
+): Promise<Record<string, TxManifestAssetMeta>> {
+  const ids = manifestAssetIds(context);
+  const out: Record<string, TxManifestAssetMeta> = {};
+  for (const id of ids) {
+    const known = KNOWN_ASSETS[id];
+    if (known) {
+      out[id] = { label: known.label, ticker: known.label, precision: known.precision };
+      continue;
+    }
+    try {
+      const info = await engine<AssetInfo>({ kind: "getAsset", assetId: id, network });
+      out[id] = {
+        label: info.ticker ?? info.name ?? shortenHex(id, 6, 6),
+        ticker: info.ticker,
+        precision: info.precision,
+      };
+    } catch {
+      out[id] = { label: shortenHex(id, 6, 6), ticker: null, precision: null };
+    }
+  }
+  return out;
+}
+
+async function txManifestApprovalReview(
+  context: PreparedProviderTxManifest,
+  network: LiquidNetwork,
+): Promise<TxManifestApprovalReviewDTO> {
+  const assets = await resolveManifestAssets(context, network);
   const common = {
     protocolLabel: context.plan.intent.protocolLabel,
     actionLabel: context.plan.intent.actionLabel,
@@ -2213,6 +2301,7 @@ function txManifestApprovalReview(
     feeAssetId: context.prepared.review.feeAssetId,
     fee: context.prepared.review.fee,
     feeChange: context.prepared.review.feeChange,
+    assets,
   };
   if (context.kind === "acceptOffer") {
     return {
@@ -3168,6 +3257,12 @@ async function handleApprovalDecision(
         status: "broadcast",
         txid: sent.txid,
       };
+      // Record human-readable labels so the activity list shows what the
+      // transaction DID rather than just "Sent".
+      const review = pending.request.review;
+      if (review) {
+        void recordManifestTxLabel(sent.txid, review.protocolLabel, review.actionLabel);
+      }
       pending.resolve(result);
       browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
       return result;

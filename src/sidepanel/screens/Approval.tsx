@@ -4,10 +4,12 @@
 // prompt popup when it isn't. Reject (or closing the popup) fails the request.
 
 import { useEffect, useState } from "react";
-import { Check } from "lucide-react";
-import type { ApprovalRequest } from "@/engine/protocol";
+import { Check, Eye, Send, PenLine, FileCode2, Coins, KeyRound } from "lucide-react";
+import type { ApprovalRequest, TxManifestAssetMeta } from "@/engine/protocol";
 import { formatAssetAmountExact, formatBaseUnits } from "@/lib/format";
 import { shortenHex } from "@/lib/utils";
+import type { LiquidNetwork } from "@/keystore/keystore";
+import { AssetIcon } from "@/sidepanel/components/AssetIcon";
 import {
   Button,
   Card,
@@ -92,6 +94,30 @@ export function ApprovalOverlay({
   );
 }
 
+/** Human-readable labels for RPC methods shown on the connect screen. */
+const METHOD_LABELS: Record<string, { label: string; description: string; icon: typeof Eye; sensitive?: boolean }> = {
+  getBalance: { label: "Read balances", description: "See this account's asset balances.", icon: Eye },
+  sendTransfer: { label: "Request sends", description: "Ask to send funds — each send needs your approval.", icon: Send },
+  signPset: { label: "Sign transactions", description: "Ask for signatures — each transaction needs your approval.", icon: PenLine },
+  experimental_executeTxManifest: {
+    label: "Execute contracts",
+    description: "Request contract actions like lending. Each action is built, verified, and shown for approval before signing.",
+    icon: FileCode2,
+  },
+  getUTXOs: {
+    label: "View coin history",
+    description: "See individual coins, amounts, and transaction links for this account.",
+    icon: Coins,
+    sensitive: true,
+  },
+  getWalletDescriptor: {
+    label: "Derive addresses",
+    description: "Derive and correlate this account's scripts and unconfidential addresses.",
+    icon: KeyRound,
+    sensitive: true,
+  },
+};
+
 export function Approval({ request, onClose }: { request: ApprovalRequest; onClose: () => void }) {
   const isConnect = request.kind === "connect";
   const isPset = request.kind === "signPset";
@@ -119,9 +145,10 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
   const [error, setError] = useState("");
   // Brief confirmation (checkmark) shown after a successful decision, before the
   // overlay closes. Kind-aware: connect → Connected, send → Sent, provider
-  // PSET → Signed or Sent according to its approved broadcast flag, and Jade
-  // send → Approved while the device flow continues.
-  const [done, setDone] = useState<"" | "connected" | "sent" | "approved" | "signed">("");
+  // PSET → Signed or Sent according to its approved broadcast flag, manifest →
+  // Executed (not "Sent" — claiming collateral or repaying a loan isn't a send),
+  // and Jade send → Approved while the device flow continues.
+  const [done, setDone] = useState<"" | "connected" | "sent" | "approved" | "signed" | "executed">("");
   const [autoLock, setAutoLock] = useState(15);
   const [sendPassword, setSendPassword] = useState("");
   // Auto-lock "never" steps up auth: any local signing requires the password.
@@ -168,9 +195,11 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
             ? "sent"
             : isPset
               ? "signed"
-              : jade
-                ? "approved"
-                : "sent",
+              : isManifest
+                ? "executed"
+                : jade
+                  ? "approved"
+                  : "sent",
       );
     } catch (err) {
       setError(errMessage(err));
@@ -196,7 +225,9 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
         ? "Sent"
         : done === "signed"
           ? "Signed"
-          : "Approved";
+          : done === "executed"
+            ? "Executed"
+            : "Approved";
     // Connect success uses a blue Sputnik glyph (vs the green check for sends),
     // so the two outcomes read differently at a glance — and it nods to Apogee's
     // orbital/telemetry theme.
@@ -250,47 +281,48 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
       </div>
 
       {request.kind === "connect" ? (
-        <>
+        <div className="flex flex-col gap-3">
           <p className="text-sm text-[color:var(--text-secondary)]">
             {request.legacy
-              ? "This site wants to connect to your wallet. It will see your addresses and balance, but can't move funds without your approval."
-              : "This site is requesting the wallet permissions shown below. Transaction and signing requests still require their own review."}
+              ? "This site wants to connect. It will see your addresses and balance, but can't move funds without your approval."
+              : "This site wants to connect. Review what it's asking for — every transaction still needs your approval."}
           </p>
-          {!request.legacy && request.methods.includes("getUTXOs") && (
-            <p className="mt-2 text-xs leading-relaxed text-[color:var(--warning-text)]">
-              UTXO access reveals individual coins, addresses, amounts, and transaction links for
-              this account. It does not reveal blinding keys or other wallet secrets.
-            </p>
-          )}
-          {!request.legacy && request.methods.includes("getWalletDescriptor") && (
-            <p className="mt-2 text-xs leading-relaxed text-[color:var(--warning-text)]">
-              Descriptor access lets this site derive and correlate this account&apos;s scripts and
-              unconfidential addresses. It does not reveal private spend keys, blinding keys, or
-              the ability to unblind outputs.
-            </p>
-          )}
-          {!request.legacy && request.methods.includes("signPset") && (
-            <p className="mt-2 text-xs leading-relaxed text-[color:var(--warning-text)]">
-              PSET signing lets this site ask for transaction signatures. Every request still
-              shows its exact inputs, recipients, asset changes, and fees for separate approval.
-            </p>
-          )}
-          {!request.legacy && request.methods.includes("experimental_executeTxManifest") && (
-            <p className="mt-2 text-xs leading-relaxed text-[color:var(--warning-text)]">
-              TX Manifest execution lets this site request supported contract actions. Apogee
-              independently builds, verifies, and shows every execution for separate approval
-              before signing and broadcasting it.
-            </p>
-          )}
-          <dl className="mt-3 flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
+          <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
             <Row label="Wallet" value={request.fingerprint.toUpperCase()} console />
             <Row label="Network" value={networkLabel(request.network)} />
-            {!request.legacy && <Row label="Methods" value={request.methods.join(", ")} mono />}
-            {!request.legacy && request.events.length > 0 && (
-              <Row label="Events" value={request.events.join(", ")} mono />
-            )}
           </dl>
-        </>
+          {!request.legacy && request.methods.length > 0 && (
+            <ReviewSection title="Permissions">
+              {request.methods.map((method) => {
+                const info = METHOD_LABELS[method];
+                const Icon = info?.icon;
+                return (
+                  <div
+                    key={method}
+                    className="flex items-start gap-2.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-2.5"
+                  >
+                    {Icon && (
+                      <Icon
+                        size={16}
+                        className={`mt-0.5 shrink-0 ${info?.sensitive ? "text-[color:var(--warning-text)]" : "text-[color:var(--text-subtle)]"}`}
+                      />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-sm font-medium ${info?.sensitive ? "text-[color:var(--warning-text)]" : "text-[color:var(--text-primary)]"}`}>
+                        {info?.label ?? method}
+                      </div>
+                      {info?.description && (
+                        <div className="mt-0.5 text-xs leading-relaxed text-[color:var(--text-subtle)]">
+                          {info.description}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </ReviewSection>
+          )}
+        </div>
       ) : request.kind === "signPset" ? (
         <ProviderPsetReview
           review={request.review}
@@ -442,6 +474,51 @@ type TxManifestReviewDTO = Extract<
   { kind: "executeTxManifest" }
 >["review"];
 
+/** Look up resolved metadata with a shortened-hex fallback for unregistered assets. */
+function metaFor(review: TxManifestReviewDTO, assetId: string): TxManifestAssetMeta {
+  return review.assets[assetId] ?? { label: shortenHex(assetId, 6, 6), ticker: null, precision: null };
+}
+
+/** Map the Approval screen's DappNetwork to the LiquidNetwork AssetIcon expects. */
+function manifestSpecNetwork(network: "mainnet" | "testnet" | "regtest"): LiquidNetwork {
+  return network === "mainnet" ? "liquid" : network === "testnet" ? "liquidtestnet" : "regtest";
+}
+
+/** A token row: icon + role label + asset name on the left, precision-scaled amount on the right. */
+function ManifestAssetRow({
+  review,
+  assetId,
+  amount,
+  specNetwork,
+  roleLabel,
+  strong,
+}: {
+  review: TxManifestReviewDTO;
+  assetId: string;
+  amount: string;
+  specNetwork: LiquidNetwork;
+  roleLabel: string;
+  strong?: boolean;
+}) {
+  const meta = metaFor(review, assetId);
+  return (
+    <div className="flex items-center gap-2.5 py-1">
+      <AssetIcon assetId={assetId} label={meta.label} network={specNetwork} size="size-8" textSize="text-xs" />
+      <div className="min-w-0 flex-1">
+        <div className={`text-sm ${strong ? "text-[color:var(--text-strong)]" : "text-[color:var(--text-primary)]"}`}>
+          {roleLabel}
+        </div>
+        <div className="text-[10px] text-[color:var(--text-subtle)]" title={assetId}>
+          {meta.label}
+        </div>
+      </div>
+      {/* Amount only — the asset name is already the subtitle on the left, so
+          including it here would steal horizontal space and truncate the labels. */}
+      <TelemetryNumber value={formatAssetAmountExact(amount, meta.precision)} glow={false} />
+    </div>
+  );
+}
+
 function TxManifestReview({
   review,
   network,
@@ -449,120 +526,63 @@ function TxManifestReview({
   review: TxManifestReviewDTO;
   network: "mainnet" | "testnet" | "regtest";
 }) {
+  const specNetwork = manifestSpecNetwork(network);
+  const feeMeta = metaFor(review, review.feeAssetId);
+
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-sm text-[color:var(--text-secondary)]">
-        Apogee built this transaction from a trusted contract manifest and current chain state.
-        Approval signs and broadcasts it.
-      </p>
-      <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
-        <Row label="Protocol" value={review.protocolLabel} strong />
-        <Row label="Action" value={review.actionLabel} strong />
-        <Row label="Network" value={networkLabel(network)} />
-        <Row
-          label="Account"
-          value={review.accountIdentifier}
-          title={review.accountIdentifier}
-          mono
-          wrap
-        />
-        <Row label="Request" value={review.requestId} title={review.requestId} mono wrap />
-      </dl>
+      {/* Header: what the user is approving, prominent. */}
+      <div className="rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-subtle)]">
+          {review.protocolLabel}
+        </div>
+        <div className="text-base font-semibold text-[color:var(--text-strong)]">
+          {review.actionLabel}
+        </div>
+        <div className="mt-1 text-xs text-[color:var(--text-secondary)]">
+          {networkLabel(network)} · approve to sign and broadcast
+        </div>
+      </div>
 
       {review.kind === "createFactory" ? (
         <ReviewSection title="Borrower setup">
           <ReviewItem>
-            <Row label="Factory asset" value={review.factoryAssetId} title={review.factoryAssetId} mono wrap />
-            <Row label="Funding input" value={`${formatBaseUnits(review.fundingAmount)} sats`} amount />
+            <ManifestAssetRow review={review} assetId={review.factoryAssetId} amount="1" specNetwork={specNetwork} roleLabel="Factory asset" strong />
+            <ManifestAssetRow review={review} assetId={review.feeAssetId} amount={review.fundingAmount} specNetwork={specNetwork} roleLabel="Funding input" />
             <Row label="Factory auth NFT" value="1 to this wallet" strong />
           </ReviewItem>
         </ReviewSection>
       ) : review.kind === "acceptOffer" || review.kind === "createOffer" ? (
         <ReviewSection title="Loan terms">
           <ReviewItem>
-            <Row
-              label="Principal"
-              value={`${formatBaseUnits(review.principalAmount)} base units`}
-              amount
-              strong
-            />
-            <Row
-              label="Principal asset"
-              value={review.principalAssetId}
-              title={review.principalAssetId}
-              mono
-              wrap
-            />
-            <Row
-              label="Collateral"
-              value={`${formatBaseUnits(review.collateralAmount)} base units`}
-              amount
-            />
-            <Row
-              label="Collateral asset"
-              value={review.collateralAssetId}
-              title={review.collateralAssetId}
-              mono
-              wrap
-            />
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.principalAmount} specNetwork={specNetwork} roleLabel="Principal" strong />
+            <ManifestAssetRow review={review} assetId={review.collateralAssetId} amount={review.collateralAmount} specNetwork={specNetwork} roleLabel="Collateral" />
             <Row label="Interest" value={`${formatBaseUnits(review.interestRateBasisPoints)} bps`} />
-            <Row
-              label="Total debt"
-              value={`${formatBaseUnits(review.totalDebt)} base units`}
-              amount
-            />
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.totalDebt} specNetwork={specNetwork} roleLabel="Total debt" />
             <Row label="Expires at height" value={String(review.expirationHeight)} mono />
           </ReviewItem>
         </ReviewSection>
       ) : review.kind === "claimLenderVault" ? (
         <ReviewSection title="Repayment collected">
           <ReviewItem>
-            <Row
-              label="Net to wallet"
-              value={`${formatBaseUnits(review.principalAmount)} base units`}
-              amount
-              strong
-            />
-            <Row
-              label="Principal asset"
-              value={review.principalAssetId}
-              title={review.principalAssetId}
-              mono
-              wrap
-            />
-            <Row
-              label="Gross repayment"
-              value={`${formatBaseUnits(review.grossDebt)} base units`}
-              amount
-            />
-            <Row
-              label="Interest included"
-              value={`${formatBaseUnits(review.interestAmount)} base units`}
-              amount
-            />
-            <Row
-              label="Protocol fee"
-              value={`${formatBaseUnits(review.protocolFeeAmount)} base units`}
-              amount
-            />
-            <Row
-              label="Lender NFT burned"
-              value={review.lenderNftAssetId}
-              title={review.lenderNftAssetId}
-              mono
-              wrap
-            />
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.principalAmount} specNetwork={specNetwork} roleLabel="Net to wallet" strong />
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.grossDebt} specNetwork={specNetwork} roleLabel="Gross repayment" />
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.interestAmount} specNetwork={specNetwork} roleLabel="Interest included" />
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.protocolFeeAmount} specNetwork={specNetwork} roleLabel="Protocol fee" />
+            <ManifestAssetRow review={review} assetId={review.lenderNftAssetId} amount="1" specNetwork={specNetwork} roleLabel="Lender NFT burned" />
           </ReviewItem>
         </ReviewSection>
       ) : (
         <ReviewSection title={review.kind === "claimPrincipal" ? "Funds claimed" : review.kind === "cancelOffer" ? "Offer cancelled" : review.kind === "repayLoan" ? "Loan repaid" : "Expired loan liquidated"}>
           <ReviewItem>
-            <Row label="Principal" value={`${formatBaseUnits(review.principalAmount)} base units`} amount />
-            <Row label="Principal asset" value={review.principalAssetId} title={review.principalAssetId} mono wrap />
-            <Row label="Collateral" value={`${formatBaseUnits(review.collateralAmount)} base units`} amount strong />
-            <Row label="Collateral asset" value={review.collateralAssetId} title={review.collateralAssetId} mono wrap />
-            {review.totalDebt !== undefined && <Row label="Total debt" value={`${formatBaseUnits(review.totalDebt)} base units`} amount />}
-            {review.protocolFeeAmount !== undefined && <Row label="Protocol fee" value={`${formatBaseUnits(review.protocolFeeAmount)} base units`} amount />}
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.principalAmount} specNetwork={specNetwork} roleLabel="Principal" />
+            <ManifestAssetRow review={review} assetId={review.collateralAssetId} amount={review.collateralAmount} specNetwork={specNetwork} roleLabel="Collateral" strong />
+            {review.totalDebt !== undefined && (
+              <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.totalDebt} specNetwork={specNetwork} roleLabel="Total debt" />
+            )}
+            {review.protocolFeeAmount !== undefined && (
+              <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.protocolFeeAmount} specNetwork={specNetwork} roleLabel="Protocol fee" />
+            )}
             <Row label="Expiration height" value={String(review.expirationHeight)} mono />
           </ReviewItem>
         </ReviewSection>
@@ -570,43 +590,39 @@ function TxManifestReview({
 
       <ReviewSection title="Wallet effect">
         <ReviewItem>
-          <Row
-            label="Network fee"
-            value={`${formatBaseUnits(review.fee)} sats`}
-            amount
-            strong
-          />
+          <ManifestAssetRow review={review} assetId={review.feeAssetId} amount={review.fee} specNetwork={specNetwork} roleLabel="Network fee" strong />
           {"principalChange" in review && BigInt(review.principalChange) !== 0n && (
-            <Row
-              label="Principal change"
-              value={`${formatBaseUnits(review.principalChange)} base units`}
-              amount
-            />
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.principalChange} specNetwork={specNetwork} roleLabel="Principal change" />
           )}
           {review.kind === "createOffer" && BigInt(review.collateralChange) !== 0n && (
-            <Row
-              label="Collateral change"
-              value={`${formatBaseUnits(review.collateralChange)} base units`}
-              amount
-            />
+            <ManifestAssetRow review={review} assetId={review.collateralAssetId} amount={review.collateralChange} specNetwork={specNetwork} roleLabel="Collateral change" />
           )}
           {BigInt(review.feeChange) !== 0n && (
-            <Row
-              label="L-BTC change"
-              value={`${formatBaseUnits(review.feeChange)} sats`}
-              amount
-            />
+            <ManifestAssetRow review={review} assetId={review.feeAssetId} amount={review.feeChange} specNetwork={specNetwork} roleLabel={`${feeMeta.label} change`} />
           )}
         </ReviewItem>
       </ReviewSection>
 
       <details className="rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-xs">
         <summary className="cursor-pointer text-[color:var(--text-secondary)]">Technical details</summary>
-        <dl className="mt-2 flex flex-col gap-1.5">
-          <Row label="Bundle" value={review.bundleHash} title={review.bundleHash} mono wrap />
-          <Row label="Manifest action" value={review.action} title={review.action} mono wrap />
-          <Row label="Fee asset" value={review.feeAssetId} title={review.feeAssetId} mono wrap />
-        </dl>
+        <div className="mt-2 flex flex-col gap-2">
+          {[
+            { label: "Account", value: review.accountIdentifier },
+            { label: "Request", value: review.requestId },
+            { label: "Bundle", value: review.bundleHash },
+            { label: "Manifest action", value: review.action },
+            { label: "Fee asset", value: review.feeAssetId },
+          ].map(({ label, value }) => (
+            <div key={label}>
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-subtle)]">
+                {label}
+              </div>
+              <div className="mt-0.5 break-all font-mono text-[color:var(--text-primary)]">
+                {value}
+              </div>
+            </div>
+          ))}
+        </div>
       </details>
     </div>
   );

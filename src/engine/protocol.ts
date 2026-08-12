@@ -331,6 +331,14 @@ export interface ProviderPsetApprovalReviewDTO extends ProviderPsetAnalysisDTO {
   accountIdentifier: string;
 }
 
+/** Resolved display metadata for a single asset id in a manifest review. */
+export interface TxManifestAssetMeta {
+  /** KNOWN_ASSETS label, registry ticker/name, or shortened hex fallback. */
+  label: string;
+  ticker: string | null;
+  precision: number | null;
+}
+
 interface TxManifestApprovalReviewBaseDTO {
   protocolLabel: string;
   actionLabel: string;
@@ -341,6 +349,8 @@ interface TxManifestApprovalReviewBaseDTO {
   feeAssetId: string;
   fee: string;
   feeChange: string;
+  /** Resolved metadata for every distinct asset id in this review. */
+  assets: Record<string, TxManifestAssetMeta>;
 }
 
 export type TxManifestApprovalReviewDTO =
@@ -539,6 +549,8 @@ export interface WalletTxDTO {
   height: number | null;
   timestamp: number | null;
   assetDeltas: Record<string, number>;
+  /** Present when this transaction was a manifest execution (e.g. a lending action). */
+  manifest?: { protocolLabel: string; actionLabel: string };
 }
 
 // ---- side panel / prompt → service worker ----------------------------------
