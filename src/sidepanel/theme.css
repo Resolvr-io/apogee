@@ -645,7 +645,9 @@
     pointer-events: none;
   }
 
-  /* Expandable drawer (token rows, activity rows) built on native <details>. */
+  /* Expandable drawer (token rows, activity rows) built on native <details>.
+     Settings-row summaries pair -m-4 p-4 with the Card's p-4 so the whole card
+     shape — padding included — shows the pointer and toggles on click. */
   details.drawer > summary {
     list-style: none;
     cursor: pointer;

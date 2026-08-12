@@ -2000,10 +2000,19 @@ function SettingsBody({
       </Card>
 
       <Card>
+        {/* Raw button (not the Button component) so it reads as a settings row.
+            cursor-pointer: Tailwind v4's preflight no longer gives bare buttons
+            a pointer. -m-4 p-4 bleeds the hit area over the Card's padding so
+            the whole card shape is clickable, matching the drawer summaries
+            below. The width needs care, measured in the rows harness: a bare
+            button shrink-wraps (no stretch), while w-full pins the border box
+            to the Card's content box and the negative margins leave the right
+            edge 32px short. calc(100% + 2rem) lands the box exactly on the
+            Card's border box, the same box a summary computes for itself. */}
         <button
           type="button"
           onClick={() => onView("coins")}
-          className="flex w-full items-center justify-between text-left"
+          className="-m-4 flex w-[calc(100%+2rem)] cursor-pointer items-center justify-between p-4 text-left"
         >
           <span className="console-overline">Coins</span>
           <ChevronRight size={16} className="text-[color:var(--text-subtle)]" />
@@ -2026,7 +2035,7 @@ function SettingsBody({
               }
             }}
           >
-            <summary className="flex cursor-pointer items-center justify-between">
+            <summary className="-m-4 flex cursor-pointer items-center justify-between p-4">
               <span className="flex items-center gap-1.5 console-overline">
                 <Eye size={13} />
                 Reveal seed phrase
@@ -2100,7 +2109,7 @@ function SettingsBody({
           open={advancedOpen}
           onToggle={(e) => setAdvancedOpen((e.currentTarget as HTMLDetailsElement).open)}
         >
-          <summary className="flex cursor-pointer items-center justify-between">
+          <summary className="-m-4 flex cursor-pointer items-center justify-between p-4">
             <span className="console-overline">Advanced</span>
             <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
           </summary>
@@ -2146,7 +2155,7 @@ function SettingsBody({
       {DEBUG_ENTERPRISE_BUILD && !debugHidden && (
         <Card className="border-dashed border-[color:color-mix(in_srgb,var(--accent-amber)_50%,transparent)]">
           <details className="drawer">
-            <summary className="flex cursor-pointer items-center justify-between">
+            <summary className="-m-4 flex cursor-pointer items-center justify-between p-4">
               <span className="console-overline text-[color:var(--warning-text)]">Debug</span>
               <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
             </summary>
@@ -2188,7 +2197,7 @@ function SettingsBody({
             if (!e.currentTarget.open) setResetConfirm("");
           }}
         >
-          <summary className="flex cursor-pointer items-center justify-between">
+          <summary className="-m-4 flex cursor-pointer items-center justify-between p-4">
             <span className="flex items-center gap-1.5 console-overline text-[color:var(--danger-text)]">
               <AlertTriangle size={13} />
               Danger zone
