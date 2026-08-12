@@ -59,6 +59,33 @@ describe("selectAcceptOfferWalletInputs", () => {
     expect(selection.principalInputs.map(({ txid }) => txid[0])).toEqual(["a", "c"]);
     expect(selection.feeInputs).toEqual([]);
   });
+
+  it("avoids sub-floor L-BTC change in a combined principal and fee selection", () => {
+    const selection = selectAcceptOfferWalletInputs(
+      [coin("a", 0, POLICY, "1106"), coin("b", 0, POLICY, "1200")],
+      POLICY,
+      "1000",
+      POLICY,
+      "100",
+    );
+    expect(selection.principalInputs.map(({ amount }) => amount)).toEqual(["1200"]);
+  });
+
+  it("does not apply the L-BTC floor to issued-asset change", () => {
+    const selection = selectAcceptOfferWalletInputs(
+      [
+        coin("a", 0, PRINCIPAL, "1001"),
+        coin("b", 0, PRINCIPAL, "1200"),
+        coin("c", 0, POLICY, "100"),
+      ],
+      PRINCIPAL,
+      "1000",
+      POLICY,
+      "100",
+    );
+    expect(selection.principalInputs.map(({ amount }) => amount)).toEqual(["1001"]);
+    expect(selection.feeInputs.map(({ amount }) => amount)).toEqual(["100"]);
+  });
 });
 
 describe("selectManifestWalletInputs", () => {

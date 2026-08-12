@@ -195,6 +195,36 @@ describe("AcceptOffer preparation", () => {
     expect(prepared.planDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
+  it("preserves even one unit of issued-asset change", async () => {
+    const plan = await requirementPlan();
+    const covs = covenants();
+    const state = snapshot(covs);
+    state.principalInputs = [
+      {
+        txid: "22".repeat(32),
+        vout: 4,
+        txOut: "00",
+        scriptPubKey: "001411",
+        assetId: PRINCIPAL,
+        amount: "101",
+      },
+    ];
+    let buildSpec: TxManifestPsetBuildSpec | undefined;
+    const prepared = await prepareLendingV3AcceptOffer(plan, state, {
+      compileCovenants: async () => covs,
+      buildPset: async spec => {
+        buildSpec = spec;
+        return "built";
+      },
+      finalizeCovenant: async spec => spec.pset,
+    });
+
+    expect(prepared.review.principalChange).toBe("1");
+    expect(buildSpec?.outputs).toContainEqual(
+      expect.objectContaining({ asset: PRINCIPAL, amount: "1", script_pub_key: "0014bb" }),
+    );
+  });
+
   it("rejects stale covenant state and fee-policy violations before building", async () => {
     const plan = await requirementPlan();
     const covs = covenants();

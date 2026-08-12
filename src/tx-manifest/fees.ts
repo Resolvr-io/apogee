@@ -16,10 +16,14 @@ export type TxManifestFeePolicy = {
   maxFee: string;
   /** Set only while revalidating a transaction whose exact fee was reviewed. */
   exactFee?: string;
+  /** Input-selection fee target paired with `exactFee` during revalidation. */
+  exactSelectionFee?: string;
 };
 
 export type TxManifestFeeCandidate = {
   pset: string;
+  /** Fee lower bound used to select the candidate's wallet inputs. */
+  feeSelectionTarget: string;
   review: { fee: string };
 };
 
@@ -77,9 +81,11 @@ export function txManifestFeePolicy(
 /**
  * Rebuild until the finalized transaction shape is sufficiently funded.
  *
- * Fee movement is monotonic, so a fee-driven input/change-shape transition can
- * settle without oscillation. The exact-fee mode is used after approval: it
- * verifies the reviewed fee is still sufficient but never raises it silently.
+ * Selection-fee movement is monotonic, so a fee-driven input/change-shape
+ * transition can settle without oscillation. A candidate's actual fee may be
+ * slightly higher when sub-floor L-BTC change is folded into fees. Exact mode
+ * retains both values after approval: it recreates the reviewed selection and
+ * verifies the reviewed actual fee is still sufficient without raising it.
  */
 export async function convergeTxManifestFee<T extends TxManifestFeeCandidate>(
   policy: TxManifestFeePolicy,
@@ -89,11 +95,20 @@ export async function convergeTxManifestFee<T extends TxManifestFeeCandidate>(
   const rate = positiveInteger(policy.feeRateSatPerKvb, "fee rate");
   const maximum = positiveInteger(policy.maxFee, "manifest fee cap");
 
-  if (policy.exactFee !== undefined) {
+  if ((policy.exactFee === undefined) !== (policy.exactSelectionFee === undefined)) {
+    throw new Error("Reviewed actual and selection fees must be supplied together.");
+  }
+
+  if (policy.exactFee !== undefined && policy.exactSelectionFee !== undefined) {
     const exact = positiveInteger(policy.exactFee, "reviewed fee");
+    const selection = positiveInteger(policy.exactSelectionFee, "reviewed fee selection target");
+    if (selection > exact) {
+      throw new Error("The reviewed fee selection target exceeds the reviewed fee.");
+    }
     if (exact > maximum) throw new Error("The reviewed fee exceeds the manifest fee cap.");
-    const candidate = await prepare(exact.toString());
-    requireCandidateFee(candidate, exact);
+    const candidate = await prepare(selection.toString());
+    requireSelectionFee(candidate, selection);
+    requireActualFee(candidate, exact);
     const required = await requiredFee(candidate, rate, estimate);
     if (required > exact) {
       throw new Error(
@@ -103,16 +118,23 @@ export async function convergeTxManifestFee<T extends TxManifestFeeCandidate>(
     return candidate;
   }
 
-  let fee = 1n;
+  let selectionFee = 1n;
   for (let iteration = 0; iteration < TX_MANIFEST_MAX_FEE_ITERATIONS; iteration += 1) {
-    if (fee > maximum) {
+    if (selectionFee > maximum) {
       throw new Error("The estimated network fee exceeds the manifest fee cap.");
     }
-    const candidate = await prepare(fee.toString());
-    requireCandidateFee(candidate, fee);
+    const candidate = await prepare(selectionFee.toString());
+    requireSelectionFee(candidate, selectionFee);
+    const actualFee = candidateActualFee(candidate);
+    if (actualFee < selectionFee) {
+      throw new Error("The prepared transaction fee is below its selection target.");
+    }
+    if (actualFee > maximum) {
+      throw new Error("The prepared transaction fee exceeds the manifest fee cap.");
+    }
     const required = await requiredFee(candidate, rate, estimate);
-    if (required <= fee) return candidate;
-    fee = required;
+    if (required <= actualFee) return candidate;
+    selectionFee = required;
   }
   throw new Error("TX Manifest fee estimation did not converge within the safety limit.");
 }
@@ -129,10 +151,20 @@ async function requiredFee(
   return positiveInteger(result.requiredFee, "estimated fee");
 }
 
-function requireCandidateFee(candidate: TxManifestFeeCandidate, expected: bigint): void {
-  if (positiveInteger(candidate.review.fee, "prepared fee") !== expected) {
-    throw new Error("The prepared transaction fee does not match the requested fee.");
+function requireSelectionFee(candidate: TxManifestFeeCandidate, expected: bigint): void {
+  if (positiveInteger(candidate.feeSelectionTarget, "prepared fee selection target") !== expected) {
+    throw new Error("The prepared fee selection target does not match the requested fee.");
   }
+}
+
+function requireActualFee(candidate: TxManifestFeeCandidate, expected: bigint): void {
+  if (candidateActualFee(candidate) !== expected) {
+    throw new Error("The prepared transaction fee does not match the reviewed fee.");
+  }
+}
+
+function candidateActualFee(candidate: TxManifestFeeCandidate): bigint {
+  return positiveInteger(candidate.review.fee, "prepared fee");
 }
 
 function positiveInteger(value: string, label: string): bigint {

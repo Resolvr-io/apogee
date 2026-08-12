@@ -2104,6 +2104,13 @@ type PreparedProviderTxManifest =
       genesisHash: string;
     };
 
+type ReviewedTxManifestFee = {
+  /** Actual transaction fee displayed to and approved by the user. */
+  actualFee: string;
+  /** Lower bound used to reproduce the reviewed deterministic input selection. */
+  selectionFee: string;
+};
+
 async function executeProviderTxManifest(
   origin: string,
   invocation: LiquidExecuteTxManifestParams,
@@ -2205,7 +2212,10 @@ async function executeProviderTxManifest(
             invocation,
             plan,
             expectedPlanDigest: preparedContext.prepared.planDigest,
-            reviewedFee: preparedContext.prepared.review.fee,
+            reviewedFee: {
+              actualFee: preparedContext.prepared.review.fee,
+              selectionFee: preparedContext.prepared.feeSelectionTarget,
+            },
             executionKey: key,
             invocationDigest,
             permissionMethod: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST,
@@ -2331,7 +2341,7 @@ async function prepareProviderTxManifest(
   revision: number,
   generation: number,
   plan: TxManifestRequirementPlan,
-  reviewedFee?: string,
+  reviewedFee?: ReviewedTxManifestFee,
 ): Promise<PreparedProviderTxManifest> {
   await engine<SyncResult>({
     kind: "sync",
@@ -2400,7 +2410,7 @@ async function prepareProviderAcceptOffer(
   policyAssetId: string,
   inspectOutput: (transactionHex: string, vout: number) => Promise<TxManifestTransactionOutputInspection>,
   configuredServer: string | undefined,
-  reviewedFee?: string,
+  reviewedFee?: ReviewedTxManifestFee,
 ): Promise<Extract<PreparedProviderTxManifest, { kind: "acceptOffer" }>> {
   const resolved = await resolveAcceptOfferChainSnapshot(
     plan,
@@ -2427,7 +2437,7 @@ async function prepareProviderClaimLenderVault(
   policyAssetId: string,
   inspectOutput: (transactionHex: string, vout: number) => Promise<TxManifestTransactionOutputInspection>,
   configuredServer: string | undefined,
-  reviewedFee?: string,
+  reviewedFee?: ReviewedTxManifestFee,
 ): Promise<Extract<PreparedProviderTxManifest, { kind: "claimLenderVault" }>> {
   const resolved = await resolveClaimLenderVaultChainSnapshot(
     plan,
@@ -2461,7 +2471,7 @@ async function prepareProviderNewLendingAction(
   policyAssetId: string,
   inspectOutput: (transactionHex: string, vout: number) => Promise<TxManifestTransactionOutputInspection>,
   configuredServer: string | undefined,
-  reviewedFee?: string,
+  reviewedFee?: ReviewedTxManifestFee,
 ): Promise<Extract<PreparedProviderTxManifest, { kind: "newLendingAction" }>> {
   const resolved = await resolveNewLendingActionChainSnapshot(
     plan,
@@ -2487,14 +2497,20 @@ async function prepareProviderNewLendingAction(
   };
 }
 
-function withReviewedTxManifestFee<T extends { feePolicy: { exactFee?: string } }>(
+function withReviewedTxManifestFee<
+  T extends { feePolicy: { exactFee?: string; exactSelectionFee?: string } },
+>(
   snapshot: T,
-  reviewedFee: string | undefined,
+  reviewedFee: ReviewedTxManifestFee | undefined,
 ): T {
   if (reviewedFee === undefined) return snapshot;
   return {
     ...snapshot,
-    feePolicy: { ...snapshot.feePolicy, exactFee: reviewedFee },
+    feePolicy: {
+      ...snapshot.feePolicy,
+      exactFee: reviewedFee.actualFee,
+      exactSelectionFee: reviewedFee.selectionFee,
+    },
   };
 }
 
@@ -3030,7 +3046,7 @@ type PendingApproval =
           recovery?: undefined;
           plan: TxManifestRequirementPlan;
           expectedPlanDigest: `sha256:${string}`;
-          reviewedFee: string;
+          reviewedFee: ReviewedTxManifestFee;
         }
       | {
           recovery: TxManifestCheckpointPayload;

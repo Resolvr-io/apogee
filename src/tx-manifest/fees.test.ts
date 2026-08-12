@@ -12,8 +12,12 @@ function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status });
 }
 
-function candidate(fee: string): TxManifestFeeCandidate {
-  return { pset: `pset-at-${fee}`, review: { fee } };
+function candidate(selectionFee: string, actualFee = selectionFee): TxManifestFeeCandidate {
+  return {
+    pset: `pset-at-${actualFee}`,
+    feeSelectionTarget: selectionFee,
+    review: { fee: actualFee },
+  };
 }
 
 describe("fetchTxManifestFeeRate", () => {
@@ -87,7 +91,12 @@ describe("convergeTxManifestFee", () => {
     const prepare = vi.fn(async (fee: string) => candidate(fee));
     await expect(
       convergeTxManifestFee(
-        { feeRateSatPerKvb: "100", maxFee: "1000", exactFee: "80" },
+        {
+          feeRateSatPerKvb: "100",
+          maxFee: "1000",
+          exactFee: "80",
+          exactSelectionFee: "80",
+        },
         prepare,
         async () => ({ discountVsize: 790, requiredFee: "79", unsignedWalletInputs: 1 }),
       ),
@@ -96,10 +105,81 @@ describe("convergeTxManifestFee", () => {
 
     await expect(
       convergeTxManifestFee(
-        { feeRateSatPerKvb: "100", maxFee: "1000", exactFee: "80" },
+        {
+          feeRateSatPerKvb: "100",
+          maxFee: "1000",
+          exactFee: "80",
+          exactSelectionFee: "80",
+        },
         prepare,
         async () => ({ discountVsize: 810, requiredFee: "81", unsignedWalletInputs: 1 }),
       ),
     ).rejects.toThrow("reviewed fee");
+  });
+
+  it("accepts sub-floor change folded above the selection fee", async () => {
+    const prepare = vi.fn(async (fee: string) =>
+      fee === "80" ? candidate("80", "86") : candidate(fee),
+    );
+    await expect(
+      convergeTxManifestFee(
+        { feeRateSatPerKvb: "100", maxFee: "1000" },
+        prepare,
+        async ({ pset }) => ({
+          discountVsize: 850,
+          requiredFee: pset === "pset-at-1" ? "80" : "85",
+          unsignedWalletInputs: 1,
+        }),
+      ),
+    ).resolves.toEqual(candidate("80", "86"));
+    expect(prepare).toHaveBeenCalledTimes(2);
+  });
+
+  it("revalidates both the reviewed selection target and folded actual fee", async () => {
+    const prepare = vi.fn(async (fee: string) => candidate(fee, "86"));
+    await expect(
+      convergeTxManifestFee(
+        {
+          feeRateSatPerKvb: "100",
+          maxFee: "1000",
+          exactFee: "86",
+          exactSelectionFee: "80",
+        },
+        prepare,
+        async () => ({ discountVsize: 850, requiredFee: "85", unsignedWalletInputs: 1 }),
+      ),
+    ).resolves.toEqual(candidate("80", "86"));
+    expect(prepare).toHaveBeenCalledWith("80");
+
+    await expect(
+      convergeTxManifestFee(
+        {
+          feeRateSatPerKvb: "100",
+          maxFee: "1000",
+          exactFee: "85",
+          exactSelectionFee: "80",
+        },
+        prepare,
+        async () => ({ discountVsize: 850, requiredFee: "85", unsignedWalletInputs: 1 }),
+      ),
+    ).rejects.toThrow("reviewed fee");
+  });
+
+  it("requires exact actual and selection fees as a pair", async () => {
+    await expect(
+      convergeTxManifestFee(
+        { feeRateSatPerKvb: "100", maxFee: "1000", exactFee: "80" },
+        async (fee) => candidate(fee),
+      ),
+    ).rejects.toThrow("supplied together");
+  });
+
+  it("applies the fee cap to a folded actual fee", async () => {
+    await expect(
+      convergeTxManifestFee(
+        { feeRateSatPerKvb: "100", maxFee: "85" },
+        async (fee) => candidate(fee, "86"),
+      ),
+    ).rejects.toThrow("fee cap");
   });
 });

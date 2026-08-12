@@ -122,14 +122,19 @@ event-discovered provider.
   - Preserves exact approval accounting and stable transaction ordering.
   - Covers fragmented L-BTC, collateral, and principal balances in unit tests and
     the complete regtest browser lifecycle.
-- [ ] Calibrate and apply a network-aware minimum-change/dust policy. The selector
-  already accepts a minimum-change floor and prefers dust-safe solutions; dynamic
-  fee construction must decide whether an unavoidable policy-asset remainder is
-  change, additional fee, or a preparation failure.
+- [x] Calibrate and apply a wallet-owned minimum-change policy for L-BTC.
   - [x] Complete the sizing and convergence spike in
     `docs/tx-manifest-minimum-change-spike.md`: confidential change costs 67–69
     discounted vbytes, a future P2WPKH spend costs 68 discounted vbytes, and the
-    proposed wallet-owned post-creation floor is 7 sats.
+    wallet-owned post-creation floor is 7 sats at the 100 sat/kvB long-term rate.
+  - Deterministic selection prefers exact change or at least 7 sats. An unavoidable
+    1–6 sat L-BTC remainder becomes additional fee and produces no change output;
+    issued-asset change is never folded into fees.
+  - Approval revalidation retains both the selection fee and the actual reviewed
+    fee, reproducing the same inputs and tiny-change decision without silently
+    changing the approved transaction.
+  - Recalibrate the long-term rate and floor as part of mainnet release review;
+    live confidential-output creation cost remains covered by dynamic estimation.
 - [x] Replace the fixed 1,000-sat fee with dynamic fee estimation.
   - Uses Esplora's 1-block estimate and the finalized PSET's discounted virtual
     size, including a conservative bound for every unsigned wallet witness.

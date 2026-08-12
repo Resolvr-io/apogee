@@ -33,6 +33,10 @@ import { resolveTxManifestRequirements } from "@/tx-manifest/requirements";
 import { txManifestHistoryAnnotation } from "@/tx-manifest/history";
 import { convergeTxManifestFee } from "@/tx-manifest/fees";
 import {
+  TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
+  txManifestLbtcChangeDecision,
+} from "@/tx-manifest/change-policy";
+import {
   isTxManifestExecutionNetwork,
   txManifestRuntimeNetwork,
 } from "@/tx-manifest/network";
@@ -1145,6 +1149,12 @@ export async function handle(req: EngineRequest): Promise<unknown> {
             req.chainSnapshot.policyAssetId,
             fee,
           );
+          const combinedPrincipalAndFee = selected.feeInputs.length === 0;
+          const feeDecision = txManifestLbtcChangeDecision(
+            combinedPrincipalAndFee ? selected.principalInputs : selected.feeInputs,
+            combinedPrincipalAndFee ? req.plan.intent.principalAmount : "0",
+            fee,
+          );
           const prepared = await prepareLendingV3AcceptOffer(req.plan, {
             network: manifestNetwork,
             genesisHash: req.chainSnapshot.genesisHash,
@@ -1163,10 +1173,11 @@ export async function handle(req: EngineRequest): Promise<unknown> {
               scriptPubKey: destination.script_pub_key,
               blindingPublicKey: destination.blinding_public_key,
             },
-            fee,
+            fee: feeDecision.actualFee,
           });
           return {
             ...prepared,
+            feeSelectionTarget: feeDecision.selectionFee,
             parentTransactions: [
               ...new Set([
                 ...req.chainSnapshot.parentTransactions,
@@ -1252,6 +1263,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
             req.chainSnapshot.policyAssetId,
             fee,
           );
+          const feeDecision = txManifestLbtcChangeDecision(selected.feeInputs, "0", fee);
           const resolvedNft = req.chainSnapshot.lenderNft;
           if (
             selected.lenderNftInput.txOut !== resolvedNft.txOut ||
@@ -1277,10 +1289,11 @@ export async function handle(req: EngineRequest): Promise<unknown> {
               scriptPubKey: destination.script_pub_key,
               blindingPublicKey: destination.blinding_public_key,
             },
-            fee,
+            fee: feeDecision.actualFee,
           });
           return {
             ...prepared,
+            feeSelectionTarget: feeDecision.selectionFee,
             parentTransactions: [
               ...new Set([
                 ...req.chainSnapshot.parentTransactions,
@@ -1380,7 +1393,9 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           fee,
           [],
           "confirmed L-BTC input",
+          TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
         );
+        const feeDecision = txManifestLbtcChangeDecision(fundingInputs, "0", fee);
         const prepared = await prepareLendingV3CreateFactory(req.plan, {
           network: manifestNetwork,
           genesisHash: req.chainSnapshot.genesisHash,
@@ -1390,10 +1405,11 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           fundingInputs,
           explicitWalletDestination: explicitDestination,
           feeChangeDestination: confidentialDestination,
-          fee,
+          fee: feeDecision.actualFee,
         });
         const result: HostedPreparedNewLendingExecution = {
           ...prepared,
+          feeSelectionTarget: feeDecision.selectionFee,
           parentTransactions: parents(...fundingInputs),
         };
         return result;
@@ -1418,6 +1434,9 @@ export async function handle(req: EngineRequest): Promise<unknown> {
             : req.plan.intent.collateralAmount,
           [factoryAuthInput],
           "collateral input",
+          combinesCollateralAndFee
+            ? TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE
+            : "0",
         );
         const feeInputs = combinesCollateralAndFee
           ? []
@@ -1427,7 +1446,13 @@ export async function handle(req: EngineRequest): Promise<unknown> {
               fee,
               [factoryAuthInput, ...collateralInputs],
               "distinct L-BTC fee inputs",
+              TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
             );
+        const feeDecision = txManifestLbtcChangeDecision(
+          combinesCollateralAndFee ? collateralInputs : feeInputs,
+          combinesCollateralAndFee ? req.plan.intent.collateralAmount : "0",
+          fee,
+        );
         const factoryCovenant = req.chainSnapshot.inputs.factory_covenant_in;
         if (!factoryCovenant) throw new Error("Verified chain snapshot is missing factory_covenant_in.");
         const prepared = await prepareLendingV3CreateOffer(req.plan, {
@@ -1442,10 +1467,11 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           feeInputs,
           explicitWalletDestination: explicitDestination,
           changeDestination: confidentialDestination,
-          fee,
+          fee: feeDecision.actualFee,
         });
         const result: HostedPreparedNewLendingExecution = {
           ...prepared,
+          feeSelectionTarget: feeDecision.selectionFee,
           parentTransactions: parents(factoryAuthInput, ...collateralInputs, ...feeInputs),
         };
         return result;
@@ -1454,7 +1480,15 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       if (req.plan.action === SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL) {
         recoverNamedWalletInput("borrower_nft_in");
         const borrowerNftInput = selectManifestWalletInputByOutpoint(candidates, req.plan.walletInputs[0].outpoint, req.plan.intent.borrowerNftAssetId, "1", "borrower NFT");
-        const feeInputs = selectManifestWalletInputs(candidates, req.chainSnapshot.policyAssetId, fee, [borrowerNftInput], "distinct L-BTC fee inputs");
+        const feeInputs = selectManifestWalletInputs(
+          candidates,
+          req.chainSnapshot.policyAssetId,
+          fee,
+          [borrowerNftInput],
+          "distinct L-BTC fee inputs",
+          TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
+        );
+        const feeDecision = txManifestLbtcChangeDecision(feeInputs, "0", fee);
         const principalAssetAuth = req.chainSnapshot.inputs.principal_asset_auth_in;
         if (!principalAssetAuth) throw new Error("Verified chain snapshot is missing principal_asset_auth_in.");
         const prepared = await prepareLendingV3BorrowerAction(req.plan, {
@@ -1469,15 +1503,27 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           walletDestination: confidentialDestination,
           explicitWalletDestination: explicitDestination,
           feeChangeDestination: confidentialDestination,
-          fee,
+          fee: feeDecision.actualFee,
         });
-        return { ...prepared, parentTransactions: parents(borrowerNftInput, ...feeInputs) } satisfies HostedPreparedNewLendingExecution;
+        return {
+          ...prepared,
+          feeSelectionTarget: feeDecision.selectionFee,
+          parentTransactions: parents(borrowerNftInput, ...feeInputs),
+        } satisfies HostedPreparedNewLendingExecution;
       }
 
       if (req.plan.action === SIMPLICITY_LENDING_V3_CANCEL_OFFER) {
         recoverNamedWalletInput("borrower_nft_in");
         const borrowerNftInput = selectManifestWalletInputByOutpoint(candidates, req.plan.walletInputs[0].outpoint, req.plan.intent.borrowerNftAssetId, "1", "borrower NFT");
-        const feeInputs = selectManifestWalletInputs(candidates, req.chainSnapshot.policyAssetId, fee, [borrowerNftInput], "distinct L-BTC fee inputs");
+        const feeInputs = selectManifestWalletInputs(
+          candidates,
+          req.chainSnapshot.policyAssetId,
+          fee,
+          [borrowerNftInput],
+          "distinct L-BTC fee inputs",
+          TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
+        );
+        const feeDecision = txManifestLbtcChangeDecision(feeInputs, "0", fee);
         const pendingOffer = req.chainSnapshot.inputs.pending_offer_in;
         const lenderNftAuthorization = req.chainSnapshot.inputs.lender_nft_in;
         if (!pendingOffer || !lenderNftAuthorization) throw new Error("Verified chain snapshot is missing cancellation inputs.");
@@ -1494,9 +1540,13 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           walletDestination: confidentialDestination,
           explicitWalletDestination: explicitDestination,
           feeChangeDestination: confidentialDestination,
-          fee,
+          fee: feeDecision.actualFee,
         });
-        return { ...prepared, parentTransactions: parents(borrowerNftInput, ...feeInputs) } satisfies HostedPreparedNewLendingExecution;
+        return {
+          ...prepared,
+          feeSelectionTarget: feeDecision.selectionFee,
+          parentTransactions: parents(borrowerNftInput, ...feeInputs),
+        } satisfies HostedPreparedNewLendingExecution;
       }
 
       if (req.plan.action === SIMPLICITY_LENDING_V3_REPAY_LOAN) {
@@ -1512,10 +1562,25 @@ export async function handle(req: EngineRequest): Promise<unknown> {
             : req.plan.intent.totalDebt,
           [borrowerNftInput],
           "repayment input",
+          combinesRepaymentAndFee
+            ? TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE
+            : "0",
         );
         const feeInputs = combinesRepaymentAndFee
           ? []
-          : selectManifestWalletInputs(candidates, req.chainSnapshot.policyAssetId, fee, [borrowerNftInput, ...repaymentInputs], "distinct L-BTC fee inputs");
+          : selectManifestWalletInputs(
+              candidates,
+              req.chainSnapshot.policyAssetId,
+              fee,
+              [borrowerNftInput, ...repaymentInputs],
+              "distinct L-BTC fee inputs",
+              TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
+            );
+        const feeDecision = txManifestLbtcChangeDecision(
+          combinesRepaymentAndFee ? repaymentInputs : feeInputs,
+          combinesRepaymentAndFee ? req.plan.intent.totalDebt : "0",
+          fee,
+        );
         const activeOffer = req.chainSnapshot.inputs.active_offer_in;
         if (!activeOffer) throw new Error("Verified chain snapshot is missing active_offer_in.");
         const prepared = await prepareLendingV3BorrowerAction(req.plan, {
@@ -1532,15 +1597,27 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           explicitWalletDestination: explicitDestination,
           principalChangeDestination: confidentialDestination,
           feeChangeDestination: confidentialDestination,
-          fee,
+          fee: feeDecision.actualFee,
         });
-        return { ...prepared, parentTransactions: parents(borrowerNftInput, ...repaymentInputs, ...feeInputs) } satisfies HostedPreparedNewLendingExecution;
+        return {
+          ...prepared,
+          feeSelectionTarget: feeDecision.selectionFee,
+          parentTransactions: parents(borrowerNftInput, ...repaymentInputs, ...feeInputs),
+        } satisfies HostedPreparedNewLendingExecution;
       }
 
       if (req.plan.action === SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER) {
         recoverNamedWalletInput("lender_nft_in");
         const lenderNftInput = selectManifestWalletInputByOutpoint(candidates, req.plan.walletInputs[0].outpoint, req.plan.intent.lenderNftAssetId, "1", "lender NFT");
-        const feeInputs = selectManifestWalletInputs(candidates, req.chainSnapshot.policyAssetId, fee, [lenderNftInput], "distinct L-BTC fee inputs");
+        const feeInputs = selectManifestWalletInputs(
+          candidates,
+          req.chainSnapshot.policyAssetId,
+          fee,
+          [lenderNftInput],
+          "distinct L-BTC fee inputs",
+          TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
+        );
+        const feeDecision = txManifestLbtcChangeDecision(feeInputs, "0", fee);
         const activeOffer = req.chainSnapshot.inputs.active_offer_in;
         if (!activeOffer) throw new Error("Verified chain snapshot is missing active_offer_in.");
         const prepared = await prepareLendingV3BorrowerAction(req.plan, {
@@ -1555,9 +1632,13 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           walletDestination: confidentialDestination,
           explicitWalletDestination: explicitDestination,
           feeChangeDestination: confidentialDestination,
-          fee,
+          fee: feeDecision.actualFee,
         });
-        return { ...prepared, parentTransactions: parents(lenderNftInput, ...feeInputs) } satisfies HostedPreparedNewLendingExecution;
+        return {
+          ...prepared,
+          feeSelectionTarget: feeDecision.selectionFee,
+          parentTransactions: parents(lenderNftInput, ...feeInputs),
+        } satisfies HostedPreparedNewLendingExecution;
       }
 
       throw new Error("Unsupported Simplicity Lending TX Manifest action.");

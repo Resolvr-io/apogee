@@ -22,6 +22,7 @@ import {
   MAX_MANIFEST_SELECTION_SEARCH_NODES,
   MAX_MANIFEST_WALLET_INPUTS_PER_ASSET,
 } from "./coin-selection-policy";
+import { TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE } from "./change-policy";
 import type { TxManifestFeePolicy } from "./fees";
 
 export type AcceptOfferWalletCandidate = AcceptOfferResolvedInput & {
@@ -44,9 +45,14 @@ export type AcceptOfferVerifiedChainSnapshot = {
   feePolicy: TxManifestFeePolicy;
 };
 
+export type HostedTxManifestFeeSelection = {
+  /** Fee lower bound used for deterministic input selection before any tiny-change fold. */
+  feeSelectionTarget: string;
+};
+
 export type HostedPreparedAcceptOfferExecution = PreparedAcceptOfferExecution & {
   parentTransactions: string[];
-};
+} & HostedTxManifestFeeSelection;
 
 export type ClaimLenderVaultVerifiedChainSnapshot = {
   genesisHash: string;
@@ -60,7 +66,7 @@ export type ClaimLenderVaultVerifiedChainSnapshot = {
 
 export type HostedPreparedClaimLenderVaultExecution = PreparedClaimLenderVaultExecution & {
   parentTransactions: string[];
-};
+} & HostedTxManifestFeeSelection;
 
 export type ClaimLenderVaultWalletSelection = {
   lenderNftInput: AcceptOfferWalletCandidate;
@@ -93,7 +99,7 @@ export type HostedPreparedNewLendingExecution = (
   | PreparedCreateFactoryExecution
   | PreparedCreateOfferExecution
   | PreparedBorrowerLendingExecution
-) & { parentTransactions: string[] };
+) & { parentTransactions: string[] } & HostedTxManifestFeeSelection;
 
 /**
  * Recover an explicit wallet output that LWK cannot place in `wollet.utxos()`.
@@ -146,6 +152,7 @@ export function selectAcceptOfferWalletInputs(
         (BigInt(principalAmount) + BigInt(fee)).toString(),
         [],
         "principal and fee inputs",
+        TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
       ),
       feeInputs: [],
     };
@@ -165,6 +172,7 @@ export function selectAcceptOfferWalletInputs(
       fee,
       principalInputs,
       "distinct L-BTC fee inputs",
+      TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
     ),
   };
 }
@@ -194,6 +202,7 @@ export function selectClaimLenderVaultWalletInputs(
       fee,
       [lenderNftInput],
       "distinct L-BTC fee inputs",
+      TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
     ),
   };
 }
