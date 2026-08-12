@@ -1319,6 +1319,37 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
     return () => browser.runtime.onMessage.removeListener(onMsg);
   }, [loadUtxos]);
 
+  // Broadcast consolidations awaiting their first sighting, keyed by asset:
+  // the txid plus the outpoints the tx spends. getUtxos reads the wollet's
+  // last sync, so poll sync + reload on the home view's settle cadence (5s,
+  // bounded at 12 tries) until the spent outpoints drop out of the list —
+  // that's the moment the sync has caught the mempool tx, and the card clears.
+  const [broadcasts, setBroadcasts] = useState<Record<string, { txid: string; spent: string[] }>>({});
+  const settlePolls = useRef(0);
+  useEffect(() => {
+    const entries = Object.entries(broadcasts);
+    if (!utxos || entries.length === 0) {
+      settlePolls.current = 0;
+      return;
+    }
+    const present = new Set(utxos.map((u) => `${u.txid}:${u.vout}`));
+    const landed = entries.filter(([, b]) => b.spent.every((op) => !present.has(op))).map(([id]) => id);
+    if (landed.length > 0) {
+      setBroadcasts((b) => {
+        const next = { ...b };
+        for (const id of landed) delete next[id];
+        return next;
+      });
+      return;
+    }
+    if (settlePolls.current >= 12) return; // stuck — leave the card, stop polling
+    const t = window.setTimeout(() => {
+      settlePolls.current += 1;
+      void wallet.sync(walletId).then(loadUtxos, () => undefined);
+    }, 5000);
+    return () => window.clearTimeout(t);
+  }, [broadcasts, utxos, loadUtxos, walletId]);
+
   const [pendingConsolidation, setPendingConsolidation] = useState<{
     assetId: string;
     label: string;
@@ -1369,7 +1400,7 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
     setPendingConsolidation(null);
     setNotice(null);
     try {
-      await wallet.send(p.pset, {
+      const sent = await wallet.send(p.pset, {
         address: p.address,
         recipientAmount: p.recipientAmount,
         feeAmount: p.feeAmount,
@@ -1379,7 +1410,16 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
           ? { assetId: p.assetId, assetPrecision: undefined, assetTicker: undefined }
           : {}),
       });
-      setNotice({ tone: "info", msg: "Consolidation broadcast." });
+      // Track the tx instead of a one-line notice: the pending card shows the
+      // txid and the poll above clears it once the list reflects the spend.
+      settlePolls.current = 0;
+      setBroadcasts((b) => ({
+        ...b,
+        [p.assetId]: {
+          txid: sent.txid,
+          spent: (utxos ?? []).filter((u) => u.asset === p.assetId).map((u) => `${u.txid}:${u.vout}`),
+        },
+      }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (/reject|declin|denied|cancel/i.test(msg)) {
@@ -1433,6 +1473,8 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
         const precision = KNOWN_ASSETS[assetId]?.precision ?? info?.precision ?? null;
         const total = groupUtxos.reduce((sum, u) => sum + BigInt(u.amount), 0n);
         const isToken = assetId !== policyAsset;
+        const broadcast = broadcasts[assetId];
+        const broadcastUrl = broadcast ? explorerTxUrl(network, broadcast.txid) : null;
         return (
           <div key={assetId}>
             <div className="mb-1.5 flex items-center gap-2">
@@ -1447,7 +1489,7 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
                 <CoinRow key={`${u.txid}:${u.vout}`} utxo={u} assetId={assetId} label={label} precision={precision} network={network} />
               ))}
             </div>
-            {groupUtxos.length > 1 && !watchOnly && pendingConsolidation?.assetId !== assetId && (
+            {groupUtxos.length > 1 && !watchOnly && !broadcast && pendingConsolidation?.assetId !== assetId && (
               <Button
                 variant="secondary"
                 size="sm"
@@ -1484,6 +1526,34 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
                   >
                     Cancel
                   </Button>
+                </div>
+              </div>
+            )}
+            {broadcast && (
+              <div className="mt-2 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3">
+                <p className="flex items-center gap-2 text-sm text-[color:var(--text-primary)]">
+                  <Spinner className="size-3" />
+                  Consolidation pending
+                </p>
+                <div className="mt-1.5 flex items-center justify-between gap-3">
+                  <span className="min-w-0 truncate font-mono text-xs text-[color:var(--text-subtle)]" title={broadcast.txid}>
+                    {shortenHex(broadcast.txid, 8, 8)}
+                  </span>
+                  <span className="flex items-center gap-0.5">
+                    <CopyIconButton value={broadcast.txid} label="Copy transaction id" />
+                    {broadcastUrl && (
+                      <a
+                        href={broadcastUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="View in explorer"
+                        aria-label="View in explorer"
+                        className="icon-btn size-6 shrink-0"
+                      >
+                        <ExternalLink size={13} />
+                      </a>
+                    )}
+                  </span>
                 </div>
               </div>
             )}
