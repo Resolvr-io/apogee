@@ -182,6 +182,12 @@ test("real lending UI executes every trusted lending action through Apogee", asy
       [SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER]: 1,
       [SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT]: 1,
     });
+    const historyByTxid = new Map(
+      [...borrowerBeforeRecords, ...lenderBeforeRecords].map((record) => [record.txid, record]),
+    );
+    const manifestFees = observed.map(({ txid }) => historyByTxid.get(txid)?.fee);
+    expect(manifestFees.every((fee) => fee !== undefined && fee > 0 && fee <= 1_000)).toBe(true);
+    expect(manifestFees.some((fee) => fee !== 1_000)).toBe(true);
     expect(
       observed.some(
         ({ action, inputCount }) =>
@@ -258,6 +264,7 @@ type ActionHintObservation = {
 
 type WalletHistoryRecord = {
   txid: string;
+  fee: number;
   txManifest?: {
     status: "verified" | "unsupported" | "unverified";
     bundleHash?: string;

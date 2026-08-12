@@ -99,7 +99,7 @@ in-memory and host-supplied adapters, ideally upstream where practical.
   automated suite currently uses offline confirmed-chain vectors and host mocks.
 - Issuance/reissuance parity with the deployed contract.
 - BIP340 wallet-witness derivation and Jade support.
-- Dynamic fee estimation and multi-input principal/fee coin selection.
+- Network-aware minimum-change/dust calibration for fee-dependent change outputs.
 - Crash-safe signed-transaction broadcast checkpointing to close the narrow gap
   between network acceptance and durable terminal-result storage.
 - Manual Chrome/Firefox provider smoke tests and a final optimized bundle-size budget.

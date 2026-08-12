@@ -119,10 +119,16 @@ event-discovered provider.
   already accepts a minimum-change floor and prefers dust-safe solutions; dynamic
   fee construction must decide whether an unavoidable policy-asset remainder is
   change, additional fee, or a preparation failure.
-- [ ] Replace the fixed 1,000-sat fee with dynamic fee estimation.
-  - Keep the dapp's maximum-fee constraint authoritative.
-  - Rebuild and require reapproval if the estimated fee changes the approved plan.
-  - Define fallback behavior when fee estimates are unavailable.
+- [x] Replace the fixed 1,000-sat fee with dynamic fee estimation.
+  - Uses Esplora's 1-block estimate and the finalized PSET's discounted virtual
+    size, including a conservative bound for every unsigned wallet witness.
+  - Rebuilds with deterministic coin selection until the required fee and
+    transaction shape converge, with an iteration bound and wallet-owned fee cap.
+  - Keeps the dapp's lower maximum-fee constraint authoritative.
+  - Pins the exact reviewed fee during approval-time revalidation; a higher
+    required fee fails and requires a fresh approval instead of changing silently.
+  - Falls back to LWK's conservative 100 sat/kvB default when Esplora fee estimates
+    are missing or invalid.
 
 ## Manifest distribution and upgrades
 

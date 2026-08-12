@@ -45,6 +45,13 @@ export function derive_issuance_asset_json(spec_json: string): string;
 export function dry_run_covenant_json(spec_json: string): void;
 
 /**
+ * Estimate the conservative signed discounted vsize and required fee for a
+ * manifest PSET. Contract adapters must finalize every non-wallet input first;
+ * remaining unsigned inputs must be Apogee's standard native SegWit P2WPKH.
+ */
+export function estimate_manifest_fee_json(spec_json: string): string;
+
+/**
  * Compile, satisfy, and execute a small Core-jet program in the Bit Machine.
  *
  * Real lending dry-runs use an `ElementsEnv` built from the finalized transaction
@@ -83,6 +90,7 @@ export interface InitOutput {
     readonly compile_covenant_json: (a: number, b: number, c: number) => void;
     readonly derive_issuance_asset_json: (a: number, b: number, c: number) => void;
     readonly dry_run_covenant_json: (a: number, b: number, c: number) => void;
+    readonly estimate_manifest_fee_json: (a: number, b: number, c: number) => void;
     readonly execute_core_self_test: (a: number) => void;
     readonly finalize_covenant_pset_json: (a: number, b: number, c: number) => void;
     readonly inspect_address_json: (a: number, b: number, c: number) => void;

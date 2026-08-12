@@ -23,9 +23,9 @@ import type {
 } from "./wallet-host";
 import type { TxManifestTransactionOutputInspection } from "./runtime";
 import { LIQUID_TESTNET_GENESIS_HASH } from "./network";
+import { fetchTxManifestFeeRate, txManifestFeePolicy } from "./fees";
 
 export { LIQUID_TESTNET_GENESIS_HASH } from "./network";
-export const TX_MANIFEST_DEFAULT_FEE = "1000";
 
 const LIQUID_TESTNET_ESPLORA = [
   "https://liquid.network/liquidtestnet/api",
@@ -64,7 +64,7 @@ export type NewLendingActionChainResolution = {
     policyAssetId: string;
     inputs: Record<string, AcceptOfferVerifiedChainSnapshot["pendingOffer"]>;
     parentTransactions: string[];
-    fee: string;
+    feePolicy: AcceptOfferVerifiedChainSnapshot["feePolicy"];
   };
 };
 
@@ -77,15 +77,15 @@ export async function resolveNewLendingActionChainSnapshot(
   expectedGenesisHash: string = LIQUID_TESTNET_GENESIS_HASH,
   fetcher: FetchLike = fetch,
 ): Promise<NewLendingActionChainResolution> {
-  requireSupportedFee(plan.constraints.maxFee);
   const requested = newActionOutpoints(plan);
   const candidates = chainServerCandidates(configuredEsplora, expectedGenesisHash);
   let lastError: unknown;
   for (const esploraUrl of candidates) {
     try {
-      const [genesisHash, tipHeight] = await Promise.all([
+      const [genesisHash, tipHeight, feeRateSatPerKvb] = await Promise.all([
         text(fetcher, `${esploraUrl}/block-height/0`),
         text(fetcher, `${esploraUrl}/blocks/tip/height`).then(parseHeight),
+        fetchTxManifestFeeRate(fetcher, esploraUrl),
       ]);
       if (genesisHash !== expectedGenesisHash) {
         throw new Error("The configured chain server does not match the connected Liquid network.");
@@ -104,7 +104,7 @@ export async function resolveNewLendingActionChainSnapshot(
           policyAssetId,
           inputs: Object.fromEntries(resolved.map(([name, value]) => [name, value.input])),
           parentTransactions: [...new Set(resolved.map(([, value]) => value.transactionHex))],
-          fee: TX_MANIFEST_DEFAULT_FEE,
+          feePolicy: txManifestFeePolicy(feeRateSatPerKvb, plan.constraints.maxFee),
         },
       };
     } catch (error) {
@@ -161,21 +161,14 @@ export async function resolveAcceptOfferChainSnapshot(
   expectedGenesisHash: string = LIQUID_TESTNET_GENESIS_HASH,
   fetcher: FetchLike = fetch,
 ): Promise<TxManifestChainResolution> {
-  if (
-    plan.constraints.maxFee !== undefined &&
-    BigInt(plan.constraints.maxFee) < BigInt(TX_MANIFEST_DEFAULT_FEE)
-  ) {
-    throw new Error(
-      `The manifest fee cap is below Apogee's ${TX_MANIFEST_DEFAULT_FEE}-sat first-release fee.`,
-    );
-  }
   const candidates = chainServerCandidates(configuredEsplora, expectedGenesisHash);
   let lastError: unknown;
   for (const esploraUrl of candidates) {
     try {
-      const [genesisHash, tipHeight] = await Promise.all([
+      const [genesisHash, tipHeight, feeRateSatPerKvb] = await Promise.all([
         text(fetcher, `${esploraUrl}/block-height/0`),
         text(fetcher, `${esploraUrl}/blocks/tip/height`).then(parseHeight),
+        fetchTxManifestFeeRate(fetcher, esploraUrl),
       ]);
       if (genesisHash !== expectedGenesisHash) {
         throw new Error("The configured chain server does not match the connected Liquid network.");
@@ -193,7 +186,7 @@ export async function resolveAcceptOfferChainSnapshot(
           pendingOffer: pending.input,
           lenderNftAuthorization: lenderNft.input,
           parentTransactions: [...new Set([pending.transactionHex, lenderNft.transactionHex])],
-          fee: TX_MANIFEST_DEFAULT_FEE,
+          feePolicy: txManifestFeePolicy(feeRateSatPerKvb, plan.constraints.maxFee),
         },
       };
     } catch (error) {
@@ -215,14 +208,14 @@ export async function resolveClaimLenderVaultChainSnapshot(
   expectedGenesisHash: string = LIQUID_TESTNET_GENESIS_HASH,
   fetcher: FetchLike = fetch,
 ): Promise<ClaimLenderVaultChainResolution> {
-  requireSupportedFee(plan.constraints.maxFee);
   const candidates = chainServerCandidates(configuredEsplora, expectedGenesisHash);
   let lastError: unknown;
   for (const esploraUrl of candidates) {
     try {
-      const [genesisHash, tipHeight] = await Promise.all([
+      const [genesisHash, tipHeight, feeRateSatPerKvb] = await Promise.all([
         text(fetcher, `${esploraUrl}/block-height/0`),
         text(fetcher, `${esploraUrl}/blocks/tip/height`).then(parseHeight),
+        fetchTxManifestFeeRate(fetcher, esploraUrl),
       ]);
       if (genesisHash !== expectedGenesisHash) {
         throw new Error("The configured chain server does not match the connected Liquid network.");
@@ -240,7 +233,7 @@ export async function resolveClaimLenderVaultChainSnapshot(
           lenderVault: vault.input,
           lenderNft: lenderNft.input,
           parentTransactions: [...new Set([vault.transactionHex, lenderNft.transactionHex])],
-          fee: TX_MANIFEST_DEFAULT_FEE,
+          feePolicy: txManifestFeePolicy(feeRateSatPerKvb, plan.constraints.maxFee),
         },
       };
     } catch (error) {
@@ -251,14 +244,6 @@ export async function resolveClaimLenderVaultChainSnapshot(
   throw lastError instanceof Error
     ? lastError
     : new Error("No Liquid testnet chain server is available.");
-}
-
-function requireSupportedFee(maxFee: string | undefined): void {
-  if (maxFee !== undefined && BigInt(maxFee) < BigInt(TX_MANIFEST_DEFAULT_FEE)) {
-    throw new Error(
-      `The manifest fee cap is below Apogee's ${TX_MANIFEST_DEFAULT_FEE}-sat first-release fee.`,
-    );
-  }
 }
 
 function chainServerCandidates(

@@ -259,8 +259,9 @@ provider response or approval DTO.
 4. Build `PreparedExecution` without exposing signing secrets.
 5. Derive the approval DTO from the built transaction and trusted review metadata.
 6. Park the approval with the connection revision, wallet generation, request ID,
-   bundle hash, and `planDigest`.
-7. After approval, refresh spend status and wallet state and rebuild/reanalyze.
+   bundle hash, exact reviewed fee, and `planDigest`.
+7. After approval, refresh spend status, wallet state, and fee rate, then rebuild
+   with the exact reviewed fee. If it is no longer sufficient, require a new review.
 8. Require the new authorization-relevant plan to match the approved digest.
 9. Recheck origin permission and wallet lock, then sign wallet inputs and required
    BIP340 witnesses.
@@ -285,10 +286,14 @@ it requires a signed-transaction broadcast checkpoint and retry/resume state.
 - Liquid testnet only.
 - Built-in bundles only.
 - Software signer first; Jade is blocked on explicit BIP340 path/capability proof.
-- Exactly one sufficient wallet input per asset role. When collateral or repayment
-  is L-BTC, the same input may also fund the network fee; otherwise the fee input is
-  distinct.
-- A conservative fixed 1,000-sat network fee; a lower dapp fee cap is rejected.
+- Deterministic bounded multi-UTXO selection, limited to 12 inputs per asset role.
+  When collateral or repayment is L-BTC, the same inputs may also fund the network
+  fee; otherwise fee inputs are distinct.
+- A live Esplora fee rate applied to the finalized PSET's conservative discounted
+  virtual size. Construction repeats until the fee-dependent input/output shape
+  converges, subject to both the dapp's cap and an independent Apogee ceiling.
+  Approval-time revalidation pins the exact reviewed fee and requires a new review
+  if that fee is no longer sufficient. Missing estimates use a 100 sat/kvB fallback.
 - Full repayment only; partial-repayment vault continuation is not yet enabled.
 - No remote registry or manifest installation.
 - No full protocol indexer in Apogee.

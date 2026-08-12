@@ -2189,6 +2189,7 @@ async function executeProviderTxManifest(
           invocation,
           plan,
           expectedPlanDigest: preparedContext.prepared.planDigest,
+          reviewedFee: preparedContext.prepared.review.fee,
           permissionMethod: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST,
           revision,
           generation,
@@ -2211,6 +2212,7 @@ async function prepareProviderTxManifest(
   revision: number,
   generation: number,
   plan: TxManifestRequirementPlan,
+  reviewedFee?: string,
 ): Promise<PreparedProviderTxManifest> {
   await engine<SyncResult>({
     kind: "sync",
@@ -2234,6 +2236,7 @@ async function prepareProviderTxManifest(
           policyAssetId,
           inspectOutput,
           configuredServer,
+          reviewedFee,
         )
     : plan.action === SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT
       ? await prepareProviderClaimLenderVault(
@@ -2243,6 +2246,7 @@ async function prepareProviderTxManifest(
           policyAssetId,
           inspectOutput,
           configuredServer,
+          reviewedFee,
         )
       : await prepareProviderNewLendingAction(
           origin,
@@ -2252,6 +2256,7 @@ async function prepareProviderTxManifest(
           policyAssetId,
           inspectOutput,
           configuredServer,
+          reviewedFee,
         );
   await requireProviderPsetAuthorization(
     {
@@ -2276,6 +2281,7 @@ async function prepareProviderAcceptOffer(
   policyAssetId: string,
   inspectOutput: (transactionHex: string, vout: number) => Promise<TxManifestTransactionOutputInspection>,
   configuredServer: string | undefined,
+  reviewedFee?: string,
 ): Promise<Extract<PreparedProviderTxManifest, { kind: "acceptOffer" }>> {
   const resolved = await resolveAcceptOfferChainSnapshot(
     plan,
@@ -2284,12 +2290,13 @@ async function prepareProviderAcceptOffer(
     configuredServer,
     txManifestExpectedGenesisHash(network),
   );
+  const snapshot = withReviewedTxManifestFee(resolved.snapshot, reviewedFee);
   const prepared = await engine<HostedPreparedAcceptOfferExecution>({
     kind: "prepareLendingV3AcceptOfferWithWallet",
     descriptor,
     network,
     plan,
-    chainSnapshot: resolved.snapshot,
+    chainSnapshot: snapshot,
   });
   return { kind: "acceptOffer", plan, prepared, genesisHash: resolved.snapshot.genesisHash };
 }
@@ -2301,6 +2308,7 @@ async function prepareProviderClaimLenderVault(
   policyAssetId: string,
   inspectOutput: (transactionHex: string, vout: number) => Promise<TxManifestTransactionOutputInspection>,
   configuredServer: string | undefined,
+  reviewedFee?: string,
 ): Promise<Extract<PreparedProviderTxManifest, { kind: "claimLenderVault" }>> {
   const resolved = await resolveClaimLenderVaultChainSnapshot(
     plan,
@@ -2309,12 +2317,13 @@ async function prepareProviderClaimLenderVault(
     configuredServer,
     txManifestExpectedGenesisHash(network),
   );
+  const snapshot = withReviewedTxManifestFee(resolved.snapshot, reviewedFee);
   const prepared = await engine<HostedPreparedClaimLenderVaultExecution>({
     kind: "prepareLendingV3ClaimLenderVaultWithWallet",
     descriptor,
     network,
     plan,
-    chainSnapshot: resolved.snapshot,
+    chainSnapshot: snapshot,
   });
   return { kind: "claimLenderVault", plan, prepared, genesisHash: resolved.snapshot.genesisHash };
 }
@@ -2333,6 +2342,7 @@ async function prepareProviderNewLendingAction(
   policyAssetId: string,
   inspectOutput: (transactionHex: string, vout: number) => Promise<TxManifestTransactionOutputInspection>,
   configuredServer: string | undefined,
+  reviewedFee?: string,
 ): Promise<Extract<PreparedProviderTxManifest, { kind: "newLendingAction" }>> {
   const resolved = await resolveNewLendingActionChainSnapshot(
     plan,
@@ -2341,19 +2351,31 @@ async function prepareProviderNewLendingAction(
     configuredServer,
     txManifestExpectedGenesisHash(network),
   );
+  const snapshot = withReviewedTxManifestFee(resolved.snapshot, reviewedFee);
   const prepared = await engine<HostedPreparedNewLendingExecution>({
     kind: "prepareLendingV3NewActionWithWallet",
     descriptor,
     network,
     assetContractDomain: new URL(origin).hostname.toLowerCase(),
     plan,
-    chainSnapshot: resolved.snapshot,
+    chainSnapshot: snapshot,
   });
   return {
     kind: "newLendingAction",
     plan,
     prepared,
     genesisHash: resolved.snapshot.genesisHash,
+  };
+}
+
+function withReviewedTxManifestFee<T extends { feePolicy: { exactFee?: string } }>(
+  snapshot: T,
+  reviewedFee: string | undefined,
+): T {
+  if (reviewedFee === undefined) return snapshot;
+  return {
+    ...snapshot,
+    feePolicy: { ...snapshot.feePolicy, exactFee: reviewedFee },
   };
 }
 
@@ -2448,6 +2470,14 @@ function txManifestExecutionError(error: unknown): LiquidRpcError {
       message,
       LIQUID_RPC_ERROR_REASONS.INVALID_PARAMS,
       { path: "params.requestId" },
+    );
+  }
+  if (/reviewed fee|execution plan changed after approval/i.test(message)) {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
+      "Network fees or wallet state changed. Review the TX Manifest request again.",
+      LIQUID_RPC_ERROR_REASONS.INTERNAL_ERROR,
+      { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST, cause: "review_changed" },
     );
   }
   if (/unknown|unsupported|not enabled|bundle|argument|providedInputs|fee cap/i.test(message)) {
@@ -2849,6 +2879,7 @@ type PendingApproval =
       invocation: LiquidExecuteTxManifestParams;
       plan: TxManifestRequirementPlan;
       expectedPlanDigest: `sha256:${string}`;
+      reviewedFee: string;
       permissionMethod: string;
       revision: number;
       generation: number;
@@ -3232,6 +3263,7 @@ async function handleApprovalDecision(
         pending.revision,
         pending.generation,
         pending.plan,
+        pending.reviewedFee,
       );
       if (refreshed.prepared.planDigest !== pending.expectedPlanDigest) {
         throw new Error("The wallet or chain execution plan changed after approval.");

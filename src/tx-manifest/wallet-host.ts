@@ -22,6 +22,7 @@ import {
   MAX_MANIFEST_SELECTION_SEARCH_NODES,
   MAX_MANIFEST_WALLET_INPUTS_PER_ASSET,
 } from "./coin-selection-policy";
+import type { TxManifestFeePolicy } from "./fees";
 
 export type AcceptOfferWalletCandidate = AcceptOfferResolvedInput & {
   address: string;
@@ -40,7 +41,7 @@ export type AcceptOfferVerifiedChainSnapshot = {
   pendingOffer: AcceptOfferResolvedInput;
   lenderNftAuthorization: AcceptOfferResolvedInput;
   parentTransactions: string[];
-  fee: string;
+  feePolicy: TxManifestFeePolicy;
 };
 
 export type HostedPreparedAcceptOfferExecution = PreparedAcceptOfferExecution & {
@@ -54,7 +55,7 @@ export type ClaimLenderVaultVerifiedChainSnapshot = {
   lenderVault: AcceptOfferResolvedInput;
   lenderNft: AcceptOfferResolvedInput;
   parentTransactions: string[];
-  fee: string;
+  feePolicy: TxManifestFeePolicy;
 };
 
 export type HostedPreparedClaimLenderVaultExecution = PreparedClaimLenderVaultExecution & {
@@ -85,7 +86,7 @@ export type NewLendingVerifiedChainSnapshot = {
   policyAssetId: string;
   inputs: Record<string, AcceptOfferResolvedInput>;
   parentTransactions: string[];
-  fee: string;
+  feePolicy: TxManifestFeePolicy;
 };
 
 export type HostedPreparedNewLendingExecution = (

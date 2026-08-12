@@ -34,6 +34,7 @@ describe("resolveAcceptOfferChainSnapshot", () => {
       const url = String(input);
       if (url.endsWith("/block-height/0")) return response(LIQUID_TESTNET_GENESIS_HASH);
       if (url.endsWith("/blocks/tip/height")) return response("321");
+      if (url.endsWith("/fee-estimates")) return response({ "1": 0.25 });
       if (url.endsWith("/status")) return response({ confirmed: true });
       if (url.includes("/outspend/")) return response({ spent: false });
       if (url.includes(PENDING)) return response("pending-raw");
@@ -62,21 +63,10 @@ describe("resolveAcceptOfferChainSnapshot", () => {
     expect(result.snapshot.pendingOffer.txid).toBe(PENDING);
     expect(result.snapshot.lenderNftAuthorization.txid).toBe(NFT);
     expect(result.snapshot.parentTransactions).toEqual(["pending-raw", "nft-raw"]);
-  });
-
-  it("fails before network access when the fee cap is too low", async () => {
-    const fetcher = vi.fn() as unknown as typeof fetch;
-    await expect(
-      resolveAcceptOfferChainSnapshot(
-        plan("999"),
-        POLICY,
-        vi.fn(),
-        undefined,
-        LIQUID_TESTNET_GENESIS_HASH,
-        fetcher,
-      ),
-    ).rejects.toThrow("fee cap");
-    expect(fetcher).not.toHaveBeenCalled();
+    expect(result.snapshot.feePolicy).toEqual({
+      feeRateSatPerKvb: "250",
+      maxFee: "1000",
+    });
   });
 
   it("accepts an explicitly configured server for the expected regtest genesis", async () => {
@@ -176,5 +166,9 @@ describe("resolveClaimLenderVaultChainSnapshot", () => {
     expect(result.snapshot.lenderVault.txid).toBe(PENDING);
     expect(result.snapshot.lenderNft.txid).toBe(NFT);
     expect(result.snapshot.parentTransactions).toEqual(["vault-raw", "wallet-nft-raw"]);
+    expect(result.snapshot.feePolicy).toEqual({
+      feeRateSatPerKvb: "100",
+      maxFee: "1000",
+    });
   });
 });

@@ -7,6 +7,7 @@ export const compile_cmr_from_source: (a: number, b: number, c: number, d: numbe
 export const compile_covenant_json: (a: number, b: number, c: number) => void;
 export const derive_issuance_asset_json: (a: number, b: number, c: number) => void;
 export const dry_run_covenant_json: (a: number, b: number, c: number) => void;
+export const estimate_manifest_fee_json: (a: number, b: number, c: number) => void;
 export const execute_core_self_test: (a: number) => void;
 export const finalize_covenant_pset_json: (a: number, b: number, c: number) => void;
 export const inspect_address_json: (a: number, b: number, c: number) => void;

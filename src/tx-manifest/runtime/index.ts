@@ -79,6 +79,12 @@ export type TxManifestCovenantFinalizeSpec = Omit<
   genesis_hash: string;
 };
 
+export type TxManifestFeeEstimate = {
+  discountVsize: number;
+  requiredFee: string;
+  unsignedWalletInputs: number;
+};
+
 type RuntimeModule = typeof import("./pkg/apogee_tx_manifest_runtime.js");
 let runtimePromise: Promise<RuntimeModule> | null = null;
 
@@ -148,4 +154,28 @@ export async function finalizeTxManifestCovenant(
 ): Promise<string> {
   const runtime = await loadRuntime();
   return runtime.finalize_covenant_pset_json(JSON.stringify(spec));
+}
+
+export async function estimateTxManifestFee(spec: {
+  pset: string;
+  feeRateSatPerKvb: string;
+}): Promise<TxManifestFeeEstimate> {
+  const runtime = await loadRuntime();
+  const result = JSON.parse(
+    runtime.estimate_manifest_fee_json(
+      JSON.stringify({
+        pset: spec.pset,
+        fee_rate_sat_per_kvb: spec.feeRateSatPerKvb,
+      }),
+    ),
+  ) as {
+    discount_vsize: number;
+    required_fee: string;
+    unsigned_wallet_inputs: number;
+  };
+  return {
+    discountVsize: result.discount_vsize,
+    requiredFee: result.required_fee,
+    unsignedWalletInputs: result.unsigned_wallet_inputs,
+  };
 }

@@ -36,6 +36,12 @@ fn main() {
 }
 "#;
 
+// elements-miniscript's Wpkh::max_weight_to_satisfy(): one maximally-sized
+// DER signature (including sighash and pushes) plus one compressed public key.
+// Manifest execution currently supports Apogee's standard BIP84 elwpkh wallet
+// descriptors only; the estimator verifies every unsigned input has that shape.
+const ELWPKH_MAX_SATISFACTION_WEIGHT: usize = 107;
+
 /// Compile an in-memory SimplicityHL source and return its CMR as lowercase hex.
 ///
 /// This deliberately accepts source text rather than a filesystem path. An Apogee
@@ -504,6 +510,68 @@ pub fn build_manifest_pset_json(spec_json: &str) -> Result<String, JsValue> {
     let spec: ManifestPsetSpec =
         serde_json::from_str(spec_json).map_err(|error| js_error(error.to_string()))?;
     build_manifest_pset(&spec).map_err(js_error)
+}
+
+/// Estimate the conservative signed discounted vsize and required fee for a
+/// manifest PSET. Contract adapters must finalize every non-wallet input first;
+/// remaining unsigned inputs must be Apogee's standard native SegWit P2WPKH.
+#[wasm_bindgen]
+pub fn estimate_manifest_fee_json(spec_json: &str) -> Result<String, JsValue> {
+    let spec: ManifestFeeEstimateSpec =
+        serde_json::from_str(spec_json).map_err(|error| js_error(error.to_string()))?;
+    let result = estimate_manifest_fee(&spec).map_err(js_error)?;
+    serde_json::to_string(&result).map_err(|error| js_error(error.to_string()))
+}
+
+fn estimate_manifest_fee(spec: &ManifestFeeEstimateSpec) -> Result<ManifestFeeEstimate, String> {
+    let pset = PartiallySignedTransaction::from_str(&spec.pset)
+        .map_err(|error| format!("invalid pset: {error}"))?;
+    let fee_rate = amount(&spec.fee_rate_sat_per_kvb, "fee_rate_sat_per_kvb")?;
+    if fee_rate == 0 {
+        return Err("fee_rate_sat_per_kvb must be greater than zero".to_owned());
+    }
+
+    let mut unsigned_wallet_inputs = 0usize;
+    for (index, input) in pset.inputs().iter().enumerate() {
+        if input.final_script_sig.is_some() || input.final_script_witness.is_some() {
+            continue;
+        }
+        let witness_utxo = input
+            .witness_utxo
+            .as_ref()
+            .ok_or_else(|| format!("unsigned PSET input {index} is missing witness_utxo"))?;
+        if !witness_utxo.script_pubkey.is_v0_p2wpkh() {
+            return Err(format!(
+                "unsigned PSET input {index} is not a supported native SegWit P2WPKH wallet input"
+            ));
+        }
+        unsigned_wallet_inputs += 1;
+    }
+    if unsigned_wallet_inputs == 0 {
+        return Err("manifest PSET has no unsigned wallet inputs".to_owned());
+    }
+
+    let transaction = pset.extract_tx().map_err(|error| error.to_string())?;
+    let satisfaction_weight = unsigned_wallet_inputs
+        .checked_mul(ELWPKH_MAX_SATISFACTION_WEIGHT)
+        .ok_or_else(|| "wallet input satisfaction weight overflow".to_owned())?;
+    let discount_weight = transaction
+        .discount_weight()
+        .checked_add(satisfaction_weight)
+        .ok_or_else(|| "manifest transaction weight overflow".to_owned())?;
+    let discount_vsize = discount_weight.div_ceil(4);
+    let required_fee = (discount_vsize as u128)
+        .checked_mul(u128::from(fee_rate))
+        .ok_or_else(|| "manifest fee calculation overflow".to_owned())?
+        .div_ceil(1000);
+    let required_fee =
+        u64::try_from(required_fee).map_err(|_| "manifest required fee exceeds u64".to_owned())?;
+
+    Ok(ManifestFeeEstimate {
+        discount_vsize,
+        required_fee: required_fee.to_string(),
+        unsigned_wallet_inputs,
+    })
 }
 
 fn build_manifest_pset(spec: &ManifestPsetSpec) -> Result<String, String> {
@@ -1014,6 +1082,20 @@ struct ManifestPsetOutput {
     blinder_index: Option<u32>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManifestFeeEstimateSpec {
+    pset: String,
+    fee_rate_sat_per_kvb: String,
+}
+
+#[derive(Serialize)]
+struct ManifestFeeEstimate {
+    discount_vsize: usize,
+    required_fee: String,
+    unsigned_wallet_inputs: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1308,6 +1390,70 @@ fn main() {
         let parsed = PartiallySignedTransaction::from_str(&encoded).unwrap();
         assert_eq!(parsed.inputs().len(), 1);
         assert_eq!(parsed.outputs().len(), 2);
+    }
+
+    #[test]
+    fn estimates_unsigned_elwpkh_manifest_fees() {
+        let wallet_script = format!("0014{}", "11".repeat(20));
+        let spec = serde_json::json!({
+            "input": {
+                "txid": "00".repeat(32),
+                "vout": 0,
+                "asset": POLICY_ASSET,
+                "amount": "1000",
+                "script_pub_key": wallet_script
+            },
+            "outputs": [{
+                "asset": POLICY_ASSET,
+                "amount": "900",
+                "script_pub_key": "51"
+            }],
+            "fee": {
+                "asset": POLICY_ASSET,
+                "amount": "100"
+            }
+        });
+        let pset = build_explicit_pset(&spec.to_string()).unwrap();
+        let parsed = PartiallySignedTransaction::from_str(&pset).unwrap();
+        let expected_vsize = (parsed.extract_tx().unwrap().discount_weight()
+            + ELWPKH_MAX_SATISFACTION_WEIGHT)
+            .div_ceil(4);
+        let estimate = estimate_manifest_fee(&ManifestFeeEstimateSpec {
+            pset,
+            fee_rate_sat_per_kvb: "1000".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(estimate.discount_vsize, expected_vsize);
+        assert_eq!(estimate.required_fee, expected_vsize.to_string());
+        assert_eq!(estimate.unsigned_wallet_inputs, 1);
+    }
+
+    #[test]
+    fn estimates_real_acceptance_at_or_above_its_signed_vsize() {
+        let original: Transaction =
+            decode_hex_consensus(ACCEPTANCE_TX.trim(), "acceptance").unwrap();
+        let parents = vec![
+            OFFER_TX.trim().to_owned(),
+            PRINCIPAL_PARENT_TX.trim().to_owned(),
+            FEE_PARENT_TX.trim().to_owned(),
+        ];
+        let witness_utxos = resolve_witness_utxos(&original, &parents).unwrap();
+        let mut pset = PartiallySignedTransaction::from_tx(original.clone());
+        for (input, witness_utxo) in pset.inputs_mut().iter_mut().zip(witness_utxos) {
+            input.witness_utxo = Some(witness_utxo);
+        }
+        for index in [2usize, 3usize] {
+            pset.inputs_mut()[index].final_script_sig = None;
+            pset.inputs_mut()[index].final_script_witness = None;
+        }
+        let estimate = estimate_manifest_fee(&ManifestFeeEstimateSpec {
+            pset: pset.to_string(),
+            fee_rate_sat_per_kvb: "1000".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(estimate.unsigned_wallet_inputs, 2);
+        assert!(estimate.discount_vsize >= original.discount_vsize());
+        assert!(estimate.discount_vsize <= original.discount_vsize() + 2);
     }
 
     #[test]

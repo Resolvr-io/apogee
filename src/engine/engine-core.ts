@@ -31,6 +31,7 @@ import { verifyDealerPset } from "@/engine/verify-dealer-pset";
 import { getTxManifestSupport } from "@/tx-manifest/registry";
 import { resolveTxManifestRequirements } from "@/tx-manifest/requirements";
 import { txManifestHistoryAnnotation } from "@/tx-manifest/history";
+import { convergeTxManifestFee } from "@/tx-manifest/fees";
 import {
   isTxManifestExecutionNetwork,
   txManifestRuntimeNetwork,
@@ -74,6 +75,7 @@ import {
   finalizeTxManifestCovenant,
   inspectTxManifestAddress,
   inspectTxManifestTransactionOutput,
+  estimateTxManifestFee,
 } from "@/tx-manifest/runtime";
 import type {
   AddressDTO,
@@ -1100,46 +1102,51 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           parentTransaction: bytesToHex(transaction),
         };
       });
-      const selected = selectAcceptOfferWalletInputs(
-        candidates,
-        req.plan.intent.principalAssetId,
-        req.plan.intent.principalAmount,
-        req.chainSnapshot.policyAssetId,
-        req.chainSnapshot.fee,
-      );
       const address = entry.wollet.address(null).address().toString();
       const destination = await inspectTxManifestAddress(address, manifestNetwork);
-      const prepared = await prepareLendingV3AcceptOffer(req.plan, {
-        network: manifestNetwork,
-        genesisHash: req.chainSnapshot.genesisHash,
-        tipHeight: req.chainSnapshot.tipHeight,
-        policyAssetId: req.chainSnapshot.policyAssetId,
-        pendingOffer: req.chainSnapshot.pendingOffer,
-        lenderNftAuthorization: req.chainSnapshot.lenderNftAuthorization,
-        principalInputs: selected.principalInputs,
-        feeInputs: selected.feeInputs,
-        lenderNftDestination: { scriptPubKey: destination.script_pub_key },
-        principalChangeDestination: {
-          scriptPubKey: destination.script_pub_key,
-          blindingPublicKey: destination.blinding_public_key,
+      return convergeTxManifestFee(
+        req.chainSnapshot.feePolicy,
+        async (fee): Promise<HostedPreparedAcceptOfferExecution> => {
+          const selected = selectAcceptOfferWalletInputs(
+            candidates,
+            req.plan.intent.principalAssetId,
+            req.plan.intent.principalAmount,
+            req.chainSnapshot.policyAssetId,
+            fee,
+          );
+          const prepared = await prepareLendingV3AcceptOffer(req.plan, {
+            network: manifestNetwork,
+            genesisHash: req.chainSnapshot.genesisHash,
+            tipHeight: req.chainSnapshot.tipHeight,
+            policyAssetId: req.chainSnapshot.policyAssetId,
+            pendingOffer: req.chainSnapshot.pendingOffer,
+            lenderNftAuthorization: req.chainSnapshot.lenderNftAuthorization,
+            principalInputs: selected.principalInputs,
+            feeInputs: selected.feeInputs,
+            lenderNftDestination: { scriptPubKey: destination.script_pub_key },
+            principalChangeDestination: {
+              scriptPubKey: destination.script_pub_key,
+              blindingPublicKey: destination.blinding_public_key,
+            },
+            feeChangeDestination: {
+              scriptPubKey: destination.script_pub_key,
+              blindingPublicKey: destination.blinding_public_key,
+            },
+            fee,
+          });
+          return {
+            ...prepared,
+            parentTransactions: [
+              ...new Set([
+                ...req.chainSnapshot.parentTransactions,
+                ...selected.principalInputs.map((input) => input.parentTransaction),
+                ...selected.feeInputs.map((input) => input.parentTransaction),
+              ]),
+            ],
+          };
         },
-        feeChangeDestination: {
-          scriptPubKey: destination.script_pub_key,
-          blindingPublicKey: destination.blinding_public_key,
-        },
-        fee: req.chainSnapshot.fee,
-      });
-      const result: HostedPreparedAcceptOfferExecution = {
-        ...prepared,
-        parentTransactions: [
-          ...new Set([
-            ...req.chainSnapshot.parentTransactions,
-            ...selected.principalInputs.map((input) => input.parentTransaction),
-            ...selected.feeInputs.map((input) => input.parentTransaction),
-          ]),
-        ],
-      };
-      return result;
+        estimateTxManifestFee,
+      );
     }
 
     case "prepareLendingV3ClaimLenderVaultWithWallet": {
@@ -1202,53 +1209,58 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           lenderNftParent && bytesToHex(lenderNftParent),
         ),
       ];
-      const selected = selectClaimLenderVaultWalletInputs(
-        candidates,
-        requestedNftOutpoint,
-        req.plan.intent.lenderNftAssetId,
-        req.chainSnapshot.policyAssetId,
-        req.chainSnapshot.fee,
-      );
-      const resolvedNft = req.chainSnapshot.lenderNft;
-      if (
-        selected.lenderNftInput.txOut !== resolvedNft.txOut ||
-        selected.lenderNftInput.scriptPubKey !== resolvedNft.scriptPubKey ||
-        selected.lenderNftInput.assetId !== resolvedNft.assetId ||
-        selected.lenderNftInput.amount !== resolvedNft.amount
-      ) {
-        throw new Error("Wallet and chain state disagree about the lender NFT input.");
-      }
       const address = entry.wollet.address(null).address().toString();
       const destination = await inspectTxManifestAddress(address, manifestNetwork);
-      const prepared = await prepareLendingV3ClaimLenderVault(req.plan, {
-        network: manifestNetwork,
-        genesisHash: req.chainSnapshot.genesisHash,
-        tipHeight: req.chainSnapshot.tipHeight,
-        policyAssetId: req.chainSnapshot.policyAssetId,
-        lenderVault: req.chainSnapshot.lenderVault,
-        lenderNftInput: selected.lenderNftInput,
-        feeInputs: selected.feeInputs,
-        principalDestination: {
-          scriptPubKey: destination.script_pub_key,
-          blindingPublicKey: destination.blinding_public_key,
+      return convergeTxManifestFee(
+        req.chainSnapshot.feePolicy,
+        async (fee): Promise<HostedPreparedClaimLenderVaultExecution> => {
+          const selected = selectClaimLenderVaultWalletInputs(
+            candidates,
+            requestedNftOutpoint,
+            req.plan.intent.lenderNftAssetId,
+            req.chainSnapshot.policyAssetId,
+            fee,
+          );
+          const resolvedNft = req.chainSnapshot.lenderNft;
+          if (
+            selected.lenderNftInput.txOut !== resolvedNft.txOut ||
+            selected.lenderNftInput.scriptPubKey !== resolvedNft.scriptPubKey ||
+            selected.lenderNftInput.assetId !== resolvedNft.assetId ||
+            selected.lenderNftInput.amount !== resolvedNft.amount
+          ) {
+            throw new Error("Wallet and chain state disagree about the lender NFT input.");
+          }
+          const prepared = await prepareLendingV3ClaimLenderVault(req.plan, {
+            network: manifestNetwork,
+            genesisHash: req.chainSnapshot.genesisHash,
+            tipHeight: req.chainSnapshot.tipHeight,
+            policyAssetId: req.chainSnapshot.policyAssetId,
+            lenderVault: req.chainSnapshot.lenderVault,
+            lenderNftInput: selected.lenderNftInput,
+            feeInputs: selected.feeInputs,
+            principalDestination: {
+              scriptPubKey: destination.script_pub_key,
+              blindingPublicKey: destination.blinding_public_key,
+            },
+            feeChangeDestination: {
+              scriptPubKey: destination.script_pub_key,
+              blindingPublicKey: destination.blinding_public_key,
+            },
+            fee,
+          });
+          return {
+            ...prepared,
+            parentTransactions: [
+              ...new Set([
+                ...req.chainSnapshot.parentTransactions,
+                selected.lenderNftInput.parentTransaction,
+                ...selected.feeInputs.map((input) => input.parentTransaction),
+              ]),
+            ],
+          };
         },
-        feeChangeDestination: {
-          scriptPubKey: destination.script_pub_key,
-          blindingPublicKey: destination.blinding_public_key,
-        },
-        fee: req.chainSnapshot.fee,
-      });
-      const result: HostedPreparedClaimLenderVaultExecution = {
-        ...prepared,
-        parentTransactions: [
-          ...new Set([
-            ...req.chainSnapshot.parentTransactions,
-            selected.lenderNftInput.parentTransaction,
-            ...selected.feeInputs.map((input) => input.parentTransaction),
-          ]),
-        ],
-      };
-      return result;
+        estimateTxManifestFee,
+      );
     }
 
     case "prepareLendingV3NewActionWithWallet": {
@@ -1327,11 +1339,14 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         ]),
       ];
 
+      return convergeTxManifestFee(
+        req.chainSnapshot.feePolicy,
+        async (fee): Promise<HostedPreparedNewLendingExecution> => {
       if (req.plan.action === SIMPLICITY_LENDING_V3_CREATE_FACTORY) {
         const fundingInputs = selectManifestWalletInputs(
           candidates,
           req.chainSnapshot.policyAssetId,
-          req.chainSnapshot.fee,
+          fee,
           [],
           "confirmed L-BTC input",
         );
@@ -1344,7 +1359,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           fundingInputs,
           explicitWalletDestination: explicitDestination,
           feeChangeDestination: confidentialDestination,
-          fee: req.chainSnapshot.fee,
+          fee,
         });
         const result: HostedPreparedNewLendingExecution = {
           ...prepared,
@@ -1368,7 +1383,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           candidates,
           req.plan.intent.collateralAssetId,
           combinesCollateralAndFee
-            ? (BigInt(req.plan.intent.collateralAmount) + BigInt(req.chainSnapshot.fee)).toString()
+            ? (BigInt(req.plan.intent.collateralAmount) + BigInt(fee)).toString()
             : req.plan.intent.collateralAmount,
           [factoryAuthInput],
           "collateral input",
@@ -1378,7 +1393,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           : selectManifestWalletInputs(
               candidates,
               req.chainSnapshot.policyAssetId,
-              req.chainSnapshot.fee,
+              fee,
               [factoryAuthInput, ...collateralInputs],
               "distinct L-BTC fee inputs",
             );
@@ -1396,7 +1411,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           feeInputs,
           explicitWalletDestination: explicitDestination,
           changeDestination: confidentialDestination,
-          fee: req.chainSnapshot.fee,
+          fee,
         });
         const result: HostedPreparedNewLendingExecution = {
           ...prepared,
@@ -1408,7 +1423,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       if (req.plan.action === SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL) {
         recoverNamedWalletInput("borrower_nft_in");
         const borrowerNftInput = selectManifestWalletInputByOutpoint(candidates, req.plan.walletInputs[0].outpoint, req.plan.intent.borrowerNftAssetId, "1", "borrower NFT");
-        const feeInputs = selectManifestWalletInputs(candidates, req.chainSnapshot.policyAssetId, req.chainSnapshot.fee, [borrowerNftInput], "distinct L-BTC fee inputs");
+        const feeInputs = selectManifestWalletInputs(candidates, req.chainSnapshot.policyAssetId, fee, [borrowerNftInput], "distinct L-BTC fee inputs");
         const principalAssetAuth = req.chainSnapshot.inputs.principal_asset_auth_in;
         if (!principalAssetAuth) throw new Error("Verified chain snapshot is missing principal_asset_auth_in.");
         const prepared = await prepareLendingV3BorrowerAction(req.plan, {
@@ -1423,7 +1438,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           walletDestination: confidentialDestination,
           explicitWalletDestination: explicitDestination,
           feeChangeDestination: confidentialDestination,
-          fee: req.chainSnapshot.fee,
+          fee,
         });
         return { ...prepared, parentTransactions: parents(borrowerNftInput, ...feeInputs) } satisfies HostedPreparedNewLendingExecution;
       }
@@ -1431,7 +1446,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       if (req.plan.action === SIMPLICITY_LENDING_V3_CANCEL_OFFER) {
         recoverNamedWalletInput("borrower_nft_in");
         const borrowerNftInput = selectManifestWalletInputByOutpoint(candidates, req.plan.walletInputs[0].outpoint, req.plan.intent.borrowerNftAssetId, "1", "borrower NFT");
-        const feeInputs = selectManifestWalletInputs(candidates, req.chainSnapshot.policyAssetId, req.chainSnapshot.fee, [borrowerNftInput], "distinct L-BTC fee inputs");
+        const feeInputs = selectManifestWalletInputs(candidates, req.chainSnapshot.policyAssetId, fee, [borrowerNftInput], "distinct L-BTC fee inputs");
         const pendingOffer = req.chainSnapshot.inputs.pending_offer_in;
         const lenderNftAuthorization = req.chainSnapshot.inputs.lender_nft_in;
         if (!pendingOffer || !lenderNftAuthorization) throw new Error("Verified chain snapshot is missing cancellation inputs.");
@@ -1448,7 +1463,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           walletDestination: confidentialDestination,
           explicitWalletDestination: explicitDestination,
           feeChangeDestination: confidentialDestination,
-          fee: req.chainSnapshot.fee,
+          fee,
         });
         return { ...prepared, parentTransactions: parents(borrowerNftInput, ...feeInputs) } satisfies HostedPreparedNewLendingExecution;
       }
@@ -1462,14 +1477,14 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           candidates,
           req.plan.intent.principalAssetId,
           combinesRepaymentAndFee
-            ? (BigInt(req.plan.intent.totalDebt) + BigInt(req.chainSnapshot.fee)).toString()
+            ? (BigInt(req.plan.intent.totalDebt) + BigInt(fee)).toString()
             : req.plan.intent.totalDebt,
           [borrowerNftInput],
           "repayment input",
         );
         const feeInputs = combinesRepaymentAndFee
           ? []
-          : selectManifestWalletInputs(candidates, req.chainSnapshot.policyAssetId, req.chainSnapshot.fee, [borrowerNftInput, ...repaymentInputs], "distinct L-BTC fee inputs");
+          : selectManifestWalletInputs(candidates, req.chainSnapshot.policyAssetId, fee, [borrowerNftInput, ...repaymentInputs], "distinct L-BTC fee inputs");
         const activeOffer = req.chainSnapshot.inputs.active_offer_in;
         if (!activeOffer) throw new Error("Verified chain snapshot is missing active_offer_in.");
         const prepared = await prepareLendingV3BorrowerAction(req.plan, {
@@ -1486,7 +1501,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           explicitWalletDestination: explicitDestination,
           principalChangeDestination: confidentialDestination,
           feeChangeDestination: confidentialDestination,
-          fee: req.chainSnapshot.fee,
+          fee,
         });
         return { ...prepared, parentTransactions: parents(borrowerNftInput, ...repaymentInputs, ...feeInputs) } satisfies HostedPreparedNewLendingExecution;
       }
@@ -1494,7 +1509,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       if (req.plan.action === SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER) {
         recoverNamedWalletInput("lender_nft_in");
         const lenderNftInput = selectManifestWalletInputByOutpoint(candidates, req.plan.walletInputs[0].outpoint, req.plan.intent.lenderNftAssetId, "1", "lender NFT");
-        const feeInputs = selectManifestWalletInputs(candidates, req.chainSnapshot.policyAssetId, req.chainSnapshot.fee, [lenderNftInput], "distinct L-BTC fee inputs");
+        const feeInputs = selectManifestWalletInputs(candidates, req.chainSnapshot.policyAssetId, fee, [lenderNftInput], "distinct L-BTC fee inputs");
         const activeOffer = req.chainSnapshot.inputs.active_offer_in;
         if (!activeOffer) throw new Error("Verified chain snapshot is missing active_offer_in.");
         const prepared = await prepareLendingV3BorrowerAction(req.plan, {
@@ -1509,12 +1524,15 @@ export async function handle(req: EngineRequest): Promise<unknown> {
           walletDestination: confidentialDestination,
           explicitWalletDestination: explicitDestination,
           feeChangeDestination: confidentialDestination,
-          fee: req.chainSnapshot.fee,
+          fee,
         });
         return { ...prepared, parentTransactions: parents(lenderNftInput, ...feeInputs) } satisfies HostedPreparedNewLendingExecution;
       }
 
       throw new Error("Unsupported Simplicity Lending TX Manifest action.");
+        },
+        estimateTxManifestFee,
+      );
     }
 
     case "signPset": {
