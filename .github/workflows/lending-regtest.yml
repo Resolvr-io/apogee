@@ -32,7 +32,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: tvolk131/simplicity-lending
-          ref: e9be4c572b36ede8b00720556efc0ee50346d166
+          ref: 5794ce4792c6d976976571a8bfd3a8dc3187531d
           path: simplicity-lending
 
       - uses: pnpm/action-setup@v4
