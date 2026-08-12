@@ -172,6 +172,14 @@ export type EngineRequest =
   // Submit an already-finalized PSET. All transaction cryptography and
   // extraction remain inside LWK; this request only selects the chain server.
   | { kind: "broadcastPset"; network: LiquidNetwork; pset: string; esploraUrl?: string }
+  // Recovery submits the exact signed transaction saved before the original
+  // network attempt. No plan rebuilding or signing occurs on this path.
+  | {
+      kind: "broadcastTransaction";
+      network: LiquidNetwork;
+      transactionHex: string;
+      esploraUrl?: string;
+    }
   // `drain` (send max): for LBTC, drain the wallet (fee deducted from the
   // amount); for a token (`asset` set), send the full token balance (the fee is
   // paid in LBTC, so no deduction). `sats` is in the asset's base units.
@@ -868,6 +876,8 @@ export type ApprovalRequest =
       network: DappNetwork;
       locked: boolean;
       signerKind: WalletSigner;
+      /** The exact previously-approved transaction is being resumed. */
+      recovery?: boolean;
     };
 
 /** Uniform reply envelope for both channels. */

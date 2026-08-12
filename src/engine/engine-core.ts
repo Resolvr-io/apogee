@@ -556,6 +556,37 @@ async function broadcastResilient(
   }
 }
 
+async function broadcastTransactionResilient(
+  lwk: typeof Lwk,
+  net: Lwk.Network,
+  network: LiquidNetwork,
+  transaction: Lwk.Transaction,
+  esploraUrl?: string,
+): Promise<string> {
+  if (esploraUrl) {
+    const txid = await new lwk.EsploraClient(net, esploraUrl, false, 1, false).broadcastTx(
+      transaction,
+    );
+    return txid.toString();
+  }
+  try {
+    const txid = await new lwk.EsploraClient(net, ESPLORA[network], false, 1, false).broadcastTx(
+      transaction,
+    );
+    return txid.toString();
+  } catch (e) {
+    console.warn("[apogee] raw transaction broadcast failed, trying alternate", e);
+    const txid = await new lwk.EsploraClient(
+      net,
+      ESPLORA_ALT[network],
+      false,
+      1,
+      false,
+    ).broadcastTx(transaction);
+    return txid.toString();
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1981,6 +2012,29 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         return result;
       } finally {
         pset.free();
+        net.free();
+      }
+    }
+
+    case "broadcastTransaction": {
+      const net = lwkNetwork(lwk, req.network);
+      const transaction = lwk.Transaction.fromString(req.transactionHex);
+      try {
+        const expectedTxid = transaction.txid().toString();
+        const txid = await broadcastTransactionResilient(
+          lwk,
+          net,
+          req.network,
+          transaction,
+          req.esploraUrl,
+        );
+        if (txid !== expectedTxid) {
+          throw new Error("The chain server returned a different transaction id after broadcast.");
+        }
+        const result: SendResult = { txid };
+        return result;
+      } finally {
+        transaction.free();
         net.free();
       }
     }

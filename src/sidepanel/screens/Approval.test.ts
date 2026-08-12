@@ -226,6 +226,48 @@ describe("ApprovalOverlay", () => {
     expect(markup).toContain(",000 ");
   });
 
+  it("explains that recovery broadcasts exact saved bytes without signing again", () => {
+    const request: Extract<ApprovalRequest, { kind: "executeTxManifest" }> = {
+      kind: "executeTxManifest",
+      id: "manifest-recovery-test",
+      origin: "https://lending.example.test",
+      network: "testnet",
+      locked: false,
+      signerKind: "local",
+      recovery: true,
+      review: {
+        kind: "acceptOffer",
+        protocolLabel: "Simplicity Lending",
+        actionLabel: "Fund loan offer",
+        requestId: "accept-offer-3",
+        accountIdentifier: `bip122:${"22".repeat(16)}:${"33".repeat(16)}`,
+        bundleHash: `sha256:${"44".repeat(32)}`,
+        action: "lending_contract.AcceptOffer",
+        principalAssetId: "55".repeat(32),
+        principalAmount: "100000000",
+        collateralAssetId: "66".repeat(32),
+        collateralAmount: "250000000",
+        interestRateBasisPoints: "500",
+        totalDebt: "105000000",
+        expirationHeight: 500000,
+        feeAssetId: POLICY_ASSET,
+        fee: "1000",
+        principalChange: "2500",
+        feeChange: "9000",
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      createElement(ApprovalOverlay, { request, onClose: vi.fn() }),
+    );
+
+    expect(markup).toContain("Resume contract transaction");
+    expect(markup).toContain("exact signed transaction");
+    expect(markup).toContain("does not rebuild or re-sign");
+    expect(markup).toContain("Resume broadcast");
+    expect(markup).not.toContain("Approval signs and broadcasts it");
+  });
+
   it("shows the lender's net collection, protocol fee, and NFT burn", () => {
     const request: Extract<ApprovalRequest, { kind: "executeTxManifest" }> = {
       kind: "executeTxManifest",

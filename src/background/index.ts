@@ -132,8 +132,17 @@ import {
 import {
   TxManifestIdempotency,
   txManifestIdempotencyKey,
-  type TxManifestTerminalRecord,
+  type TxManifestCheckpointRecord,
+  type TxManifestExecutionRecord,
 } from "@/tx-manifest/idempotency";
+import {
+  isKnownTxManifestBroadcastError,
+  isPermanentTxManifestBroadcastError,
+  lookupTxManifestTransaction,
+  parseTxManifestCheckpointPayload,
+  txManifestCheckpointContext,
+  type TxManifestCheckpointPayload,
+} from "@/tx-manifest/broadcast-checkpoint";
 
 // This extension's own origin. Privileged wallet/* and apogee/* messages are
 // only honored when they come from one of our own pages (side panel, approval
@@ -655,7 +664,9 @@ async function handleUi(msg: UiRequest): Promise<unknown> {
       clearAssetIconCache().catch((err) => {
         console.warn("[apogee] asset-icon cache clear failed during reset", err);
       });
-      return keystore.reset();
+      await keystore.reset();
+      await txManifestIdempotency.clear();
+      return;
     }
 
     case "wallet/verifyPassword":
@@ -713,13 +724,15 @@ async function handleUi(msg: UiRequest): Promise<unknown> {
         if (msg.password && !(await keystore.isInitialized())) {
           await keystore.initialize(msg.password);
         }
-        return await keystore.addWallet({
+        const wallet = await keystore.addWallet({
           mnemonic,
           descriptor: derived.descriptor,
           fingerprint: derived.fingerprint,
           label: msg.label,
           network: msg.network,
         });
+        if (msg.replace) await txManifestIdempotency.clear();
+        return wallet;
       } catch (e) {
         // Roll back the wipe. lock() FIRST: initialize() may have set an in-memory
         // derivedKey + session under the NEW password, and restoring the OLD store
@@ -1156,13 +1169,13 @@ const PROVIDER_CAPABILITIES = Object.freeze({
 
 const TX_MANIFEST_RESULTS_KEY = "apogee_tx_manifest_results_v1";
 const txManifestIdempotency = new TxManifestIdempotency({
-  async load(): Promise<TxManifestTerminalRecord[]> {
+  async load(): Promise<TxManifestExecutionRecord[]> {
     const value = (await browser.storage.local.get(TX_MANIFEST_RESULTS_KEY))[
       TX_MANIFEST_RESULTS_KEY
     ];
-    return Array.isArray(value) ? (value as TxManifestTerminalRecord[]) : [];
+    return Array.isArray(value) ? (value as TxManifestExecutionRecord[]) : [];
   },
-  async save(records: TxManifestTerminalRecord[]): Promise<void> {
+  async save(records: TxManifestExecutionRecord[]): Promise<void> {
     await browser.storage.local.set({ [TX_MANIFEST_RESULTS_KEY]: records });
   },
 });
@@ -2154,55 +2167,161 @@ async function executeProviderTxManifest(
       chainId: invocation.chainId,
       requestId: invocation.requestId,
     });
-    return await txManifestIdempotency.execute(key, invocationDigest, async () => {
-      const plan = await engine<TxManifestRequirementPlan>({
-        kind: "resolveTxManifestRequirements",
-        invocation,
-      });
-      const preparedContext = await prepareProviderTxManifest(
-        origin,
-        connection,
-        info,
-        revision,
-        generation,
-        plan,
-      );
-      const review = txManifestApprovalReview(preparedContext);
-      const id = `appr-${approvalSeq++}-${Date.now()}`;
-      const approval: ApprovalRequest = {
-        kind: "executeTxManifest",
-        id,
-        origin,
-        review,
-        network: toDappNetwork(info.network),
-        locked: keystore.isLocked(),
-        signerKind: info.signer,
-      };
-      return await new Promise<LiquidExecuteTxManifestResult>((resolve, reject) => {
-        parkApproval(id, {
-          kind: "executeTxManifest",
-          request: approval,
-          origin,
-          walletId: info.id,
-          descriptor: info.descriptor,
-          network: info.network,
+    return await txManifestIdempotency.execute(
+      key,
+      invocationDigest,
+      async () => {
+        const plan = await engine<TxManifestRequirementPlan>({
+          kind: "resolveTxManifestRequirements",
           invocation,
-          plan,
-          expectedPlanDigest: preparedContext.prepared.planDigest,
-          reviewedFee: preparedContext.prepared.review.fee,
-          permissionMethod: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST,
+        });
+        const preparedContext = await prepareProviderTxManifest(
+          origin,
+          connection,
+          info,
           revision,
           generation,
-          resolve: resolve as (result: unknown) => void,
-          reject,
+          plan,
+        );
+        const review = txManifestApprovalReview(preparedContext);
+        const id = `appr-${approvalSeq++}-${Date.now()}`;
+        const approval: ApprovalRequest = {
+          kind: "executeTxManifest",
+          id,
+          origin,
+          review,
+          network: toDappNetwork(info.network),
+          locked: keystore.isLocked(),
+          signerKind: info.signer,
+        };
+        return await new Promise<LiquidExecuteTxManifestResult>((resolve, reject) => {
+          parkApproval(id, {
+            kind: "executeTxManifest",
+            request: approval,
+            origin,
+            walletId: info.id,
+            descriptor: info.descriptor,
+            network: info.network,
+            invocation,
+            plan,
+            expectedPlanDigest: preparedContext.prepared.planDigest,
+            reviewedFee: preparedContext.prepared.review.fee,
+            executionKey: key,
+            invocationDigest,
+            permissionMethod: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST,
+            revision,
+            generation,
+            resolve: resolve as (result: unknown) => void,
+            reject,
+          });
+          void routeApproval(approval);
         });
-        void routeApproval(approval);
-      });
-    });
+      },
+      (checkpoint) =>
+        resumeProviderTxManifest(
+          origin,
+          invocation,
+          info,
+          revision,
+          generation,
+          checkpoint,
+        ),
+    );
   } catch (error) {
     if (error instanceof LiquidRpcError) throw error;
     throw txManifestExecutionError(error);
   }
+}
+
+async function resumeProviderTxManifest(
+  origin: string,
+  invocation: LiquidExecuteTxManifestParams,
+  info: Awaited<ReturnType<typeof walletInfo>>,
+  revision: number,
+  generation: number,
+  checkpoint: TxManifestCheckpointRecord,
+): Promise<LiquidExecuteTxManifestResult> {
+  if (checkpoint.walletId !== info.id || checkpoint.network !== info.network) {
+    throw new Error("The TX Manifest checkpoint does not belong to the connected wallet.");
+  }
+  if (keystore.isLocked()) {
+    throw providerError(
+      LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
+      "Unlock Apogee to resume this previously approved TX Manifest transaction.",
+      LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
+      { cause: "locked" },
+    );
+  }
+  const payload = parseTxManifestCheckpointPayload(
+    await keystore.openTxManifestCheckpoint(
+      checkpoint.walletId,
+      txManifestCheckpointContext(checkpoint),
+      checkpoint.sealedPayload,
+    ),
+  );
+  if (
+    payload.result.requestId !== invocation.requestId ||
+    payload.result.chainId !== invocation.chainId ||
+    payload.result.accountIdentifier !== invocation.accountIdentifier ||
+    payload.result.bundleHash !== invocation.manifest.bundleHash ||
+    payload.result.action !== invocation.action ||
+    payload.result.txid !== payload.txid ||
+    payload.review.requestId !== invocation.requestId ||
+    payload.review.accountIdentifier !== invocation.accountIdentifier ||
+    payload.review.bundleHash !== invocation.manifest.bundleHash ||
+    payload.review.action !== invocation.action
+  ) {
+    throw new Error("The TX Manifest checkpoint does not match this invocation.");
+  }
+
+  const status = await lookupTxManifestTransaction(
+    checkpoint.network,
+    payload.txid,
+    await chainServer(checkpoint.network),
+  );
+  if (status === "found") return payload.result;
+
+  const id = `appr-${approvalSeq++}-${Date.now()}`;
+  const approval: ApprovalRequest = {
+    kind: "executeTxManifest",
+    id,
+    origin,
+    review: payload.review,
+    network: toDappNetwork(info.network),
+    locked: false,
+    signerKind: info.signer,
+    recovery: true,
+  };
+  return new Promise<LiquidExecuteTxManifestResult>((resolve, reject) => {
+    parkApproval(id, {
+      kind: "executeTxManifest",
+      request: approval,
+      origin,
+      walletId: info.id,
+      descriptor: info.descriptor,
+      network: info.network,
+      invocation,
+      executionKey: checkpoint.key,
+      invocationDigest: checkpoint.invocationDigest,
+      recovery: payload,
+      permissionMethod: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST,
+      revision,
+      generation,
+      resolve: resolve as (result: unknown) => void,
+      reject,
+    });
+    void routeApproval(approval);
+  });
+}
+
+async function txManifestBroadcastWasAccepted(
+  network: LiquidNetwork,
+  txid: string,
+  esploraUrl: string | undefined,
+  error: unknown,
+): Promise<boolean> {
+  if (isKnownTxManifestBroadcastError(error)) return true;
+  return (await lookupTxManifestTransaction(network, txid, esploraUrl)) === "found";
 }
 
 async function prepareProviderTxManifest(
@@ -2472,6 +2591,14 @@ function txManifestExecutionError(error: unknown): LiquidRpcError {
       { path: "params.requestId" },
     );
   }
+  if (/saved TX Manifest transaction is no longer valid/i.test(message)) {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
+      "This saved TX Manifest transaction is no longer valid. Submit the action again with a new requestId.",
+      LIQUID_RPC_ERROR_REASONS.INTERNAL_ERROR,
+      { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST, cause: "checkpoint_invalid" },
+    );
+  }
   if (/reviewed fee|execution plan changed after approval/i.test(message)) {
     return providerError(
       LIQUID_RPC_ERROR_CODES.INTERNAL_ERROR,
@@ -2494,6 +2621,17 @@ function txManifestExecutionError(error: unknown): LiquidRpcError {
       "The connected wallet has insufficient suitable funds for this manifest action and fee.",
       LIQUID_RPC_ERROR_REASONS.INTERNAL_ERROR,
       { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST, cause: "insufficient_funds" },
+    );
+  }
+  if (/broadcast|\b5\d\d\b|gateway/i.test(message)) {
+    return providerError(
+      LIQUID_RPC_ERROR_CODES.CHAIN_UNAVAILABLE,
+      "Apogee could not confirm submission of the saved transaction. Retry the same requestId to recover safely.",
+      LIQUID_RPC_ERROR_REASONS.CHAIN_UNAVAILABLE,
+      {
+        method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST,
+        cause: "broadcast_unconfirmed",
+      },
     );
   }
   if (/chain server|fetch|network|confirmed|already spent|outpoint/i.test(message)) {
@@ -2817,7 +2955,8 @@ async function handleProvider(msg: ProviderRequest, origin: string | undefined):
 // popup window. Sends always sign + broadcast; signPset either returns a signed
 // PSET or, when the reviewed request explicitly opts in, finalizes and broadcasts
 // it too. The map is in-memory: the open dapp message port keeps the SW alive for
-// the (brief) approval; if the SW is evicted the dapp can retry.
+// the (brief) approval. TX Manifest execution additionally persists exact signed
+// bytes before broadcast, so an identical retry can recover after worker loss.
 
 type PendingApproval =
   | {
@@ -2869,7 +3008,7 @@ type PendingApproval =
       timer?: ReturnType<typeof setTimeout>;
       windowId?: number;
     }
-  | {
+  | ({
       kind: "executeTxManifest";
       request: Extract<ApprovalRequest, { kind: "executeTxManifest" }>;
       origin: string;
@@ -2877,9 +3016,8 @@ type PendingApproval =
       descriptor: string;
       network: LiquidNetwork;
       invocation: LiquidExecuteTxManifestParams;
-      plan: TxManifestRequirementPlan;
-      expectedPlanDigest: `sha256:${string}`;
-      reviewedFee: string;
+      executionKey: string;
+      invocationDigest: `sha256:${string}`;
       permissionMethod: string;
       revision: number;
       generation: number;
@@ -2887,7 +3025,17 @@ type PendingApproval =
       reject: (err: Error) => void;
       timer?: ReturnType<typeof setTimeout>;
       windowId?: number;
-    };
+    } & (
+      | {
+          recovery?: undefined;
+          plan: TxManifestRequirementPlan;
+          expectedPlanDigest: `sha256:${string}`;
+          reviewedFee: string;
+        }
+      | {
+          recovery: TxManifestCheckpointPayload;
+        }
+    ));
 
 interface ProviderPsetAuthorizationContext {
   origin: string;
@@ -3256,6 +3404,69 @@ async function handleApprovalDecision(
       throw err;
     }
     try {
+      if (pending.recovery) {
+        await requireProviderPsetAuthorization(
+          pending,
+          "This site was disconnected before Apogee could resume the manifest transaction.",
+          true,
+        );
+        const esploraUrl = await chainServer(pending.network);
+        const status = await lookupTxManifestTransaction(
+          pending.network,
+          pending.recovery.txid,
+          esploraUrl,
+        );
+        if (status !== "found") {
+          let sent: SendResult;
+          try {
+            sent = await engineAfterGate<SendResult>(
+              {
+                kind: "broadcastTransaction",
+                network: pending.network,
+                transactionHex: pending.recovery.transactionHex,
+                esploraUrl,
+              },
+              () =>
+                requireProviderPsetAuthorization(
+                  pending,
+                  "This site was disconnected before Apogee could resume the manifest transaction.",
+                  true,
+                ),
+            );
+          } catch (error) {
+            if (
+              await txManifestBroadcastWasAccepted(
+                pending.network,
+                pending.recovery.txid,
+                esploraUrl,
+                error,
+              )
+            ) {
+              sent = { txid: pending.recovery.txid };
+            } else {
+              if (isPermanentTxManifestBroadcastError(error)) {
+                const details = error instanceof Error ? error.message : String(error);
+                await txManifestIdempotency.failCheckpoint(
+                  pending.executionKey,
+                  pending.invocationDigest,
+                  details,
+                );
+                throw new Error(
+                  `This saved TX Manifest transaction is no longer valid. Submit the action again with a new requestId. ${details}`,
+                );
+              }
+              throw error;
+            }
+          }
+          if (sent.txid !== pending.recovery.txid) {
+            throw new Error("The chain server returned a different transaction id after broadcast.");
+          }
+        }
+        pending.resolve(pending.recovery.result);
+        browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
+        return pending.recovery.result;
+      }
+
       const refreshed = await prepareProviderTxManifest(
         pending.origin,
         connection,
@@ -3278,7 +3489,7 @@ async function handleApprovalDecision(
       }
       const signedPset = await engine<string>({
         kind: "signTxManifestPset",
-        mnemonic: keystore.getMnemonic(pending.walletId),
+        mnemonic: await keystore.getMnemonic(pending.walletId),
         descriptor: pending.descriptor,
         network: pending.network,
         pset: refreshed.prepared.pset,
@@ -3321,30 +3532,6 @@ async function handleApprovalDecision(
           });
         }
       }
-      let esploraUrl: string | undefined;
-      await requireProviderPsetAuthorization(
-        pending,
-        "This site was disconnected before Apogee could broadcast the manifest transaction.",
-        true,
-      );
-      esploraUrl = await chainServer(pending.network);
-      const sent = await engineAfterGate<SendResult>(
-        {
-          kind: "broadcastPset",
-          network: pending.network,
-          pset: finalizedPset,
-          esploraUrl,
-        },
-        () =>
-          requireProviderPsetAuthorization(
-            pending,
-            "This site was disconnected before Apogee could broadcast the manifest transaction.",
-            true,
-          ),
-      );
-      if (sent.txid !== extracted.txid) {
-        throw new Error("The chain server returned a different transaction id after broadcast.");
-      }
       const result: LiquidExecuteTxManifestResult = {
         requestId: pending.invocation.requestId,
         chainId: pending.invocation.chainId,
@@ -3352,8 +3539,79 @@ async function handleApprovalDecision(
         bundleHash: pending.invocation.manifest.bundleHash,
         action: pending.invocation.action,
         status: "broadcast",
-        txid: sent.txid,
+        txid: extracted.txid,
       };
+      await requireProviderPsetAuthorization(
+        pending,
+        "This site was disconnected before Apogee could broadcast the manifest transaction.",
+        true,
+      );
+      const esploraUrl = await chainServer(pending.network);
+      const checkpointMetadata = {
+        key: pending.executionKey,
+        invocationDigest: pending.invocationDigest,
+        walletId: pending.walletId,
+        network: pending.network,
+      };
+      const checkpointPayload: TxManifestCheckpointPayload = {
+        version: 1,
+        transactionHex: extracted.transactionHex,
+        txid: extracted.txid,
+        result,
+        review: pending.request.review,
+      };
+      const sealedPayload = await keystore.sealTxManifestCheckpoint(
+        pending.walletId,
+        txManifestCheckpointContext(checkpointMetadata),
+        JSON.stringify(checkpointPayload),
+      );
+      // The durable boundary: no chain-server submission is attempted unless
+      // these exact signed bytes can be recovered after service-worker loss.
+      await txManifestIdempotency.checkpoint({ ...checkpointMetadata, sealedPayload });
+      let sent: SendResult;
+      try {
+        sent = await engineAfterGate<SendResult>(
+          {
+            kind: "broadcastTransaction",
+            network: pending.network,
+            transactionHex: extracted.transactionHex,
+            esploraUrl,
+          },
+          () =>
+            requireProviderPsetAuthorization(
+              pending,
+              "This site was disconnected before Apogee could broadcast the manifest transaction.",
+              true,
+            ),
+        );
+      } catch (error) {
+        if (
+          await txManifestBroadcastWasAccepted(
+            pending.network,
+            extracted.txid,
+            esploraUrl,
+            error,
+          )
+        ) {
+          sent = { txid: extracted.txid };
+        } else {
+          if (isPermanentTxManifestBroadcastError(error)) {
+            const details = error instanceof Error ? error.message : String(error);
+            await txManifestIdempotency.failCheckpoint(
+              pending.executionKey,
+              pending.invocationDigest,
+              details,
+            );
+            throw new Error(
+              `This saved TX Manifest transaction is no longer valid. Submit the action again with a new requestId. ${details}`,
+            );
+          }
+          throw error;
+        }
+      }
+      if (sent.txid !== extracted.txid) {
+        throw new Error("The chain server returned a different transaction id after broadcast.");
+      }
       pending.resolve(result);
       browser.runtime.sendMessage({ type: "apogee/balance-changed" }).catch(() => {});
       return result;

@@ -28,6 +28,8 @@ function requiredEnv(name: string): string {
 
 const DAPP_URL = requiredEnv("LENDING_REGTEST_DAPP_URL");
 const ESPLORA_URL = requiredEnv("LENDING_REGTEST_ESPLORA_URL");
+const APOGEE_ESPLORA_URL = requiredEnv("LENDING_REGTEST_APOGEE_ESPLORA_URL");
+const PROXY_CONTROL_URL = requiredEnv("LENDING_REGTEST_PROXY_CONTROL_URL");
 const RPC_URL = requiredEnv("LENDING_REGTEST_RPC_URL");
 const RPC_USER = requiredEnv("LENDING_REGTEST_RPC_USER");
 const RPC_PASSWORD = requiredEnv("LENDING_REGTEST_RPC_PASSWORD");
@@ -260,6 +262,25 @@ test("real lending UI executes every trusted lending action through Apogee", asy
     }
   } finally {
     await lenderContext?.close();
+    await context.close();
+  }
+});
+
+test("durably recovers TX Manifest broadcast checkpoints after worker termination", async () => {
+  if (!existsSync(resolve(EXTENSION_PATH, "manifest.json"))) {
+    throw new Error("The regtest extension build is missing; run pnpm test:lending:regtest");
+  }
+
+  const context = await launchExtensionContext();
+  try {
+    const extensionId = await extensionIdentity(context);
+    const address = await seedRegtestWallet(context, extensionId, TEST_MNEMONIC, "recovery");
+    await sendAssetFragments(address, Array(4).fill(0.006));
+    await mineBlock();
+    await waitForEsploraTip();
+    const page = await connectLendingDapp(context);
+    await exerciseDurableBroadcastRecovery(page, context, extensionId);
+  } finally {
     await context.close();
   }
 });
@@ -611,6 +632,153 @@ async function exerciseManifestRetryReliability(
   return successfulResults[0]!.txid;
 }
 
+async function exerciseDurableBroadcastRecovery(
+  page: import("@playwright/test").Page,
+  context: BrowserContext,
+  extensionId: string,
+): Promise<string> {
+  const connection = await discoveredProviderRequest(page, {
+    method: "wallet_getConnection",
+  }) as { accountIdentifier: string; chainId: string };
+  const walletScope = `apogee:${connection.chainId}:${connection.accountIdentifier}`;
+
+  const classification = await page.evaluate(async () => {
+    const modulePath = "/src/lib/liquid-provider/types.ts";
+    const providerTypes = await import(modulePath) as {
+      shouldAbandonTxManifestAttempt(error: unknown): boolean;
+    };
+    return {
+      chainUnavailable: providerTypes.shouldAbandonTxManifestAttempt({ code: 4901 }),
+      broadcastUnknown: providerTypes.shouldAbandonTxManifestAttempt({
+        code: 4901,
+        data: { cause: "broadcast_unconfirmed" },
+      }),
+      invalidCheckpoint: providerTypes.shouldAbandonTxManifestAttempt({
+        code: -32603,
+        data: { cause: "checkpoint_invalid" },
+      }),
+      invalidParams: providerTypes.shouldAbandonTxManifestAttempt({ code: -32602 }),
+    };
+  });
+  expect(classification).toEqual({
+    chainUnavailable: false,
+    broadcastUnknown: false,
+    invalidCheckpoint: true,
+    invalidParams: true,
+  });
+
+  await page.goto(new URL("/borrow", DAPP_URL).href);
+  await expect(page.getByText("Your Borrows", { exact: true })).toBeVisible();
+  await activateButton(page, "Create Borrow Offer");
+  await expect(page.getByText("Enable Borrowing", { exact: true }).first()).toBeVisible();
+
+  expect(await mempoolTxids()).toEqual([]);
+  const armed = await fetch(`${PROXY_CONTROL_URL}/fail-next-broadcast`, { method: "POST" });
+  expect(armed.ok).toBe(true);
+
+  // The proxy submits the transaction upstream, then deliberately returns 502.
+  // Apogee must leave its encrypted pre-broadcast checkpoint unresolved.
+  const approvalPromise = approvalPage(context);
+  await activateButton(page, "Enable");
+  const approval = await approvalPromise;
+  await expect(approval.getByText("Enable borrowing", { exact: true })).toBeVisible();
+  await expect.poll(() => manifestAttemptRequestId(page, walletScope, "enable-borrowing"))
+    .not.toBeNull();
+  const originalRequestId = await manifestAttemptRequestId(
+    page,
+    walletScope,
+    "enable-borrowing",
+  );
+  expect(originalRequestId).not.toBeNull();
+  await approval.getByRole("button", { name: "Approve & execute" }).click();
+  await expect(page.getByText("Transaction Failed", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Retry the same requestId to recover safely/)).toBeVisible();
+  await expect.poll(() => manifestAttemptRequestId(page, walletScope, "enable-borrowing"))
+    .toBe(originalRequestId);
+  await approval.close();
+  const accepted = await mempoolTxids();
+  expect(accepted).toHaveLength(1);
+  const txid = accepted[0]!;
+  await activateButton(page, "Close");
+
+  // Kill the MV3 worker so the retry cannot rely on any in-memory operation.
+  await terminateExtensionWorker(page, extensionId);
+  await page.reload();
+  await expect.poll(async () => {
+    const current = await discoveredProviderRequest(page, { method: "wallet_getConnection" }) as {
+      accountIdentifier?: unknown;
+    } | null;
+    return current?.accountIdentifier;
+  }).toBe(connection.accountIdentifier);
+
+  // The real dapp loads the saved invocation and requestId from IndexedDB. Its
+  // retry finds the accepted tx by checkpointed txid, without a second approval
+  // or another broadcast, then completes normal portfolio-script recovery.
+  await expect(page.getByRole("button", { name: "Create Borrow Offer" })).toBeEnabled();
+  await activateButton(page, "Create Borrow Offer");
+  await expect(page.getByText("Enable Borrowing", { exact: true }).first()).toBeVisible();
+  await activateButton(page, "Enable");
+  await expect(page.getByText("Transaction ID", { exact: true })).toBeVisible();
+  await expect(page.locator(`a[href*="${txid}"]`)).toBeVisible();
+  expect(openApprovalPages(context)).toHaveLength(0);
+  expect(await mempoolTxids()).toEqual([txid]);
+  await expect.poll(() => manifestAttemptRequestId(page, walletScope, "enable-borrowing"))
+    .toBeNull();
+
+  await mineBlock();
+  await waitForEsploraTip();
+  await expect(page.getByText(/Confirmed|Finalized/, { exact: true })).toBeVisible();
+  await activateButton(page, "Done");
+  return txid;
+}
+
+async function manifestAttemptRequestId(
+  page: import("@playwright/test").Page,
+  walletScope: string,
+  offerId: string,
+): Promise<string | null> {
+  return page.evaluate(async ({ scope, targetOfferId }) => {
+    const modulePath = "/src/lib/liquid-provider/storage.ts";
+    const storage = await import(modulePath) as {
+      getManifestAttempt(
+        scope: string,
+        offerId: string,
+      ): Promise<{ invocation?: unknown } | undefined>;
+    };
+    const record = await storage.getManifestAttempt(scope, targetOfferId);
+    if (!record?.invocation || typeof record.invocation !== "object") return null;
+    const requestId = (record.invocation as { requestId?: unknown }).requestId;
+    return typeof requestId === "string" ? requestId : null;
+  }, { scope: walletScope, targetOfferId: offerId });
+}
+
+async function terminateExtensionWorker(
+  page: import("@playwright/test").Page,
+  extensionId: string,
+): Promise<void> {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    const targets = await cdp.send("Target.getTargets");
+    const worker = targets.targetInfos.find(
+      (target) =>
+        target.type === "service_worker" &&
+        target.url.startsWith(`chrome-extension://${extensionId}/`),
+    );
+    if (!worker) throw new Error("Apogee service worker target was not found");
+    const closed = await cdp.send("Target.closeTarget", { targetId: worker.targetId });
+    expect(closed.success).toBe(true);
+    await expect.poll(
+      async () => {
+        const current = await cdp.send("Target.getTargets");
+        return current.targetInfos.some((target) => target.targetId === worker.targetId);
+      },
+      { timeout: 10_000 },
+    ).toBe(false);
+  } finally {
+    await cdp.detach();
+  }
+}
+
 async function activateButton(page: import("@playwright/test").Page, name: string): Promise<void> {
   await page.getByRole("button", { name, exact: true }).last().focus();
   await page.keyboard.press("Enter");
@@ -662,7 +830,7 @@ async function seedRegtestWallet(
       await send({ type: "wallet/setChainServer", network: "regtest", url: esploraUrl });
       return await send({ type: "wallet/getAddress" }) as { address: string };
     },
-    { mnemonic, esploraUrl: ESPLORA_URL, role },
+    { mnemonic, esploraUrl: APOGEE_ESPLORA_URL, role },
   );
   await extensionPage.close();
   return result.address;
@@ -736,7 +904,7 @@ async function restoreAndReadTransactions(
       await send({ type: "wallet/sync" });
       return await send({ type: "wallet/getTransactions" }) as WalletHistoryRecord[];
     },
-    { mnemonic, esploraUrl: ESPLORA_URL, role },
+    { mnemonic, esploraUrl: APOGEE_ESPLORA_URL, role },
   );
   await extensionPage.close();
   return result;

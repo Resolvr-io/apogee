@@ -96,6 +96,7 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
   const isConnect = request.kind === "connect";
   const isPset = request.kind === "signPset";
   const isManifest = request.kind === "executeTxManifest";
+  const resumesManifest = request.kind === "executeTxManifest" && request.recovery === true;
   const broadcastsPset = request.kind === "signPset" && request.broadcast;
   const sendReview = request.kind === "send" ? request.review : null;
   const tokenAmount = sendReview?.assetId
@@ -241,7 +242,9 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
               : isPset
                 ? "Sign PSET"
                 : isManifest
-                  ? "Execute contract action"
+                  ? resumesManifest
+                    ? "Resume contract transaction"
+                    : "Execute contract action"
                   : "Approve transaction"}
         </h2>
         {/* Middle-truncate: clipping the end would hide the registrable
@@ -301,7 +304,11 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
           broadcast={request.broadcast}
         />
       ) : request.kind === "executeTxManifest" ? (
-        <TxManifestReview review={request.review} network={request.network} />
+        <TxManifestReview
+          review={request.review}
+          network={request.network}
+          recovery={request.recovery === true}
+        />
       ) : (
         <>
           <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
@@ -433,7 +440,7 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
                   ? "Approve & sign on Jade"
                   : "Approve & sign"
             ) : isManifest ? (
-              "Approve & execute"
+              resumesManifest ? "Resume broadcast" : "Approve & execute"
             ) : jade ? (
               "Approve & sign on Jade"
             ) : (
@@ -457,15 +464,18 @@ type TxManifestReviewDTO = Extract<
 function TxManifestReview({
   review,
   network,
+  recovery = false,
 }: {
   review: TxManifestReviewDTO;
   network: "mainnet" | "testnet" | "regtest";
+  recovery?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-[color:var(--text-secondary)]">
-        Apogee built this transaction from a trusted contract manifest and current chain state.
-        Approval signs and broadcasts it.
+        {recovery
+          ? "Apogee previously saved this exact signed transaction after you approved it, but could not durably confirm submission. Resuming broadcasts those same bytes; it does not rebuild or re-sign the transaction."
+          : "Apogee built this transaction from a trusted contract manifest and current chain state. Approval signs and broadcasts it."}
       </p>
       <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
         <Row label="Protocol" value={review.protocolLabel} strong />

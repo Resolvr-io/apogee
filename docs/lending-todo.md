@@ -148,12 +148,23 @@ event-discovered provider.
 
 ## Reliability and production hardening
 
-- [ ] Eliminate the narrow recovery gap where broadcast succeeds but the browser
+- [x] Eliminate the narrow recovery gap where broadcast succeeds but the browser
   stops before Apogee durably records the idempotent result.
-  - Persist a signed-transaction/broadcast checkpoint before submission.
-  - Resume safely without constructing or signing a second transaction.
+  - [x] Persist the exact signed transaction in an encrypted, wallet-bound
+    checkpoint before submission; a failed checkpoint write prevents broadcast.
+  - [x] On an identical retry, return an already-observed transaction without a
+    prompt or show an explicit recovery approval before rebroadcasting the exact
+    saved bytes. Recovery never rebuilds or re-signs.
+  - [x] Preserve unresolved checkpoints across terminal-record pruning, reject
+    conflicting request-ID reuse, and require a new request ID after a permanent
+    transaction-invalidity response.
+  - [x] Cover checkpoint persistence failure, interrupted broadcast/terminal
+    persistence, recovery, retention, chain lookup, and recovery copy in unit tests.
+  - [x] Exercise an accepted broadcast with a deliberately lost response, terminate
+    the extension worker, and prove that the same request recovers the result with
+    exactly one on-chain transaction in the regtest browser suite.
 - [ ] Test service-worker restart and browser shutdown during preparation, approval,
-  hardware signing, broadcast, and result persistence.
+  hardware signing, and the other pre-checkpoint phases.
 - [ ] Expand user-facing recovery guidance for insufficient funds, fragmented coins,
   stale indexer state, expired offers, changed chain state, and unavailable chain
   servers.

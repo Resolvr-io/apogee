@@ -163,16 +163,22 @@ try {
   await waitForHttp(`http://127.0.0.1:${webPort}/`, 60_000);
 
   console.log("[regtest] Running Chromium against the production extension and lending UI…");
-  const code = await run(resolve(APOGEE_DIR, "node_modules/.bin/playwright"), [
+  const playwrightArgs = [
     "test",
     "--config=playwright.lending-regtest.config.ts",
-  ], {
+  ];
+  if (process.env.LENDING_REGTEST_PLAYWRIGHT_GREP) {
+    playwrightArgs.push("--grep", process.env.LENDING_REGTEST_PLAYWRIGHT_GREP);
+  }
+  const code = await run(resolve(APOGEE_DIR, "node_modules/.bin/playwright"), playwrightArgs, {
     cwd: APOGEE_DIR,
     env: {
       ...process.env,
       LENDING_REGTEST_DAPP_URL: `http://127.0.0.1:${webPort}/`,
       LENDING_REGTEST_EXTENSION_PATH: TEST_EXTENSION_DIR,
       LENDING_REGTEST_ESPLORA_URL: services.esploraUrl,
+      LENDING_REGTEST_APOGEE_ESPLORA_URL: `http://127.0.0.1:${proxyPort}/esplora/api`,
+      LENDING_REGTEST_PROXY_CONTROL_URL: `http://127.0.0.1:${proxyPort}/control`,
       LENDING_REGTEST_RPC_URL: services.rpcUrl,
       LENDING_REGTEST_RPC_USER: services.rpcUser,
       LENDING_REGTEST_RPC_PASSWORD: services.rpcPassword,
@@ -274,6 +280,8 @@ async function rpc(services, method, params = []) {
 }
 
 function createRegtestProxy(port, esploraTarget, apiTarget) {
+  let nextBroadcastFailure = null;
+  let nextTransactionStatusFailure = false;
   return createServer(async (request, response) => {
     try {
       if (request.method === "OPTIONS") {
@@ -282,12 +290,29 @@ function createRegtestProxy(port, esploraTarget, apiTarget) {
         return;
       }
       const incoming = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
+      if (request.method === "POST" && incoming.pathname === "/control/fail-next-broadcast") {
+        nextBroadcastFailure = "after-accept";
+        response.writeHead(204, corsHeaders());
+        response.end();
+        return;
+      }
       const backend = incoming.pathname.startsWith("/backend/");
       const path = backend
         ? incoming.pathname.slice("/backend".length)
         : incoming.pathname.startsWith("/esplora/api/")
           ? incoming.pathname.slice("/esplora/api".length)
           : incoming.pathname;
+      if (
+        nextTransactionStatusFailure &&
+        !backend &&
+        request.method === "GET" &&
+        /^\/tx\/[0-9a-f]{64}\/status$/i.test(path)
+      ) {
+        nextTransactionStatusFailure = false;
+        response.writeHead(502, { ...corsHeaders(), "content-type": "text/plain" });
+        response.end("injected ambiguous transaction status");
+        return;
+      }
       const target = backend ? apiTarget : esploraTarget;
       const upstream = await fetch(`${target}${path}${incoming.search}`, {
         method: request.method,
@@ -295,6 +320,20 @@ function createRegtestProxy(port, esploraTarget, apiTarget) {
         body: request.method === "GET" || request.method === "HEAD" ? undefined : request,
         duplex: "half",
       });
+      if (
+        nextBroadcastFailure === "after-accept" &&
+        !backend &&
+        request.method === "POST" &&
+        path === "/tx" &&
+        upstream.ok
+      ) {
+        nextBroadcastFailure = null;
+        nextTransactionStatusFailure = true;
+        await upstream.arrayBuffer();
+        response.writeHead(502, { ...corsHeaders(), "content-type": "text/plain" });
+        response.end("injected lost broadcast response");
+        return;
+      }
       response.writeHead(upstream.status, {
         ...Object.fromEntries(upstream.headers),
         ...corsHeaders(),
