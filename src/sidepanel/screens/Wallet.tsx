@@ -516,7 +516,9 @@ export function Wallet({
     return (
       <SubView
         title={titleFor(view)}
-        onBack={() => onView("home")}
+        // Coins is the only second-level screen (Settings → Coins); its back
+        // returns to Settings. Every other subview is entered from Home.
+        onBack={() => onView(view === "coins" ? "settings" : "home")}
         center={view === "receive" || view === "send" || view === "swap"}
       >
         {view === "receive" && (
