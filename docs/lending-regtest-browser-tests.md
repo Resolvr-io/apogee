@@ -22,6 +22,15 @@ Apogee's manifest review prompt, real wallet signatures, broadcast, confirmation
 indexer ingestion, and the resulting lending UI state. The suite never uses
 `window.liquid` or bypasses Apogee to construct a lifecycle transaction.
 
+The scenario also exercises the provider's reliability contract through the real
+extension boundary: lock during approval, explicit rejection, identical retry,
+two concurrent duplicate requests, terminal-result replay, conflicting request-ID
+reuse, disconnect during approval, reconnect, and page reload. It checks the
+mempool after each boundary, proving failed requests broadcast nothing and all
+successful duplicates resolve to the single reviewed transaction. The resulting
+action hint must also be visible on-chain, in wallet history, and after seed
+recovery.
+
 The wallets are seeded with fragmented L-BTC and principal-asset outputs. The
 scenario asserts that Create Offer, Accept Offer, and Repay Loan each consume
 multiple wallet funding inputs, covering collateral, principal, repayment, and
@@ -45,7 +54,9 @@ By default the runner expects these repositories to be checked out as siblings:
 ```
 
 Set `SIMPLICITY_LENDING_DIR` when the lending checkout lives elsewhere. Set
-`SIMPLEX_BIN` when the pinned `simplex` executable is not on `PATH`.
+`SIMPLEX_BIN` when the pinned `simplex` executable is not on `PATH`; the runner
+also adds that executable's directory to its child-process path so the matching
+`elementsd` and `electrs` binaries installed beside it are used.
 
 ## Run
 

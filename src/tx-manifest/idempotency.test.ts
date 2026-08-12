@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { LiquidExecuteTxManifestResult } from "@/provider/liquid-rpc";
 import {
   TxManifestIdempotency,
+  txManifestIdempotencyKey,
   type TxManifestTerminalRecord,
   type TxManifestTerminalStore,
 } from "./idempotency";
@@ -59,5 +60,112 @@ describe("TxManifestIdempotency", () => {
     await expect(coordinator.execute("scope", OTHER_DIGEST, vi.fn())).rejects.toThrow(
       "already used",
     );
+  });
+
+  it("rejects conflicting data while the original request is still in flight", async () => {
+    const coordinator = new TxManifestIdempotency(memoryStore(), () => 1_000);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const operation = vi.fn(async () => {
+      await gate;
+      return RESULT;
+    });
+
+    const running = coordinator.execute("scope", DIGEST, operation);
+    await expect(coordinator.execute("scope", OTHER_DIGEST, vi.fn())).rejects.toThrow(
+      "already used",
+    );
+    release();
+    await expect(running).resolves.toEqual(RESULT);
+    expect(operation).toHaveBeenCalledOnce();
+  });
+
+  it("releases failed and rejected requests so the identical request can retry", async () => {
+    const store = memoryStore();
+    const coordinator = new TxManifestIdempotency(store, () => 1_000);
+    const rejected = Object.assign(new Error("You rejected the request."), { code: 4001 });
+    const operation = vi
+      .fn<() => Promise<LiquidExecuteTxManifestResult>>()
+      .mockRejectedValueOnce(rejected)
+      .mockResolvedValueOnce(RESULT);
+
+    await expect(coordinator.execute("scope", DIGEST, operation)).rejects.toBe(rejected);
+    expect(store.records).toEqual([]);
+    await expect(coordinator.execute("scope", DIGEST, operation)).resolves.toEqual(RESULT);
+    expect(operation).toHaveBeenCalledTimes(2);
+    expect(store.records).toHaveLength(1);
+  });
+
+  it("does not cache a result when durable terminal persistence fails", async () => {
+    const store = memoryStore();
+    const saveFailure = new Error("storage unavailable");
+    const save = vi
+      .spyOn(store, "save")
+      .mockRejectedValueOnce(saveFailure)
+      .mockImplementation(async (records) => {
+        store.records = [...records];
+      });
+    const coordinator = new TxManifestIdempotency(store, () => 1_000);
+    const operation = vi.fn(async () => RESULT);
+
+    await expect(coordinator.execute("scope", DIGEST, operation)).rejects.toBe(saveFailure);
+    await expect(coordinator.execute("scope", DIGEST, operation)).resolves.toEqual(RESULT);
+    expect(operation).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
+  it("expires stale terminal results and retries the operation", async () => {
+    const store = memoryStore();
+    store.records = [{ key: "scope", invocationDigest: DIGEST, completedAt: 1_000, result: RESULT }];
+    const now = 1_000 + 7 * 24 * 60 * 60_000 + 1;
+    const coordinator = new TxManifestIdempotency(store, () => now);
+    const replacement = { ...RESULT, txid: "77".repeat(32) };
+    const operation = vi.fn(async () => replacement);
+
+    await expect(coordinator.execute("scope", DIGEST, operation)).resolves.toEqual(replacement);
+    expect(operation).toHaveBeenCalledOnce();
+    expect(store.records).toEqual([
+      { key: "scope", invocationDigest: DIGEST, completedAt: now, result: replacement },
+    ]);
+  });
+
+  it("keeps only the newest one hundred terminal results", async () => {
+    const store = memoryStore();
+    let now = 10_000;
+    const coordinator = new TxManifestIdempotency(store, () => now);
+
+    for (let index = 0; index < 101; index += 1) {
+      now += 1;
+      await coordinator.execute(`scope-${index}`, DIGEST, async () => ({
+        ...RESULT,
+        requestId: `request-${index}`,
+        txid: index.toString(16).padStart(64, "0"),
+      }));
+    }
+
+    expect(store.records).toHaveLength(100);
+    expect(store.records[0]?.key).toBe("scope-100");
+    expect(store.records.at(-1)?.key).toBe("scope-1");
+  });
+});
+
+describe("txManifestIdempotencyKey", () => {
+  it("isolates the same request id by origin, account, and chain", () => {
+    const base = {
+      origin: "https://lending.example",
+      accountIdentifier: "account-a",
+      chainId: "chain-a",
+      requestId: "retry-1",
+    };
+    const keys = [
+      txManifestIdempotencyKey(base),
+      txManifestIdempotencyKey({ ...base, origin: "https://other.example" }),
+      txManifestIdempotencyKey({ ...base, accountIdentifier: "account-b" }),
+      txManifestIdempotencyKey({ ...base, chainId: "chain-b" }),
+    ];
+
+    expect(new Set(keys)).toHaveLength(keys.length);
   });
 });

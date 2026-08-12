@@ -15,9 +15,11 @@ event-discovered provider.
   - [x] Default branch: Create Offer -> Accept Offer -> Claim Principal -> wait for
     expiry -> Liquidate Offer.
   - [x] Confirm the indexer and web UI show every state transition correctly.
-- [ ] Exercise explicit user rejection plus automated retry/idempotency, refresh,
-  and reconnect coverage. The controlled demo successfully retried the same
-  liquidation request after a rejected broadcast and reconnected between actions.
+- [x] Automate explicit rejection, lock-during-approval invalidation, same-request
+  retry, concurrent duplicate coalescing, terminal replay, conflicting request-ID
+  rejection, page reload, and disconnect/reconnect coverage. Each failure path
+  asserts that nothing was broadcast; concurrent and terminal retries assert one
+  approval, one transaction, and one recovered on-chain action hint.
 - [x] Add automated browser/extension coverage for all eight manifest actions.
 - [x] Run the lifecycle against the exact production extension build and record
   transaction IDs, bundle hash, chain height, and observed balances.
@@ -52,6 +54,11 @@ event-discovered provider.
   Offer, Claim Principal, Repay in Full, Collect Repayment, and Liquidate Offer.
 - The scenario verified the terminal `Cancelled`, `Claimed`, and `Liquidated` UI
   states after confirmation and indexer ingestion.
+- The reliability extension intentionally locks and rejects an open manifest
+  request, retries the identical request concurrently, replays its durable result,
+  rejects conflicting reuse, revokes a second open approval by disconnecting, then
+  reconnects and reloads the dapp. The successful retry is asserted in mempool,
+  on-chain, in wallet history, and after seed recovery.
 - Regtest execution remains build-gated test infrastructure; ordinary Chrome,
   Firefox, unit-test, and release builds do not trust the regtest chain.
 

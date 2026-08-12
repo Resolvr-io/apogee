@@ -13,6 +13,10 @@ const LENDING_DIR = resolve(
   process.env.SIMPLICITY_LENDING_DIR ?? resolve(APOGEE_DIR, "../simplicity-lending"),
 );
 const SIMPLEX = process.env.SIMPLEX_BIN ?? "simplex";
+const simplexEnv = {
+  ...process.env,
+  PATH: `${dirname(resolve(SIMPLEX))}:${process.env.PATH ?? ""}`,
+};
 const POSTGRES_IMAGE = process.env.LENDING_REGTEST_POSTGRES_IMAGE ?? "postgres:16-alpine";
 const TEST_EXTENSION_DIR = resolve(APOGEE_DIR, "dist-lending-regtest");
 const containerName = `apogee-lending-regtest-${process.pid}`;
@@ -35,13 +39,13 @@ try {
   console.log("[regtest] Generating the repository-pinned Simplicity contract artifacts…");
   await run(SIMPLEX, ["build"], {
     cwd: resolve(LENDING_DIR, "crates/contracts"),
-    env: process.env,
+    env: simplexEnv,
   });
 
   console.log("[regtest] Starting the repository-pinned Simplex Elements/electrs stack…");
   const simplex = start(SIMPLEX, ["regtest"], {
     cwd: resolve(LENDING_DIR, "crates/contracts"),
-    env: process.env,
+    env: simplexEnv,
     capture: true,
   });
   const services = await parseSimplexServices(simplex);

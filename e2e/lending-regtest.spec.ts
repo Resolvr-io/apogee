@@ -167,13 +167,23 @@ test("real lending UI executes every trusted lending action through Apogee", asy
       lenderPage.getByRole("row").filter({ hasText: "Liquidated" }).first(),
     ).toBeVisible();
 
+    await page.bringToFront();
+    const reliabilityTxid = await exerciseManifestRetryReliability(page, context, extensionId);
+    await expect.poll(
+      async () =>
+        (await walletTransactions(context, extensionId)).some(
+          ({ txid }) => txid === reliabilityTxid,
+        ),
+      { timeout: 60_000 },
+    ).toBe(true);
+
     const borrowerBeforeRecords = await walletTransactions(context, extensionId);
     const lenderBeforeRecords = await walletTransactions(lenderContext, lenderExtensionId);
     const borrowerBefore = borrowerBeforeRecords.map(({ txid }) => txid);
     const lenderBefore = lenderBeforeRecords.map(({ txid }) => txid);
     const observed = await inspectActionHints([...new Set([...borrowerBefore, ...lenderBefore])]);
     expect(countActions(observed)).toEqual({
-      [SIMPLICITY_LENDING_V3_CREATE_FACTORY]: 1,
+      [SIMPLICITY_LENDING_V3_CREATE_FACTORY]: 2,
       [SIMPLICITY_LENDING_V3_CREATE_OFFER]: 3,
       [SIMPLICITY_LENDING_V3_ACCEPT_OFFER]: 2,
       [SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL]: 1,
@@ -431,6 +441,176 @@ async function executeManifestAction(
   await activateButton(page, "Done");
 }
 
+type ProviderSettlement =
+  | { ok: true; value: unknown }
+  | {
+      ok: false;
+      error: { code?: number; message: string; data?: unknown };
+    };
+
+async function exerciseManifestRetryReliability(
+  page: import("@playwright/test").Page,
+  context: BrowserContext,
+  extensionId: string,
+): Promise<string> {
+  const connection = await discoveredProviderRequest(page, {
+    method: "wallet_getConnection",
+  }) as { chainId: string; accountIdentifier: string };
+  const invocation = {
+    protocolVersion: "0.1",
+    requestId: "regtest-create-factory-retry-reliability",
+    chainId: connection.chainId,
+    accountIdentifier: connection.accountIdentifier,
+    manifest: { bundleHash: LENDING_V3_BUNDLE_HASH },
+    action: SIMPLICITY_LENDING_V3_CREATE_FACTORY,
+    arguments: {},
+    providedInputs: {},
+    constraints: { maxFee: "1000" },
+  };
+  const request = { method: "experimental_executeTxManifest", params: invocation };
+
+  expect(await mempoolTxids()).toEqual([]);
+
+  // Approval-time authorization is authoritative: locking after the review is
+  // shown must fail the request without signing or broadcasting anything.
+  const lockedApprovalPromise = approvalPage(context);
+  const lockedRequest = settledDiscoveredProviderRequest(page, request);
+  const lockedApproval = await lockedApprovalPromise;
+  await expect(lockedApproval.getByText("Enable borrowing", { exact: true })).toBeVisible();
+  await setWalletLocked(context, extensionId, true);
+  await lockedApproval.getByRole("button", { name: "Approve & execute" }).click();
+  await expect(lockedRequest).resolves.toMatchObject({
+    ok: false,
+    error: { code: 4100, data: { reason: "unauthorized" } },
+  });
+  await lockedApproval.close();
+  await setWalletLocked(context, extensionId, false);
+  expect(await mempoolTxids()).toEqual([]);
+
+  // A definitive user rejection is not cached. The exact same invocation and
+  // requestId remains safe to retry.
+  const rejectedApprovalPromise = approvalPage(context);
+  const rejectedRequest = settledDiscoveredProviderRequest(page, request);
+  const rejectedApproval = await rejectedApprovalPromise;
+  await expect(rejectedApproval.getByText("Enable borrowing", { exact: true })).toBeVisible();
+  await rejectedApproval.getByRole("button", { name: "Reject", exact: true }).click();
+  await expect(rejectedRequest).resolves.toMatchObject({
+    ok: false,
+    error: { code: 4001, data: { reason: "user_rejected" } },
+  });
+  expect(await mempoolTxids()).toEqual([]);
+
+  // Concurrent identical retries share one execution and one approval. Both
+  // callers receive the same terminal result, but only one tx reaches mempool.
+  const retryApprovalPromise = approvalPage(context);
+  const concurrentRetries = settledDiscoveredProviderRequests(page, request, 2, 120_000);
+  const retryApproval = await retryApprovalPromise;
+  await expect(retryApproval.getByText("Enable borrowing", { exact: true })).toBeVisible();
+  await retryApproval.waitForTimeout(750);
+  expect(openApprovalPages(context)).toHaveLength(1);
+  await retryApproval.getByRole("button", { name: "Approve & execute" }).click();
+  const retryResults = await concurrentRetries;
+  expect(retryResults).toHaveLength(2);
+  expect(retryResults.every((result) => result.ok)).toBe(true);
+  const successfulResults = retryResults.flatMap((result) => result.ok ? [result.value] : []) as Array<{
+    requestId: string;
+    status: string;
+    txid: string;
+  }>;
+  expect(successfulResults).toHaveLength(2);
+  expect(successfulResults[0]).toMatchObject({
+    requestId: invocation.requestId,
+    status: "broadcast",
+  });
+  expect(successfulResults[1]?.txid).toBe(successfulResults[0]?.txid);
+  expect(await mempoolTxids()).toEqual([successfulResults[0]!.txid]);
+  await expect.poll(() => openApprovalPages(context).length).toBe(0);
+
+  // Once successful, a same-data replay is served from durable terminal state
+  // without another approval or broadcast.
+  const replay = await settledDiscoveredProviderRequest(page, request, 5_000);
+  expect(replay).toEqual(retryResults[0]);
+  expect(openApprovalPages(context)).toHaveLength(0);
+  expect(await mempoolTxids()).toEqual([successfulResults[0]!.txid]);
+
+  // The idempotency key cannot be repurposed for different request data.
+  const conflicting = await settledDiscoveredProviderRequest(
+    page,
+    {
+      ...request,
+      params: { ...invocation, constraints: { maxFee: "999" } },
+    },
+    5_000,
+  );
+  expect(conflicting).toMatchObject({
+    ok: false,
+    error: { code: -32602, data: { reason: "invalid_params" } },
+  });
+  expect(openApprovalPages(context)).toHaveLength(0);
+  expect(await mempoolTxids()).toEqual([successfulResults[0]!.txid]);
+
+  await mineBlock();
+  await waitForEsploraTip();
+  const onChain = await inspectActionHints([successfulResults[0]!.txid]);
+  expect(onChain).toMatchObject([
+    { txid: successfulResults[0]!.txid, action: SIMPLICITY_LENDING_V3_CREATE_FACTORY },
+  ]);
+
+  // Disconnecting revokes an approval that is already open. Reconnect and a
+  // full page reload must preserve the prior terminal result without another
+  // approval or transaction.
+  const disconnectRequest = {
+    ...request,
+    params: {
+      ...invocation,
+      requestId: "regtest-create-factory-disconnect-invalidation",
+    },
+  };
+  const disconnectApprovalPromise = approvalPage(context);
+  const interrupted = settledDiscoveredProviderRequest(page, disconnectRequest);
+  const disconnectApproval = await disconnectApprovalPromise;
+  await expect(disconnectApproval.getByText("Enable borrowing", { exact: true })).toBeVisible();
+  await discoveredProviderRequest(page, { method: "wallet_disconnect" });
+  await expect(interrupted).resolves.toMatchObject({
+    ok: false,
+    error: { code: 4100, data: { reason: "unauthorized" } },
+  });
+  await expect.poll(() => openApprovalPages(context).length).toBe(0);
+  expect(await mempoolTxids()).toEqual([]);
+  expect(await discoveredProviderRequest(page, { method: "wallet_getConnection" })).toBeNull();
+
+  const reconnectApprovalPromise = approvalPage(context);
+  const reconnectRequest = discoveredProviderRequest(page, {
+    method: "wallet_connect",
+    params: {
+      chains: [REGTEST_CHAIN_ID],
+      methods: ["experimental_executeTxManifest", "getBalance"],
+      events: [],
+    },
+  });
+  const reconnectApproval = await reconnectApprovalPromise;
+  await reconnectApproval.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(reconnectRequest).resolves.toMatchObject({
+    chainId: connection.chainId,
+    accountIdentifier: connection.accountIdentifier,
+  });
+  await expect.poll(() => openApprovalPages(context).length).toBe(0);
+
+  await page.reload();
+  await expect.poll(async () => {
+    const current = await discoveredProviderRequest(page, { method: "wallet_getConnection" }) as {
+      accountIdentifier?: unknown;
+    } | null;
+    return current?.accountIdentifier;
+  }).toBe(connection.accountIdentifier);
+  const postReloadReplay = await settledDiscoveredProviderRequest(page, request, 5_000);
+  expect(postReloadReplay).toEqual(retryResults[0]);
+  expect(openApprovalPages(context)).toHaveLength(0);
+  expect(await mempoolTxids()).toEqual([]);
+
+  return successfulResults[0]!.txid;
+}
+
 async function activateButton(page: import("@playwright/test").Page, name: string): Promise<void> {
   await page.getByRole("button", { name, exact: true }).last().focus();
   await page.keyboard.press("Enter");
@@ -582,6 +762,13 @@ function approvalPage(context: BrowserContext) {
   });
 }
 
+function openApprovalPages(context: BrowserContext) {
+  return context.pages().filter(
+    (candidate) =>
+      !candidate.isClosed() && candidate.url().includes("/src/prompt/prompt.html"),
+  );
+}
+
 async function discoveredProviderRequest(page: import("@playwright/test").Page, request: unknown) {
   return page.evaluate(async (providerRequest) => {
     const browserWindow = globalThis as typeof globalThis & {
@@ -603,6 +790,94 @@ async function discoveredProviderRequest(page: import("@playwright/test").Page, 
   }, request);
 }
 
+async function settledDiscoveredProviderRequest(
+  page: import("@playwright/test").Page,
+  request: unknown,
+  timeoutMs = 60_000,
+): Promise<ProviderSettlement> {
+  return (await settledDiscoveredProviderRequests(page, request, 1, timeoutMs))[0]!;
+}
+
+async function settledDiscoveredProviderRequests(
+  page: import("@playwright/test").Page,
+  request: unknown,
+  count: number,
+  timeoutMs = 60_000,
+): Promise<ProviderSettlement[]> {
+  return page.evaluate(async ({ providerRequest, count, timeoutMs }) => {
+    const browserWindow = globalThis as typeof globalThis & {
+      addEventListener(type: string, listener: (event: Event) => void): void;
+      removeEventListener(type: string, listener: (event: Event) => void): void;
+      dispatchEvent(event: Event): boolean;
+    };
+    const announced = new Promise<{
+      provider: { request(args: unknown): Promise<unknown> };
+    }>((resolveProvider) => {
+      const receive = (event: Event) => {
+        browserWindow.removeEventListener("liquid:announceProvider", receive);
+        resolveProvider((event as CustomEvent).detail);
+      };
+      browserWindow.addEventListener("liquid:announceProvider", receive);
+      browserWindow.dispatchEvent(new Event("liquid:requestProvider"));
+    });
+    const provider = (await announced).provider;
+    const settle = async (): Promise<ProviderSettlement> => {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const value = await Promise.race([
+          provider.request(providerRequest),
+          new Promise<never>((_resolve, reject) => {
+            timeout = setTimeout(
+              () => reject(new Error("Provider request timed out in test.")),
+              timeoutMs,
+            );
+          }),
+        ]);
+        return { ok: true, value };
+      } catch (error) {
+        const candidate = error as { code?: unknown; message?: unknown; data?: unknown };
+        return {
+          ok: false,
+          error: {
+            ...(typeof candidate.code === "number" ? { code: candidate.code } : {}),
+            message:
+              typeof candidate.message === "string" ? candidate.message : String(error),
+            ...(candidate.data === undefined ? {} : { data: candidate.data }),
+          },
+        };
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
+      }
+    };
+    return Promise.all(Array.from({ length: count }, () => settle()));
+  }, { providerRequest: request, count, timeoutMs });
+}
+
+async function setWalletLocked(
+  context: BrowserContext,
+  extensionId: string,
+  locked: boolean,
+): Promise<void> {
+  const extensionPage = await context.newPage();
+  await extensionPage.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+  await extensionPage.evaluate(async ({ locked }) => {
+    const extension = globalThis as typeof globalThis & {
+      chrome: {
+        runtime: {
+          sendMessage(message: unknown): Promise<{ ok: boolean; error?: string }>;
+        };
+      };
+    };
+    const reply = await extension.chrome.runtime.sendMessage(
+      locked
+        ? { type: "wallet/lock" }
+        : { type: "wallet/unlock", password: "lending-regtest-password" },
+    );
+    if (!reply.ok) throw new Error(reply.error ?? "Apogee lock state change failed");
+  }, { locked });
+  await extensionPage.close();
+}
+
 async function rpc(method: string, params: unknown[] = []): Promise<unknown> {
   const authorization = Buffer.from(`${RPC_USER}:${RPC_PASSWORD}`).toString("base64");
   const response = await fetch(RPC_URL, {
@@ -618,6 +893,10 @@ async function rpc(method: string, params: unknown[] = []): Promise<unknown> {
     throw new Error(body.error?.message ?? `Elements RPC ${method} failed (${response.status})`);
   }
   return body.result;
+}
+
+async function mempoolTxids(): Promise<string[]> {
+  return await rpc("getrawmempool") as string[];
 }
 
 async function mineBlock(): Promise<void> {
