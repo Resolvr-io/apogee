@@ -63,6 +63,7 @@ import {
   CONSOLIDATION_SETTLE_POLLS,
   consolidationLanded,
 } from "@/lib/consolidation";
+import { policyAssetId } from "@/sideswap/orchestrator";
 import {
   Button,
   Card,
@@ -580,7 +581,16 @@ export function Wallet({
             onView={onView}
           />
         )}
-        {view === "coins" && <Coins walletId={active.id} network={active.network} watchOnly={active.signer === "watch"} />}
+        {view === "coins" && (
+          <Coins
+            walletId={active.id}
+            network={active.network}
+            watchOnly={active.signer === "watch"}
+            assets={assets}
+            policyAsset={sync?.policyAssetHex}
+            hidden={hidden}
+          />
+        )}
       </SubView>
     );
   }
@@ -1272,48 +1282,46 @@ function TxRow({
   );
 }
 
-function Coins({ walletId, network, watchOnly }: { walletId: string; network: LiquidNetwork; watchOnly: boolean }) {
+function Coins({
+  walletId,
+  network,
+  watchOnly,
+  assets,
+  policyAsset: policyAssetProp,
+  hidden,
+}: {
+  walletId: string;
+  network: LiquidNetwork;
+  watchOnly: boolean;
+  assets: Record<string, AssetInfo>;
+  policyAsset?: string;
+  hidden: boolean;
+}) {
   const [utxos, setUtxos] = useState<WalletUtxoDTO[] | null>(null);
-  const [assets, setAssets] = useState<Record<string, AssetInfo>>({});
   const [error, setError] = useState("");
   const [busyAsset, setBusyAsset] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "info" | "error"; msg: string } | null>(null);
 
+  // A monotonic request id orders overlapping loads: the balance-changed
+  // listener and the settle poll both fire loads whose responses can land out
+  // of order, and a stale list must never overwrite a fresher one.
+  const loadSeq = useRef(0);
   const loadUtxos = useCallback(() => {
-    let alive = true;
+    const seq = ++loadSeq.current;
     setError("");
-    wallet
-      .getUtxos(walletId)
-      .then((u) => {
-        if (!alive) return;
-        setUtxos(u);
-        const unknown = [...new Set(u.map((x) => x.asset))].filter(
-          (id) => !(id in KNOWN_ASSETS) && !(id in assets),
-        );
-        if (unknown.length === 0) return;
-        void (async () => {
-          const fetched: Record<string, AssetInfo> = {};
-          for (const id of unknown) {
-            try {
-              fetched[id] = await wallet.getAsset(id, network);
-            } catch {
-              /* UI falls back to shortened hex */
-            }
-          }
-          if (alive && Object.keys(fetched).length > 0) {
-            setAssets((prev) => ({ ...prev, ...fetched }));
-          }
-        })();
-      })
-      .catch((e) => {
-        if (alive) setError(errMessage(e));
-      });
-    return () => {
-      alive = false;
-    };
-  }, [walletId, network, assets]);
+    wallet.getUtxos(walletId).then(
+      (u) => {
+        if (seq === loadSeq.current) setUtxos(u);
+      },
+      (e) => {
+        if (seq === loadSeq.current) setError(errMessage(e));
+      },
+    );
+  }, [walletId]);
 
-  useEffect(() => loadUtxos(), [loadUtxos]);
+  useEffect(() => {
+    loadUtxos();
+  }, [loadUtxos]);
 
   // Auto-refresh when a broadcast lands (the background fires this after every
   // successful send), so the coin list updates without a manual reload.
@@ -1470,10 +1478,10 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
     return <p className="py-8 text-center text-sm text-[color:var(--text-subtle)]">No unspent outputs.</p>;
   }
 
-  // Group by asset, L-BTC (policy asset) first, then by asset id.
-  const lbtcMainnet = "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d";
-  const lbtcTestnet = "144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49";
-  const policyAsset = network === "liquid" ? lbtcMainnet : lbtcTestnet;
+  // Group by asset, L-BTC (policy asset) first, then by asset id. The parent
+  // passes the authoritative id from the last sync (correct on regtest too);
+  // the network-derived constant is only the not-yet-synced fallback.
+  const policyAsset = policyAssetProp ?? policyAssetId(network);
   const groups = new Map<string, WalletUtxoDTO[]>();
   for (const u of utxos) {
     const arr = groups.get(u.asset) ?? [];
@@ -1512,12 +1520,18 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
               <AssetIcon assetId={assetId} label={label} network={network} size="size-5" />
               <span className="text-sm font-medium text-[color:var(--text-primary)]">{label}</span>
               <span className="ml-auto text-xs text-[color:var(--text-subtle)]">
-                {formatAssetAmountExact(total.toString(), precision)} · {groupUtxos.length} output{groupUtxos.length === 1 ? "" : "s"}
+                {hidden ? (
+                  <HiddenValue count={3} size={6} className="text-[color:var(--text-subtle)]" />
+                ) : (
+                  formatAssetAmountExact(total.toString(), precision)
+                )}
+                {" · "}
+                {groupUtxos.length} output{groupUtxos.length === 1 ? "" : "s"}
               </span>
             </div>
             <div className="apogee-panel divide-y divide-[color:var(--border-soft)] overflow-hidden rounded-xl border border-[color:var(--border-default)]">
               {groupUtxos.map((u) => (
-                <CoinRow key={`${u.txid}:${u.vout}`} utxo={u} assetId={assetId} label={label} precision={precision} network={network} />
+                <CoinRow key={`${u.txid}:${u.vout}`} utxo={u} assetId={assetId} label={label} precision={precision} network={network} hidden={hidden} />
               ))}
             </div>
             {groupUtxos.length > 1 && !watchOnly && !broadcast && pendingConsolidation?.assetId !== assetId && (
@@ -1617,18 +1631,21 @@ function CoinRow({
   label,
   precision,
   network,
+  hidden,
 }: {
   utxo: WalletUtxoDTO;
   assetId: string;
   label: string;
   precision: number | null;
   network: LiquidNetwork;
+  hidden: boolean;
 }) {
   const explorer = explorerTxUrl(network, utxo.txid);
   return (
     <details className="drawer">
       <summary className="flex items-center gap-2.5 px-3 py-2">
         <span
+          role="img"
           aria-label={utxo.confidential ? "Confidential" : "Unconfidential"}
           className={`flex size-8 shrink-0 items-center justify-center rounded-full ${
             utxo.confidential
@@ -1642,13 +1659,19 @@ function CoinRow({
           {shortenHex(utxo.address, 8, 8)}
         </span>
         <span className="ml-auto text-sm text-[color:var(--text-strong)]">
-          <TelemetryNumber value={`${formatAssetAmountExact(utxo.amount, precision)} ${label}`} glow={false} />
+          {hidden ? (
+            <HiddenValue count={3} size={8} className="text-[color:var(--text-subtle)]" />
+          ) : (
+            <TelemetryNumber value={`${formatAssetAmountExact(utxo.amount, precision)} ${label}`} glow={false} />
+          )}
         </span>
         <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
       </summary>
       <div className="flex flex-col gap-2 border-t border-[color:var(--border-soft)] px-3 py-2 text-xs">
         <div className="flex items-center justify-between gap-3">
-          <span tabIndex={0} title={`${utxo.txid}:${utxo.vout}`} className="cursor-pointer text-[color:var(--text-subtle)]">
+          {/* The copy button beside it exposes the value, so this label is not
+              a keyboard stop — the tooltip is a mouse affordance only. */}
+          <span title={`${utxo.txid}:${utxo.vout}`} className="text-[color:var(--text-subtle)]">
             Outpoint
           </span>
           <span className="flex items-center gap-0.5">
@@ -1669,7 +1692,10 @@ function CoinRow({
         </div>
         <Row label="Address" value={utxo.address} mono />
         <Row label="Asset" value={assetId} mono />
-        <Row label="Amount" value={`${formatAssetAmountExact(utxo.amount, precision)} ${label}`} />
+        <Row
+          label="Amount"
+          value={hidden ? "•••" : `${formatAssetAmountExact(utxo.amount, precision)} ${label}`}
+        />
         <Row label="Confidential" value={utxo.confidential ? "Yes" : "No"} />
       </div>
     </details>
