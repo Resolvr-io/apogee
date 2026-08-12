@@ -634,7 +634,7 @@ function TxManifestReview({
             <ManifestAssetRow review={review} assetId={review.collateralAssetId} amount={review.collateralAmount} specNetwork={specNetwork} roleLabel="Collateral" />
             <Row label="Interest" value={`${formatBaseUnits(review.interestRateBasisPoints)} bps`} />
             <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.totalDebt} specNetwork={specNetwork} roleLabel="Total debt" />
-            <Row label="Expires at height" value={String(review.expirationHeight)} mono />
+            <Row label="Expires at height" value={String(review.expirationHeight)} />
           </ReviewItem>
         </ReviewSection>
       ) : review.kind === "claimLenderVault" ? (
@@ -658,7 +658,7 @@ function TxManifestReview({
             {review.protocolFeeAmount !== undefined && (
               <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.protocolFeeAmount} specNetwork={specNetwork} roleLabel="Protocol fee" />
             )}
-            <Row label="Expiration height" value={String(review.expirationHeight)} mono />
+            <Row label="Expiration height" value={String(review.expirationHeight)} />
           </ReviewItem>
         </ReviewSection>
       )}
