@@ -126,6 +126,10 @@ event-discovered provider.
   already accepts a minimum-change floor and prefers dust-safe solutions; dynamic
   fee construction must decide whether an unavoidable policy-asset remainder is
   change, additional fee, or a preparation failure.
+  - [x] Complete the sizing and convergence spike in
+    `docs/tx-manifest-minimum-change-spike.md`: confidential change costs 67–69
+    discounted vbytes, a future P2WPKH spend costs 68 discounted vbytes, and the
+    proposed wallet-owned post-creation floor is 7 sats.
 - [x] Replace the fixed 1,000-sat fee with dynamic fee estimation.
   - Uses Esplora's 1-block estimate and the finalized PSET's discounted virtual
     size, including a conservative bound for every unsigned wallet witness.
