@@ -586,8 +586,8 @@ export function Wallet({
             walletId={active.id}
             network={active.network}
             watchOnly={active.signer === "watch"}
-            assets={assets}
-            policyAsset={sync?.policyAssetHex}
+            assets={liveAssets}
+            policyAsset={liveSync?.policyAssetHex}
             hidden={hidden}
           />
         )}
@@ -1306,15 +1306,29 @@ function Coins({
   // listener and the settle poll both fire loads whose responses can land out
   // of order, and a stale list must never overwrite a fresher one.
   const loadSeq = useRef(0);
+  // Mirrors `utxos` for the load callback, which is memoized on [walletId]
+  // alone and so can't close over the current list. It decides whether a
+  // failed reload blanks the screen (no list yet) or surfaces inline — a
+  // refresh failure mid-consolidation must not strand the pending card.
+  const utxosRef = useRef<WalletUtxoDTO[] | null>(null);
+  useEffect(() => {
+    utxosRef.current = utxos;
+  }, [utxos]);
   const loadUtxos = useCallback(() => {
     const seq = ++loadSeq.current;
     setError("");
     wallet.getUtxos(walletId).then(
       (u) => {
-        if (seq === loadSeq.current) setUtxos(u);
+        if (seq !== loadSeq.current) return;
+        setUtxos(u);
+        setError("");
+        setNotice((n) => (n?.tone === "error" ? null : n));
       },
       (e) => {
-        if (seq === loadSeq.current) setError(errMessage(e));
+        if (seq !== loadSeq.current) return;
+        const msg = errMessage(e);
+        if (utxosRef.current === null) setError(msg);
+        else setNotice({ tone: "error", msg });
       },
     );
   }, [walletId]);
@@ -1471,8 +1485,13 @@ function Coins({
     }
   }
 
-  if (error) return <ErrorText>{error}</ErrorText>;
-  if (!utxos) return <LoadingPill />;
+  // Full-screen error only before the first list lands; once UTXOs are on
+  // screen, a failed refresh surfaces through the notice slot so the list and
+  // the pending-consolidation card stay mounted.
+  if (!utxos) {
+    if (error) return <ErrorText>{error}</ErrorText>;
+    return <LoadingPill />;
+  }
 
   if (utxos.length === 0) {
     return <p className="py-8 text-center text-sm text-[color:var(--text-subtle)]">No unspent outputs.</p>;
