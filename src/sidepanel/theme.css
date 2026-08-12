@@ -645,9 +645,24 @@
     pointer-events: none;
   }
 
-  /* Expandable drawer (token rows, activity rows) built on native <details>.
-     Settings-row summaries pair -m-4 p-4 with the Card's p-4 so the whole card
-     shape — padding included — shows the pointer and toggles on click. */
+  /* Settings nav rows (the Coins button + the drawer summaries in Settings):
+     fill the whole Card, padding included, so the pointer and the click target
+     cover the entire card shape. The negative margin bleeds over the Card's
+     p-4 and the inner padding restores the text inset — coupled to Card's
+     padding by design. The explicit width covers a <button>'s shrink-wrap
+     (a summary stretches to fill on its own; a button does not). */
+  .settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: calc(100% + 2rem);
+    margin: -1rem;
+    padding: 1rem;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  /* Expandable drawer (token rows, activity rows) built on native <details>. */
   details.drawer > summary {
     list-style: none;
     cursor: pointer;
