@@ -41,7 +41,7 @@ import { explorerAssetUrl, explorerTxUrl } from "@/lib/explorer";
 import { APP_VERSION_DISPLAY } from "@/version";
 import { STORE_LISTING_URL } from "@/lib/store-links";
 import type { UpdateCheck } from "@/lib/version-check";
-import { KNOWN_ASSETS } from "@/lib/asset-registry";
+import { KNOWN_ASSETS, policyAssetId } from "@/lib/asset-registry";
 import { type Denom, assetRows, heroSubtitle, portfolioTotal } from "@/lib/portfolio";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY } from "@/lib/debug";
 import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS } from "@/lib/demo-funds";
@@ -63,7 +63,6 @@ import {
   CONSOLIDATION_SETTLE_POLLS,
   consolidationLanded,
 } from "@/lib/consolidation";
-import { policyAssetId } from "@/sideswap/orchestrator";
 import {
   Button,
   Card,

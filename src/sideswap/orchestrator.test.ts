@@ -17,7 +17,6 @@
 import { describe, it, expect } from "vitest";
 import {
   orientPair,
-  policyAssetId,
   filterSendAssetUtxos,
   executeInstantSwap,
   previewSwapQuote,
@@ -83,20 +82,6 @@ const USDT = USDT_LIQUID_ASSET_ID;
 const SOME_OTHER_ASSET = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 
 // ---- tests ----------------------------------------------------------------
-
-describe("policyAssetId", () => {
-  it("returns mainnet LBTC for liquid", () => {
-    expect(policyAssetId(MAINNET)).toBe(LBTC_MAINNET_ASSET_ID);
-  });
-
-  it("returns testnet LBTC for liquid-testnet", () => {
-    expect(policyAssetId(TESTNET)).toBe(LBTC_TESTNET_ASSET_ID);
-  });
-
-  it("returns testnet LBTC for liquid-regtest", () => {
-    expect(policyAssetId("liquid-regtest" as LiquidNetwork)).toBe(LBTC_TESTNET_ASSET_ID);
-  });
-});
 
 describe("orientPair — LBTC is always base", () => {
   it("places LBTC as base when sending LBTC (mainnet)", () => {

@@ -650,7 +650,9 @@
      cover the entire card shape. The negative margin bleeds over the Card's
      p-4 and the inner padding restores the text inset — coupled to Card's
      padding by design. The explicit width covers a <button>'s shrink-wrap
-     (a summary stretches to fill on its own; a button does not). */
+     (a summary stretches to fill on its own; a button does not). Lives in the
+     base layer, so any Tailwind utility on these elements overrides it — keep
+     them utility-free (see the base-layer caveat at the icon-btn rule). */
   .settings-row {
     display: flex;
     align-items: center;

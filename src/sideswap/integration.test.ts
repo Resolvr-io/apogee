@@ -10,8 +10,8 @@
 // These tests require network access to wss://api-testnet.sideswap.io.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { orientPair, policyAssetId } from "./orchestrator";
-import { LBTC_TESTNET_ASSET_ID } from "@/lib/asset-registry";
+import { orientPair } from "./orchestrator";
+import { LBTC_TESTNET_ASSET_ID, policyAssetId } from "@/lib/asset-registry";
 import type { LiquidNetwork } from "@/keystore/keystore";
 
 const TESTNET: LiquidNetwork = "liquidtestnet";

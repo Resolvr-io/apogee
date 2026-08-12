@@ -20,7 +20,7 @@
 import type { SideSwapClient, SideSwapUtxo, SideSwapQuoteSuccess, SideSwapAssetType, SideSwapTradeDir } from "./client";
 import type { EngineRequest, UtxoDTO, VerifyDealerPsetTermsDTO, SignSwapPsetWireResult } from "@/engine/protocol";
 import type { LiquidNetwork } from "@/keystore/keystore";
-import { LBTC_MAINNET_ASSET_ID, LBTC_TESTNET_ASSET_ID } from "@/lib/asset-registry";
+import { policyAssetId } from "@/lib/asset-registry";
 
 // ---- public types --------------------------------------------------------
 
@@ -132,11 +132,6 @@ export function filterSendAssetUtxos(utxos: UtxoDTO[], sendAssetId: string): Sid
 }
 
 // ---- SideSwap pair orientation -------------------------------------------
-
-/** Policy asset hex for a given network. */
-export function policyAssetId(network: LiquidNetwork): string {
-  return network === "liquid" ? LBTC_MAINNET_ASSET_ID : LBTC_TESTNET_ASSET_ID;
-}
 
 /** Build a correctly-oriented SideSwap asset pair and trade direction.
  *
