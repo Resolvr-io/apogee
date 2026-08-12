@@ -352,6 +352,14 @@ export interface ProviderPsetApprovalReviewDTO extends ProviderPsetAnalysisDTO {
   accountIdentifier: string;
 }
 
+/** Resolved display metadata for a single asset id in a manifest review. */
+export interface TxManifestAssetMeta {
+  /** Known label, registry ticker/name, or shortened-hex fallback. */
+  label: string;
+  ticker: string | null;
+  precision: number | null;
+}
+
 interface TxManifestApprovalReviewBaseDTO {
   protocolLabel: string;
   actionLabel: string;
@@ -362,6 +370,11 @@ interface TxManifestApprovalReviewBaseDTO {
   feeAssetId: string;
   fee: string;
   feeChange: string;
+  /**
+   * Resolved metadata for every distinct asset id in this review. Optional so
+   * durable recovery checkpoints written by older builds remain renderable.
+   */
+  assets?: Record<string, TxManifestAssetMeta>;
 }
 
 export type TxManifestApprovalReviewDTO =

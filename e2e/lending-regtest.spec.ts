@@ -414,8 +414,9 @@ async function connectLendingDapp(context: BrowserContext) {
   });
   const connectionApproval = await connectionApprovalPromise;
   await expect(
-    connectionApproval.locator("dd").filter({ hasText: "experimental_executeTxManifest" }),
+    connectionApproval.getByText("Execute contracts", { exact: true }),
   ).toBeVisible();
+  await expect(connectionApproval.getByText("Read balances", { exact: true })).toBeVisible();
   await connectionApproval.getByRole("button", { name: "Connect", exact: true }).click();
   await connectionRequest;
   await page.evaluate(() => {

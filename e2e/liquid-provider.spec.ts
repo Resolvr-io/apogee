@@ -113,7 +113,7 @@ test.describe.serial("Liquid browser provider", () => {
     });
     await page.getByRole("button", { name: "Connect · getBalance" }).click();
     const approval = await approvalPromise;
-    await expect(approval.getByText("getBalance", { exact: true })).toBeVisible();
+    await expect(approval.getByText("Read balances", { exact: true })).toBeVisible();
     await approval.getByRole("button", { name: "Connect", exact: true }).click();
 
     await expect(page.getByTestId("result")).toContainText('"accountIdentifier"');
@@ -135,7 +135,7 @@ test.describe.serial("Liquid browser provider", () => {
     });
     await page.getByRole("button", { name: "Enable · sendTransfer" }).click();
     const transferApproval = await transferApprovalPromise;
-    await expect(transferApproval.locator("dd").filter({ hasText: "sendTransfer" })).toBeVisible();
+    await expect(transferApproval.getByText("Request sends", { exact: true })).toBeVisible();
     await transferApproval.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(page.getByTestId("result")).toContainText('"sendTransfer"');
 
@@ -144,8 +144,8 @@ test.describe.serial("Liquid browser provider", () => {
     });
     await page.getByRole("button", { name: "Enable · signPset" }).click();
     const signApproval = await signApprovalPromise;
-    await expect(signApproval.locator("dd").filter({ hasText: "signPset" })).toBeVisible();
-    await expect(signApproval.getByText(/every request still shows/i)).toBeVisible();
+    await expect(signApproval.getByText("Sign transactions", { exact: true })).toBeVisible();
+    await expect(signApproval.getByText(/each transaction needs your approval/i)).toBeVisible();
     await signApproval.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(page.getByTestId("result")).toContainText('"signPset"');
 
@@ -163,9 +163,8 @@ test.describe.serial("Liquid browser provider", () => {
     });
     await page.getByRole("button", { name: "Enable · getUTXOs" }).click();
     const utxoApproval = await utxoApprovalPromise;
-    await expect(utxoApproval.locator("dd").filter({ hasText: "getUTXOs" })).toBeVisible();
-    await expect(utxoApproval.getByText(/reveals individual coins/i)).toBeVisible();
-    await expect(utxoApproval.getByText(/does not reveal blinding keys/i)).toBeVisible();
+    await expect(utxoApproval.getByText("View coin history", { exact: true })).toBeVisible();
+    await expect(utxoApproval.getByText(/individual coins, amounts, and transaction links/i)).toBeVisible();
     await utxoApproval.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(page.getByTestId("result")).toContainText('"getUTXOs"');
 
@@ -205,14 +204,10 @@ test.describe.serial("Liquid browser provider", () => {
     });
     await otherOrigin.getByRole("button", { name: "Enable · descriptor + event" }).click();
     const descriptorApproval = await descriptorApprovalPromise;
-    await expect(
-      descriptorApproval.locator("dd").filter({ hasText: "getWalletDescriptor" }),
-    ).toBeVisible();
-    await expect(
-      descriptorApproval.locator("dd").filter({ hasText: "bip122_walletDescriptorChanged" }),
-    ).toBeVisible();
+    await expect(descriptorApproval.getByText("Derive addresses", { exact: true })).toBeVisible();
+    await expect(descriptorApproval.getByText("Watch address changes", { exact: true })).toBeVisible();
     await expect(descriptorApproval.getByText(/derive and correlate/i)).toBeVisible();
-    await expect(descriptorApproval.getByText(/does not reveal private spend keys/i)).toBeVisible();
+    await expect(descriptorApproval.getByText(/public wallet descriptor changes/i)).toBeVisible();
     await descriptorApproval.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(otherOrigin.getByTestId("result")).toContainText('"getWalletDescriptor"');
     await expect(otherOrigin.getByTestId("timeline")).toContainText(

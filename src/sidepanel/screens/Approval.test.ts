@@ -16,6 +16,8 @@ vi.mock("@/sidepanel/wallet-client", () => ({
 import { ApprovalOverlay } from "./Approval";
 
 const POLICY_ASSET = "11".repeat(32);
+const PRINCIPAL_ASSET = "55".repeat(32);
+const COLLATERAL_ASSET = "66".repeat(32);
 
 describe("ApprovalOverlay", () => {
   it("keeps a long PSET review in a vertically scrollable side-panel overlay", () => {
@@ -185,6 +187,35 @@ describe("ApprovalOverlay", () => {
     expect(markup).toContain(`registry · ${longTicker.slice(0, 24)}`);
   });
 
+  it("explains requested contract permissions in human terms", () => {
+    const request: Extract<ApprovalRequest, { kind: "connect" }> = {
+      kind: "connect",
+      id: "connect-approval-test",
+      origin: "https://lending.example.test",
+      network: "testnet",
+      fingerprint: "aabbccdd",
+      signerKind: "local",
+      locked: false,
+      methods: [
+        "experimental_getTxManifestSupport",
+        "experimental_executeTxManifest",
+        "getBalance",
+      ],
+      events: ["bip122_walletDescriptorChanged"],
+      legacy: false,
+    };
+    const markup = renderToStaticMarkup(
+      createElement(ApprovalOverlay, { request, onClose: vi.fn() }),
+    );
+
+    expect(markup).toContain("Check contract support");
+    expect(markup).toContain("Execute contracts");
+    expect(markup).toContain("Read balances");
+    expect(markup).toContain("Watch address changes");
+    expect(markup).toContain("public wallet descriptor changes");
+    expect(markup).toContain("Each action is built, verified, and shown for approval");
+  });
+
   it("shows trusted lending intent and makes manifest broadcast explicit", () => {
     const request: Extract<ApprovalRequest, { kind: "executeTxManifest" }> = {
       kind: "executeTxManifest",
@@ -201,9 +232,9 @@ describe("ApprovalOverlay", () => {
         accountIdentifier: `bip122:${"22".repeat(16)}:${"33".repeat(16)}`,
         bundleHash: `sha256:${"44".repeat(32)}`,
         action: "lending_contract.AcceptOffer",
-        principalAssetId: "55".repeat(32),
+        principalAssetId: PRINCIPAL_ASSET,
         principalAmount: "100000000",
-        collateralAssetId: "66".repeat(32),
+        collateralAssetId: COLLATERAL_ASSET,
         collateralAmount: "250000000",
         interestRateBasisPoints: "500",
         totalDebt: "105000000",
@@ -212,18 +243,27 @@ describe("ApprovalOverlay", () => {
         fee: "1000",
         principalChange: "2500",
         feeChange: "9000",
+        assets: {
+          [POLICY_ASSET]: { label: "LBTC", ticker: "LBTC", precision: 8 },
+          [PRINCIPAL_ASSET]: { label: "TEST-USDT", ticker: "TEST-USDT", precision: 8 },
+          [COLLATERAL_ASSET]: { label: "Collateral", ticker: "COL", precision: 8 },
+        },
       },
     };
     const markup = renderToStaticMarkup(
       createElement(ApprovalOverlay, { request, onClose: vi.fn() }),
     );
+    const text = markup.replace(/<[^>]+>/g, "");
     expect(markup).toContain("Execute contract action");
     expect(markup).toContain("Simplicity Lending");
     expect(markup).toContain("Fund loan offer");
-    expect(markup).toContain("Approval signs and broadcasts it");
+    expect(markup).toContain("approve to sign and broadcast");
     expect(markup).toContain("Approve &amp; execute");
     expect(markup).toContain("Network fee");
-    expect(markup).toContain(",000 ");
+    expect(markup).toContain("Principal");
+    expect(markup).toContain("TEST-USDT");
+    expect(text).toContain("1.00");
+    expect(text).toContain("2.50");
   });
 
   it("explains that recovery broadcasts exact saved bytes without signing again", () => {
@@ -243,9 +283,9 @@ describe("ApprovalOverlay", () => {
         accountIdentifier: `bip122:${"22".repeat(16)}:${"33".repeat(16)}`,
         bundleHash: `sha256:${"44".repeat(32)}`,
         action: "lending_contract.AcceptOffer",
-        principalAssetId: "55".repeat(32),
+        principalAssetId: PRINCIPAL_ASSET,
         principalAmount: "100000000",
-        collateralAssetId: "66".repeat(32),
+        collateralAssetId: COLLATERAL_ASSET,
         collateralAmount: "250000000",
         interestRateBasisPoints: "500",
         totalDebt: "105000000",
@@ -284,15 +324,16 @@ describe("ApprovalOverlay", () => {
         accountIdentifier: `bip122:${"22".repeat(16)}:${"33".repeat(16)}`,
         bundleHash: `sha256:${"44".repeat(32)}`,
         action: "lending_contract.ClaimLenderVault",
-        principalAssetId: "55".repeat(32),
+        principalAssetId: PRINCIPAL_ASSET,
         principalAmount: "104500000",
         grossDebt: "105000000",
         interestAmount: "5000000",
         protocolFeeAmount: "500000",
-        lenderNftAssetId: "66".repeat(32),
+        lenderNftAssetId: COLLATERAL_ASSET,
         feeAssetId: POLICY_ASSET,
         fee: "1000",
         feeChange: "9000",
+        assets: { [POLICY_ASSET]: { label: "LBTC", ticker: "LBTC", precision: 8 } },
       },
     };
     const markup = renderToStaticMarkup(

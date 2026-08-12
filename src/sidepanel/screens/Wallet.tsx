@@ -17,6 +17,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  FileCode2,
   Eye,
   EyeOff,
   Lock,
@@ -1131,6 +1132,8 @@ function TxRow({
     tx.balanceChange !== 0 &&
     ((tx.balanceChange > 0 && token[1] < 0) || (tx.balanceChange < 0 && token[1] > 0));
 
+  const isManifest = tx.txManifest != null;
+
   const receive = token ? token[1] > 0 : tx.balanceChange >= 0;
   const pending = tx.height === null;
   const explorer = explorerTxUrl(network, tx.txid);
@@ -1216,17 +1219,25 @@ function TxRow({
     <details className="drawer">
       <summary className="flex items-center gap-2.5 px-3 py-2">
         <span
-          aria-label={isSwap ? "Swap" : receive ? "Received" : "Sent"}
+          aria-label={isSwap ? "Swap" : isManifest ? "Contract" : receive ? "Received" : "Sent"}
           className={cn(
             "flex size-8 shrink-0 items-center justify-center rounded-full",
-            isSwap
+            isSwap || isManifest
               ? "bg-[color:var(--accent-soft)] text-[color:var(--accent-strong)]"
               : receive
                 ? "bg-[color:var(--success-bg)] text-[color:var(--success-text)]"
                 : "bg-[color:var(--danger-bg)] text-[color:var(--danger-text)]",
           )}
         >
-          {isSwap ? <ArrowLeftRight size={16} /> : receive ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}
+          {isSwap ? (
+            <ArrowLeftRight size={16} />
+          ) : isManifest ? (
+            <FileCode2 size={16} />
+          ) : receive ? (
+            <ArrowDownLeft size={16} />
+          ) : (
+            <ArrowUpRight size={16} />
+          )}
         </span>
         {isSwap ? (
           <>

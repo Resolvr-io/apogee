@@ -19,6 +19,8 @@ if (typeof window === "undefined") {
 import type { LiquidNetwork } from "@/keystore/keystore";
 import * as keystore from "@/keystore/keystore";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "@/lib/debug";
+import { KNOWN_ASSETS } from "@/lib/asset-registry";
+import { shortenHex } from "@/lib/utils";
 import { SCAN_STATE_DB } from "@/engine/protocol";
 import { providerPsetReviewsMatch } from "@/engine/provider-pset-review";
 import { claimSecret, type ParkedSecret } from "@/lib/qr-secret";
@@ -71,6 +73,7 @@ import type {
   SyncResult,
   UiRequest,
   TxManifestApprovalReviewDTO,
+  TxManifestAssetMeta,
   WalletRequest,
   WalletIdentity,
   WalletTxDTO,
@@ -2190,7 +2193,7 @@ async function executeProviderTxManifest(
           generation,
           plan,
         );
-        const review = txManifestApprovalReview(preparedContext);
+        const review = await txManifestApprovalReview(preparedContext, info.network);
         const id = `appr-${approvalSeq++}-${Date.now()}`;
         const approval: ApprovalRequest = {
           kind: "executeTxManifest",
@@ -2514,9 +2517,75 @@ function withReviewedTxManifestFee<
   };
 }
 
-function txManifestApprovalReview(
+/** Collect every distinct asset id mentioned in a prepared manifest context. */
+function manifestAssetIds(context: PreparedProviderTxManifest): string[] {
+  const ids = new Set<string>();
+  const push = (id: string | undefined) => {
+    if (id) ids.add(id);
+  };
+  push(context.prepared.review.feeAssetId);
+  const intent = context.plan.intent as unknown as Record<string, unknown>;
+  for (const key of [
+    "principalAssetId",
+    "collateralAssetId",
+    "factoryAssetId",
+    "borrowerNftAssetId",
+    "lenderNftAssetId",
+  ]) {
+    if (typeof intent[key] === "string") push(intent[key]);
+  }
+  const review = context.prepared.review as unknown as Record<string, unknown>;
+  for (const key of ["factoryAssetId", "borrowerNftAssetId", "lenderNftAssetId"]) {
+    if (typeof review[key] === "string") push(review[key]);
+  }
+  return [...ids];
+}
+
+/**
+ * Resolve display metadata like the wallet screens do: built-in assets first,
+ * then the configured registry, with a shortened-id fallback. Metadata is
+ * presentation-only, so a lookup failure must never block contract approval.
+ */
+async function resolveManifestAssets(
   context: PreparedProviderTxManifest,
-): TxManifestApprovalReviewDTO {
+  network: LiquidNetwork,
+): Promise<Record<string, TxManifestAssetMeta>> {
+  const assets: Record<string, TxManifestAssetMeta> = {};
+  await Promise.all(
+    manifestAssetIds(context).map(async (assetId) => {
+      const known = KNOWN_ASSETS[assetId];
+      if (known) {
+        assets[assetId] = {
+          label: known.label,
+          ticker: known.label,
+          precision: known.precision,
+        };
+        return;
+      }
+      try {
+        const info = await engine<AssetInfo>({ kind: "getAsset", assetId, network });
+        assets[assetId] = {
+          label: info.ticker ?? info.name ?? shortenHex(assetId, 6, 6),
+          ticker: info.ticker,
+          precision: info.precision,
+        };
+      } catch {
+        assets[assetId] = {
+          label: shortenHex(assetId, 6, 6),
+          ticker: null,
+          precision: null,
+        };
+      }
+    }),
+  );
+  return assets;
+}
+
+async function txManifestApprovalReview(
+  context: PreparedProviderTxManifest,
+  network: LiquidNetwork,
+): Promise<TxManifestApprovalReviewDTO> {
+  const assets = await resolveManifestAssets(context, network);
   const common = {
     protocolLabel: context.plan.intent.protocolLabel,
     actionLabel: context.plan.intent.actionLabel,
@@ -2527,6 +2596,7 @@ function txManifestApprovalReview(
     feeAssetId: context.prepared.review.feeAssetId,
     fee: context.prepared.review.fee,
     feeChange: context.prepared.review.feeChange,
+    assets,
   };
   if (context.kind === "acceptOffer") {
     return {
