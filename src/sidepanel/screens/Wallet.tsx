@@ -50,6 +50,7 @@ import { browser } from "@/lib/ext";
 import {
   formatAssetAmount,
   formatAssetAmountExact,
+  formatBaseUnits,
   formatBtc,
   formatFiat,
   formatRelative,
@@ -57,6 +58,11 @@ import {
   formatTimestamp,
   satsToFiat,
 } from "@/lib/format";
+import {
+  CONSOLIDATION_SETTLE_MS,
+  CONSOLIDATION_SETTLE_POLLS,
+  consolidationLanded,
+} from "@/lib/consolidation";
 import {
   Button,
   Card,
@@ -1321,10 +1327,14 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
 
   // Broadcast consolidations awaiting their first sighting, keyed by asset:
   // the txid plus the outpoints the tx spends. getUtxos reads the wollet's
-  // last sync, so poll sync + reload on the home view's settle cadence (5s,
-  // bounded at 12 tries) until the spent outpoints drop out of the list —
-  // that's the moment the sync has caught the mempool tx, and the card clears.
-  const [broadcasts, setBroadcasts] = useState<Record<string, { txid: string; spent: string[] }>>({});
+  // last sync, so poll sync + reload on the home view's settle cadence until
+  // the spent outpoints drop out of the list — that's the moment the sync has
+  // caught the mempool tx, and the card clears. When the poll budget runs
+  // out, the card flips to a terminal "stuck" state (no spinner, dismissable)
+  // so a tx the network is slow to show can't wedge the screen.
+  const [broadcasts, setBroadcasts] = useState<
+    Record<string, { txid: string; spent: string[]; stuck?: boolean }>
+  >({});
   const settlePolls = useRef(0);
   useEffect(() => {
     const entries = Object.entries(broadcasts);
@@ -1333,7 +1343,7 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
       return;
     }
     const present = new Set(utxos.map((u) => `${u.txid}:${u.vout}`));
-    const landed = entries.filter(([, b]) => b.spent.every((op) => !present.has(op))).map(([id]) => id);
+    const landed = entries.filter(([, b]) => consolidationLanded(b.spent, present)).map(([id]) => id);
     if (landed.length > 0) {
       setBroadcasts((b) => {
         const next = { ...b };
@@ -1342,28 +1352,47 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
       });
       return;
     }
-    if (settlePolls.current >= 12) return; // stuck — leave the card, stop polling
+    if (settlePolls.current >= CONSOLIDATION_SETTLE_POLLS) {
+      setBroadcasts((b) => {
+        let changed = false;
+        const next = { ...b };
+        for (const id of Object.keys(next)) {
+          if (!next[id].stuck) {
+            next[id] = { ...next[id], stuck: true };
+            changed = true;
+          }
+        }
+        return changed ? next : b;
+      });
+      return;
+    }
     const t = window.setTimeout(() => {
       settlePolls.current += 1;
       void wallet.sync(walletId).then(loadUtxos, () => undefined);
-    }, 5000);
+    }, CONSOLIDATION_SETTLE_MS);
     return () => window.clearTimeout(t);
   }, [broadcasts, utxos, loadUtxos, walletId]);
 
+  function dismissBroadcast(assetId: string) {
+    setBroadcasts((b) => {
+      const next = { ...b };
+      delete next[assetId];
+      return next;
+    });
+  }
+
   const [pendingConsolidation, setPendingConsolidation] = useState<{
     assetId: string;
-    label: string;
     count: number;
-    fee: string;
+    feeAmount: string;
     pset: string;
     address: string;
     recipientAmount: string;
-    feeAmount: string;
     toSelf: boolean;
     isToken: boolean;
   } | null>(null);
 
-  async function startConsolidate(assetId: string, isToken: boolean, label: string, count: number) {
+  async function startConsolidate(assetId: string, isToken: boolean, count: number) {
     setBusyAsset(assetId);
     setNotice(null);
     try {
@@ -1376,9 +1405,7 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
       );
       setPendingConsolidation({
         assetId,
-        label,
         count,
-        fee: prepared.feeAmount,
         pset: prepared.pset,
         address: addr.address,
         recipientAmount: prepared.recipientAmount,
@@ -1396,8 +1423,11 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
   async function confirmConsolidate() {
     const p = pendingConsolidation;
     if (!p) return;
+    // Keep the card mounted while signing: a Jade round-trip takes real time,
+    // and the Confirm button's spinner is the only progress cue. The card
+    // clears on success (replaced by the pending-broadcast card) and stays on
+    // error so the user can retry or cancel.
     setBusyAsset(p.assetId);
-    setPendingConsolidation(null);
     setNotice(null);
     try {
       const sent = await wallet.send(p.pset, {
@@ -1420,6 +1450,7 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
           spent: (utxos ?? []).filter((u) => u.asset === p.assetId).map((u) => `${u.txid}:${u.vout}`),
         },
       }));
+      setPendingConsolidation(null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (/reject|declin|denied|cancel/i.test(msg)) {
@@ -1495,7 +1526,7 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
                 size="sm"
                 className="mt-2 w-full"
                 disabled={busyAsset !== null}
-                onClick={() => void startConsolidate(assetId, isToken, label, groupUtxos.length)}
+                onClick={() => void startConsolidate(assetId, isToken, groupUtxos.length)}
               >
                 {busyAsset === assetId ? <Spinner className="size-3" /> : `Combine ${groupUtxos.length} outputs`}
               </Button>
@@ -1506,7 +1537,7 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
                   Combine {pendingConsolidation.count} outputs into 1?
                 </p>
                 <p className="mt-1 text-xs text-[color:var(--text-subtle)]">
-                  Network fee: {pendingConsolidation.fee} sats
+                  Network fee: {formatBaseUnits(pendingConsolidation.feeAmount)} sats
                 </p>
                 <div className="mt-2 flex gap-2">
                   <Button
@@ -1531,10 +1562,16 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
             )}
             {broadcast && (
               <div className="mt-2 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3">
-                <p className="flex items-center gap-2 text-sm text-[color:var(--text-primary)]">
-                  <Spinner className="size-3" />
-                  Consolidation pending
-                </p>
+                {broadcast.stuck ? (
+                  <p className="text-sm text-[color:var(--text-primary)]">
+                    Still pending — the network hasn't shown it yet. Check the explorer.
+                  </p>
+                ) : (
+                  <p className="flex items-center gap-2 text-sm text-[color:var(--text-primary)]">
+                    <Spinner className="size-3" />
+                    Consolidation pending
+                  </p>
+                )}
                 <div className="mt-1.5 flex items-center justify-between gap-3">
                   <span className="min-w-0 truncate font-mono text-xs text-[color:var(--text-subtle)]" title={broadcast.txid}>
                     {shortenHex(broadcast.txid, 8, 8)}
@@ -1555,6 +1592,16 @@ function Coins({ walletId, network, watchOnly }: { walletId: string; network: Li
                     )}
                   </span>
                 </div>
+                {broadcast.stuck && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="mt-2 w-full"
+                    onClick={() => dismissBroadcast(assetId)}
+                  >
+                    Dismiss
+                  </Button>
+                )}
               </div>
             )}
           </div>
