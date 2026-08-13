@@ -18,6 +18,7 @@ import type {
   SyncResult,
   WalletRequest,
   WalletTxDTO,
+  WalletUtxoDTO,
 } from "@/engine/protocol";
 import type {
   KeystoreState,
@@ -57,6 +58,8 @@ export const wallet = {
     call<AddressDTO>({ type: "wallet/getAddress", walletId, index }),
   getTransactions: (walletId?: string) =>
     call<WalletTxDTO[]>({ type: "wallet/getTransactions", walletId }),
+  getUtxos: (walletId?: string) =>
+    call<WalletUtxoDTO[]>({ type: "wallet/getUtxos", walletId }),
   revealMnemonic: (walletId: string, password: string) =>
     call<string>({ type: "wallet/revealMnemonic", walletId, password }),
   getRate: (currency: string) => call<number>({ type: "wallet/getRate", currency }),

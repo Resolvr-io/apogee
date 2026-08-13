@@ -15,9 +15,11 @@ import {
   Activity,
   ChevronDown,
   ChevronLeft,
+  ChevronRight,
   ExternalLink,
   Eye,
   EyeOff,
+  Lock,
   QrCode,
   RefreshCw,
   Telescope,
@@ -31,6 +33,7 @@ import type {
   PriceRange,
   SyncResult,
   WalletTxDTO,
+  WalletUtxoDTO,
 } from "@/engine/protocol";
 import { PriceChart } from "@/sidepanel/components/PriceChart";
 import type { KeystoreState, LiquidNetwork, WalletInfo } from "@/keystore/keystore";
@@ -38,7 +41,7 @@ import { explorerAssetUrl, explorerTxUrl } from "@/lib/explorer";
 import { APP_VERSION_DISPLAY } from "@/version";
 import { STORE_LISTING_URL } from "@/lib/store-links";
 import type { UpdateCheck } from "@/lib/version-check";
-import { KNOWN_ASSETS } from "@/lib/asset-registry";
+import { KNOWN_ASSETS, policyAssetId } from "@/lib/asset-registry";
 import { type Denom, assetRows, heroSubtitle, portfolioTotal } from "@/lib/portfolio";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY } from "@/lib/debug";
 import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS } from "@/lib/demo-funds";
@@ -46,6 +49,8 @@ import { cn, shortenHex } from "@/lib/utils";
 import { browser } from "@/lib/ext";
 import {
   formatAssetAmount,
+  formatAssetAmountExact,
+  formatBaseUnits,
   formatBtc,
   formatFiat,
   formatRelative,
@@ -53,6 +58,11 @@ import {
   formatTimestamp,
   satsToFiat,
 } from "@/lib/format";
+import {
+  CONSOLIDATION_SETTLE_MS,
+  CONSOLIDATION_SETTLE_POLLS,
+  consolidationLanded,
+} from "@/lib/consolidation";
 import {
   Button,
   Card,
@@ -77,7 +87,7 @@ import { Send } from "@/sidepanel/screens/Send";
 import { Swap } from "@/sidepanel/screens/Swap";
 import type { ToastNotice } from "@/sidepanel/components/Toast";
 
-export type View = "home" | "receive" | "send" | "swap" | "settings";
+export type View = "home" | "receive" | "send" | "swap" | "settings" | "coins";
 
 const HIDE_KEY = "apogee:hideBalance";
 const TX_PAGE = 25; // transactions rendered per lazy-load page
@@ -512,7 +522,9 @@ export function Wallet({
     return (
       <SubView
         title={titleFor(view)}
-        onBack={() => onView("home")}
+        // Coins is the only second-level screen (Settings → Coins); its back
+        // returns to Settings. Every other subview is entered from Home.
+        onBack={() => onView(view === "coins" ? "settings" : "home")}
         center={view === "receive" || view === "send" || view === "swap"}
       >
         {view === "receive" && (
@@ -565,6 +577,18 @@ export function Wallet({
             denom={denom}
             onDenomChange={setDenom}
             onReset={onReset}
+            onView={onView}
+          />
+        )}
+        {view === "coins" && (
+          <Coins
+            walletId={active.id}
+            network={active.network}
+            watchOnly={active.signer === "watch"}
+            assets={liveAssets}
+            policyAsset={liveSync?.policyAssetHex}
+            hidden={hidden}
+            isJade={active.signer === "jade"}
           />
         )}
       </SubView>
@@ -1258,6 +1282,493 @@ function TxRow({
   );
 }
 
+function Coins({
+  walletId,
+  network,
+  watchOnly,
+  assets,
+  policyAsset: policyAssetProp,
+  hidden,
+  isJade,
+}: {
+  walletId: string;
+  network: LiquidNetwork;
+  watchOnly: boolean;
+  assets: Record<string, AssetInfo>;
+  policyAsset?: string;
+  hidden: boolean;
+  isJade?: boolean;
+}) {
+  const [utxos, setUtxos] = useState<WalletUtxoDTO[] | null>(null);
+  const [error, setError] = useState("");
+  const [busyAsset, setBusyAsset] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ tone: "info" | "error"; msg: string } | null>(null);
+
+  // Auto-lock "never" steps up auth on every local send (background/index.ts),
+  // so consolidation needs the same password field the other signing surfaces
+  // render — without it the background rejects with "Enter your password to
+  // send." and this screen has nowhere to type it.
+  const [autoLock, setAutoLock] = useState(15);
+  const [password, setPassword] = useState("");
+  const needsPassword = !isJade && autoLock === 0;
+  useEffect(() => {
+    void wallet
+      .getAutoLock()
+      .then(setAutoLock)
+      .catch(() => {});
+  }, []);
+
+  // A monotonic request id orders overlapping loads: the balance-changed
+  // listener and the settle poll both fire loads whose responses can land out
+  // of order, and a stale list must never overwrite a fresher one.
+  const loadSeq = useRef(0);
+  // Mirrors `utxos` for the load callback, which is memoized on [walletId]
+  // alone and so can't close over the current list. It decides whether a
+  // failed reload blanks the screen (no list yet) or surfaces inline — a
+  // refresh failure mid-consolidation must not strand the pending card.
+  const utxosRef = useRef<WalletUtxoDTO[] | null>(null);
+  useEffect(() => {
+    utxosRef.current = utxos;
+  }, [utxos]);
+  // Returns a promise that always resolves (both outcomes are handled below),
+  // so the settle poll can sequence its next tick after the reload has actually
+  // landed rather than after the sync alone.
+  const loadUtxos = useCallback(() => {
+    const seq = ++loadSeq.current;
+    setError("");
+    return wallet.getUtxos(walletId).then(
+      (u) => {
+        if (seq !== loadSeq.current) return;
+        setUtxos(u);
+        setError("");
+        setNotice((n) => (n?.tone === "error" ? null : n));
+      },
+      (e) => {
+        if (seq !== loadSeq.current) return;
+        const msg = errMessage(e);
+        if (utxosRef.current === null) setError(msg);
+        else setNotice({ tone: "error", msg });
+      },
+    );
+  }, [walletId]);
+
+  useEffect(() => {
+    loadUtxos();
+  }, [loadUtxos]);
+
+  // Auto-refresh when a broadcast lands (the background fires this after every
+  // successful send), so the coin list updates without a manual reload.
+  useEffect(() => {
+    const onMsg = (msg: { type?: string }) => {
+      if (msg.type === "apogee/balance-changed") loadUtxos();
+    };
+    browser.runtime.onMessage.addListener(onMsg);
+    return () => browser.runtime.onMessage.removeListener(onMsg);
+  }, [loadUtxos]);
+
+  // Broadcast consolidations awaiting their first sighting, keyed by asset:
+  // the txid plus the outpoints the tx spends. getUtxos reads the wollet's
+  // last sync, so poll sync + reload on the home view's settle cadence until
+  // the spent outpoints drop out of the list — that's the moment the sync has
+  // caught the mempool tx, and the card clears. When the poll budget runs
+  // out, the card flips to a terminal "stuck" state (no spinner, dismissable)
+  // so a tx the network is slow to show can't wedge the screen.
+  const [broadcasts, setBroadcasts] = useState<
+    Record<string, { txid: string; spent: string[]; stuck?: boolean }>
+  >({});
+  const settlePolls = useRef(0);
+  // Bumped after every poll attempt, successful or not — see the timer below.
+  const [pollTick, setPollTick] = useState(0);
+  useEffect(() => {
+    const entries = Object.entries(broadcasts);
+    if (!utxos || entries.length === 0) {
+      settlePolls.current = 0;
+      return;
+    }
+    const present = new Set(utxos.map((u) => `${u.txid}:${u.vout}`));
+    const landed = entries.filter(([, b]) => consolidationLanded(b.spent, present)).map(([id]) => id);
+    if (landed.length > 0) {
+      setBroadcasts((b) => {
+        const next = { ...b };
+        for (const id of landed) delete next[id];
+        return next;
+      });
+      return;
+    }
+    if (settlePolls.current >= CONSOLIDATION_SETTLE_POLLS) {
+      setBroadcasts((b) => {
+        let changed = false;
+        const next = { ...b };
+        for (const id of Object.keys(next)) {
+          if (!next[id].stuck) {
+            next[id] = { ...next[id], stuck: true };
+            changed = true;
+          }
+        }
+        return changed ? next : b;
+      });
+      return;
+    }
+    const t = window.setTimeout(() => {
+      settlePolls.current += 1;
+      // `pollTick` is what re-arms the loop. Re-running on a fresh `utxos`
+      // identity alone would stall the poll dead on any failure — a rejected
+      // sync touches no state, and a failed reload leaves `utxos` identical —
+      // stranding the card on a live spinner with its Dismiss button gated on
+      // `stuck`, which it could then never reach. Ticking unconditionally
+      // means a failed poll still costs budget, so the card always terminates.
+      void wallet
+        .sync(walletId)
+        .then(loadUtxos, () => undefined)
+        .finally(() => setPollTick((n) => n + 1));
+    }, CONSOLIDATION_SETTLE_MS);
+    return () => window.clearTimeout(t);
+  }, [broadcasts, utxos, loadUtxos, walletId, pollTick]);
+
+  function dismissBroadcast(assetId: string) {
+    setBroadcasts((b) => {
+      const next = { ...b };
+      delete next[assetId];
+      return next;
+    });
+  }
+
+  const [pendingConsolidation, setPendingConsolidation] = useState<{
+    assetId: string;
+    count: number;
+    feeAmount: string;
+    pset: string;
+    address: string;
+    recipientAmount: string;
+    toSelf: boolean;
+    isToken: boolean;
+  } | null>(null);
+
+  async function startConsolidate(assetId: string, isToken: boolean, count: number) {
+    setBusyAsset(assetId);
+    setNotice(null);
+    try {
+      const addr = await wallet.getAddress(walletId);
+      const prepared = await wallet.prepareSend(
+        addr.address,
+        0,
+        true,
+        isToken ? assetId : undefined,
+      );
+      setPendingConsolidation({
+        assetId,
+        count,
+        pset: prepared.pset,
+        address: addr.address,
+        recipientAmount: prepared.recipientAmount,
+        feeAmount: prepared.feeAmount,
+        toSelf: prepared.toSelf,
+        isToken,
+      });
+    } catch (e) {
+      setNotice({ tone: "error", msg: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusyAsset(null);
+    }
+  }
+
+  async function confirmConsolidate() {
+    const p = pendingConsolidation;
+    if (!p) return;
+    // Keep the card mounted while signing: a Jade round-trip takes real time,
+    // and the Confirm button's spinner is the only progress cue. The card
+    // clears on success (replaced by the pending-broadcast card) and stays on
+    // error so the user can retry or cancel.
+    setBusyAsset(p.assetId);
+    setNotice(null);
+    try {
+      const sent = await wallet.send(
+        p.pset,
+        {
+          address: p.address,
+          recipientAmount: p.recipientAmount,
+          feeAmount: p.feeAmount,
+          drain: true,
+          toSelf: p.toSelf,
+          ...(p.isToken
+            ? { assetId: p.assetId, assetPrecision: undefined, assetTicker: undefined }
+            : {}),
+        },
+        needsPassword ? password : undefined,
+      );
+      // Track the tx instead of a one-line notice: the pending card shows the
+      // txid and the poll above clears it once the list reflects the spend.
+      settlePolls.current = 0;
+      setBroadcasts((b) => ({
+        ...b,
+        [p.assetId]: {
+          txid: sent.txid,
+          spent: (utxos ?? []).filter((u) => u.asset === p.assetId).map((u) => `${u.txid}:${u.vout}`),
+        },
+      }));
+      setPendingConsolidation(null);
+      setPassword("");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/reject|declin|denied|cancel/i.test(msg)) {
+        setNotice({ tone: "info", msg: "Consolidation cancelled." });
+      } else {
+        setNotice({ tone: "error", msg });
+      }
+    } finally {
+      setBusyAsset(null);
+    }
+  }
+
+  // Full-screen error only before the first list lands; once UTXOs are on
+  // screen, a failed refresh surfaces through the notice slot so the list and
+  // the pending-consolidation card stay mounted.
+  if (!utxos) {
+    if (error) return <ErrorText>{error}</ErrorText>;
+    return <LoadingPill />;
+  }
+
+  if (utxos.length === 0) {
+    return <p className="py-8 text-center text-sm text-[color:var(--text-subtle)]">No unspent outputs.</p>;
+  }
+
+  // Group by asset, L-BTC (policy asset) first, then by asset id. The parent
+  // passes the authoritative id from the last sync (correct on regtest too);
+  // the network-derived constant is only the not-yet-synced fallback.
+  const policyAsset = policyAssetProp ?? policyAssetId(network);
+  const groups = new Map<string, WalletUtxoDTO[]>();
+  for (const u of utxos) {
+    const arr = groups.get(u.asset) ?? [];
+    arr.push(u);
+    groups.set(u.asset, arr);
+  }
+  const sortedAssets = [...groups.keys()].sort((a, b) => {
+    if (a === policyAsset) return -1;
+    if (b === policyAsset) return 1;
+    return a.localeCompare(b);
+  });
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-xs text-[color:var(--text-subtle)]">
+        {utxos.length} unspent output{utxos.length === 1 ? "" : "s"} across {groups.size} asset{groups.size === 1 ? "" : "s"}.
+      </p>
+      {notice && (
+        <p className={`text-xs ${notice.tone === "error" ? "text-[color:var(--danger-text)]" : "text-[color:var(--text-secondary)]"}`}>
+          {notice.msg}
+        </p>
+      )}
+      {sortedAssets.map((assetId) => {
+        const groupUtxos = groups.get(assetId)!;
+        const info = assets[assetId];
+        const knownLabel = KNOWN_ASSETS[assetId]?.label?.replace(/ \(testnet\)$/, "");
+        const label = knownLabel ?? info?.ticker ?? info?.name ?? shortenHex(assetId, 6, 6);
+        const precision = KNOWN_ASSETS[assetId]?.precision ?? info?.precision ?? null;
+        const total = groupUtxos.reduce((sum, u) => sum + BigInt(u.amount), 0n);
+        const isToken = assetId !== policyAsset;
+        const broadcast = broadcasts[assetId];
+        const broadcastUrl = broadcast ? explorerTxUrl(network, broadcast.txid) : null;
+        return (
+          <div key={assetId}>
+            <div className="mb-1.5 flex items-center gap-2">
+              <AssetIcon assetId={assetId} label={label} network={network} size="size-5" />
+              <span className="text-sm font-medium text-[color:var(--text-primary)]">{label}</span>
+              <span className="ml-auto text-xs text-[color:var(--text-subtle)]">
+                {hidden ? (
+                  <HiddenValue count={3} size={6} className="text-[color:var(--text-subtle)]" />
+                ) : (
+                  formatAssetAmountExact(total.toString(), precision)
+                )}
+                {" · "}
+                {groupUtxos.length} output{groupUtxos.length === 1 ? "" : "s"}
+              </span>
+            </div>
+            <div className="apogee-panel divide-y divide-[color:var(--border-soft)] overflow-hidden rounded-xl border border-[color:var(--border-default)]">
+              {groupUtxos.map((u) => (
+                <CoinRow key={`${u.txid}:${u.vout}`} utxo={u} assetId={assetId} label={label} precision={precision} network={network} hidden={hidden} />
+              ))}
+            </div>
+            {groupUtxos.length > 1 && !watchOnly && !broadcast && pendingConsolidation?.assetId !== assetId && (
+              <Button
+                variant="secondary"
+                size="sm"
+                className="mt-2 w-full"
+                disabled={busyAsset !== null}
+                onClick={() => void startConsolidate(assetId, isToken, groupUtxos.length)}
+              >
+                {busyAsset === assetId ? <Spinner className="size-3" /> : `Combine ${groupUtxos.length} outputs`}
+              </Button>
+            )}
+            {pendingConsolidation?.assetId === assetId && (
+              <div className="mt-2 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3">
+                <p className="text-sm text-[color:var(--text-primary)]">
+                  Combine {pendingConsolidation.count} outputs into 1?
+                </p>
+                <p className="mt-1 text-xs text-[color:var(--text-subtle)]">
+                  Network fee: {formatBaseUnits(pendingConsolidation.feeAmount)} sats
+                </p>
+                {needsPassword && (
+                  <Field label="Password (auto-lock is off)">
+                    <Input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      autoFocus
+                    />
+                  </Field>
+                )}
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    size="sm"
+                    className="flex-1"
+                    disabled={busyAsset !== null || (needsPassword && !password)}
+                    onClick={() => void confirmConsolidate()}
+                  >
+                    {busyAsset ? <Spinner className="size-3" /> : "Confirm"}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="flex-1"
+                    disabled={busyAsset !== null}
+                    onClick={() => {
+                      setPendingConsolidation(null);
+                      setPassword("");
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            )}
+            {broadcast && (
+              <div className="mt-2 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3">
+                {broadcast.stuck ? (
+                  <p className="text-sm text-[color:var(--text-primary)]">
+                    Still pending — the network hasn't shown it yet. Check the explorer.
+                  </p>
+                ) : (
+                  <p className="flex items-center gap-2 text-sm text-[color:var(--text-primary)]">
+                    <Spinner className="size-3" />
+                    Consolidation pending
+                  </p>
+                )}
+                <div className="mt-1.5 flex items-center justify-between gap-3">
+                  <span className="min-w-0 truncate font-mono text-xs text-[color:var(--text-subtle)]" title={broadcast.txid}>
+                    {shortenHex(broadcast.txid, 8, 8)}
+                  </span>
+                  <span className="flex items-center gap-0.5">
+                    <CopyIconButton value={broadcast.txid} label="Copy transaction id" />
+                    {broadcastUrl && (
+                      <a
+                        href={broadcastUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="View in explorer"
+                        aria-label="View in explorer"
+                        className="icon-btn size-6 shrink-0"
+                      >
+                        <ExternalLink size={13} />
+                      </a>
+                    )}
+                  </span>
+                </div>
+                {broadcast.stuck && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="mt-2 w-full"
+                    onClick={() => dismissBroadcast(assetId)}
+                  >
+                    Dismiss
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CoinRow({
+  utxo,
+  assetId,
+  label,
+  precision,
+  network,
+  hidden,
+}: {
+  utxo: WalletUtxoDTO;
+  assetId: string;
+  label: string;
+  precision: number | null;
+  network: LiquidNetwork;
+  hidden: boolean;
+}) {
+  const explorer = explorerTxUrl(network, utxo.txid);
+  return (
+    <details className="drawer">
+      <summary className="flex items-center gap-2.5 px-3 py-2">
+        <span
+          role="img"
+          aria-label={utxo.confidential ? "Confidential" : "Unconfidential"}
+          className={`flex size-8 shrink-0 items-center justify-center rounded-full ${
+            utxo.confidential
+              ? "bg-[color:var(--accent-soft)] text-[color:var(--accent-strong)]"
+              : "bg-[color:var(--surface-soft)] text-[color:var(--text-subtle)]"
+          }`}
+        >
+          {utxo.confidential ? <Lock size={14} /> : <Eye size={14} />}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-[color:var(--text-subtle)]" title={utxo.address}>
+          {shortenHex(utxo.address, 8, 8)}
+        </span>
+        <span className="ml-auto text-sm text-[color:var(--text-strong)]">
+          {hidden ? (
+            <HiddenValue count={3} size={8} className="text-[color:var(--text-subtle)]" />
+          ) : (
+            <TelemetryNumber value={`${formatAssetAmountExact(utxo.amount, precision)} ${label}`} glow={false} />
+          )}
+        </span>
+        <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
+      </summary>
+      <div className="flex flex-col gap-2 border-t border-[color:var(--border-soft)] px-3 py-2 text-xs">
+        <div className="flex items-center justify-between gap-3">
+          {/* The copy button beside it exposes the value, so this label is not
+              a keyboard stop — the tooltip is a mouse affordance only. */}
+          <span title={`${utxo.txid}:${utxo.vout}`} className="text-[color:var(--text-subtle)]">
+            Outpoint
+          </span>
+          <span className="flex items-center gap-0.5">
+            <CopyIconButton value={`${utxo.txid}:${utxo.vout}`} label="Copy outpoint" />
+            {explorer && (
+              <a
+                href={explorer}
+                target="_blank"
+                rel="noreferrer"
+                title="View in explorer"
+                aria-label="View in explorer"
+                className="icon-btn size-6 shrink-0"
+              >
+                <ExternalLink size={13} />
+              </a>
+            )}
+          </span>
+        </div>
+        <Row label="Address" value={utxo.address} mono />
+        <Row label="Asset" value={assetId} mono />
+        <Row
+          label="Amount"
+          value={hidden ? "•••" : `${formatAssetAmountExact(utxo.amount, precision)} ${label}`}
+        />
+        <Row label="Confidential" value={utxo.confidential ? "Yes" : "No"} />
+      </div>
+    </details>
+  );
+}
+
 function Receive({ walletId }: { walletId: string }) {
   const [address, setAddress] = useState("");
   const [qr, setQr] = useState("");
@@ -1342,6 +1853,7 @@ function SettingsBody({
   denom,
   onDenomChange,
   onReset,
+  onView,
 }: {
   wallet: WalletInfo;
   fiat: string;
@@ -1349,6 +1861,7 @@ function SettingsBody({
   denom: Denom;
   onDenomChange: (d: Denom) => void;
   onReset: () => void;
+  onView: (v: View) => void;
 }) {
   const [password, setPassword] = useState("");
   const [seed, setSeed] = useState("");
@@ -1626,6 +2139,21 @@ function SettingsBody({
         </Field>
       </Card>
 
+      <Card>
+        {/* Raw button (not the Button component) so it reads as a settings row.
+            .settings-row (theme.css) carries the pointer cursor and the
+            full-card hit area — including the width fix for a bare button's
+            shrink-wrap, which the drawer summaries don't need but share. */}
+        <button
+          type="button"
+          onClick={() => onView("coins")}
+          className="settings-row"
+        >
+          <span className="console-overline">Coins</span>
+          <ChevronRight size={16} className="text-[color:var(--text-subtle)]" />
+        </button>
+      </Card>
+
       {info.signer === "local" && (
         <Card>
           {/* Collapsed by default to save space. Closing the drawer clears any
@@ -1642,7 +2170,7 @@ function SettingsBody({
               }
             }}
           >
-            <summary className="flex cursor-pointer items-center justify-between">
+            <summary className="settings-row">
               <span className="flex items-center gap-1.5 console-overline">
                 <Eye size={13} />
                 Reveal seed phrase
@@ -1716,7 +2244,7 @@ function SettingsBody({
           open={advancedOpen}
           onToggle={(e) => setAdvancedOpen((e.currentTarget as HTMLDetailsElement).open)}
         >
-          <summary className="flex cursor-pointer items-center justify-between">
+          <summary className="settings-row">
             <span className="console-overline">Advanced</span>
             <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
           </summary>
@@ -1762,7 +2290,7 @@ function SettingsBody({
       {DEBUG_ENTERPRISE_BUILD && !debugHidden && (
         <Card className="border-dashed border-[color:color-mix(in_srgb,var(--accent-amber)_50%,transparent)]">
           <details className="drawer">
-            <summary className="flex cursor-pointer items-center justify-between">
+            <summary className="settings-row">
               <span className="console-overline text-[color:var(--warning-text)]">Debug</span>
               <ChevronDown size={14} className="drawer-chevron text-[color:var(--text-subtle)]" />
             </summary>
@@ -1804,7 +2332,7 @@ function SettingsBody({
             if (!e.currentTarget.open) setResetConfirm("");
           }}
         >
-          <summary className="flex cursor-pointer items-center justify-between">
+          <summary className="settings-row">
             <span className="flex items-center gap-1.5 console-overline text-[color:var(--danger-text)]">
               <AlertTriangle size={13} />
               Danger zone
@@ -2245,5 +2773,5 @@ function Row({
 }
 
 function titleFor(view: View): string {
-  return view === "receive" ? "Receive" : view === "send" ? "Send" : view === "swap" ? "Swap" : "Settings";
+  return view === "receive" ? "Receive" : view === "send" ? "Send" : view === "swap" ? "Swap" : view === "coins" ? "Coins" : "Settings";
 }

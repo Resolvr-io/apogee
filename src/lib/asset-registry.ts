@@ -1,6 +1,8 @@
 // Well-known Liquid asset ids → display labels. Unknown assets fall back
 // to a shortened hex id, or a name/ticker fetched from the Liquid registry.
 
+import type { LiquidNetwork } from "@/keystore/keystore";
+
 export const LBTC_MAINNET_ASSET_ID =
   "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d";
 export const LBTC_TESTNET_ASSET_ID =
@@ -9,6 +11,11 @@ export const USDT_LIQUID_ASSET_ID =
   "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2";
 export const USDT_TESTNET_ASSET_ID =
   "b612eb46313a2cd6ebabd8b7a8eed5696e29898b87a43bff41c94f51acef9d73";
+
+/** Policy asset (L-BTC) id for a network — the asset fees are paid in. */
+export function policyAssetId(network: LiquidNetwork): string {
+  return network === "liquid" ? LBTC_MAINNET_ASSET_ID : LBTC_TESTNET_ASSET_ID;
+}
 
 /** Locally-known asset metadata. `precision` is the issued asset's decimal
  *  places (from its issuance contract) — kept here so known assets display
