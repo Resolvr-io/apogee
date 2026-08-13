@@ -21,6 +21,10 @@ event-discovered provider.
   asserts that nothing was broadcast; concurrent and terminal retries assert one
   approval, one transaction, and one recovered on-chain action hint.
 - [x] Add automated browser/extension coverage for all eight manifest actions.
+- [x] Cover an expired-loan repayment/liquidation race with two Apogee wallets.
+  Assert exactly one on-chain winner, a persisted superseded loser with both
+  transaction IDs, a working winning-transaction link after reload, and the
+  winner's final indexed offer state without assuming which party wins.
 - [x] Run the lifecycle against the exact production extension build and record
   transaction IDs, bundle hash, chain height, and observed balances.
 

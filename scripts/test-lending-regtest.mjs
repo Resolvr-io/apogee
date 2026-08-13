@@ -124,6 +124,7 @@ try {
     proxyPort,
     services.esploraUrl,
     `http://127.0.0.1:${apiPort}`,
+    services,
   );
   await new Promise((resolveReady, reject) => {
     proxy.once("listening", resolveReady);
@@ -279,9 +280,10 @@ async function rpc(services, method, params = []) {
   return body.result;
 }
 
-function createRegtestProxy(port, esploraTarget, apiTarget) {
+function createRegtestProxy(port, esploraTarget, apiTarget, services) {
   let nextBroadcastFailure = null;
   let nextTransactionStatusFailure = false;
+  let acknowledgeNextBroadcastWithoutSubmission = false;
   return createServer(async (request, response) => {
     try {
       if (request.method === "OPTIONS") {
@@ -292,6 +294,15 @@ function createRegtestProxy(port, esploraTarget, apiTarget) {
       const incoming = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
       if (request.method === "POST" && incoming.pathname === "/control/fail-next-broadcast") {
         nextBroadcastFailure = "after-accept";
+        response.writeHead(204, corsHeaders());
+        response.end();
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        incoming.pathname === "/control/ack-next-broadcast-without-submission"
+      ) {
+        acknowledgeNextBroadcastWithoutSubmission = true;
         response.writeHead(204, corsHeaders());
         response.end();
         return;
@@ -314,6 +325,19 @@ function createRegtestProxy(port, esploraTarget, apiTarget) {
         return;
       }
       const target = backend ? apiTarget : esploraTarget;
+      if (
+        acknowledgeNextBroadcastWithoutSubmission &&
+        !backend &&
+        request.method === "POST" &&
+        path === "/tx"
+      ) {
+        acknowledgeNextBroadcastWithoutSubmission = false;
+        const transactionHex = await readRequestBody(request);
+        const decoded = await rpc(services, "decoderawtransaction", [transactionHex]);
+        response.writeHead(200, { ...corsHeaders(), "content-type": "text/plain" });
+        response.end(decoded.txid);
+        return;
+      }
       const upstream = await fetch(`${target}${path}${incoming.search}`, {
         method: request.method,
         headers: request.headers,
@@ -345,6 +369,12 @@ function createRegtestProxy(port, esploraTarget, apiTarget) {
       response.end(String(error));
     }
   });
+}
+
+async function readRequestBody(request) {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function corsHeaders() {

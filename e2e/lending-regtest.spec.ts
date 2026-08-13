@@ -1,4 +1,4 @@
-import { chromium, expect, test, type BrowserContext } from "@playwright/test";
+import { chromium, expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -169,6 +169,13 @@ test("real lending UI executes every trusted lending action through Apogee", asy
       lenderPage.getByRole("row").filter({ hasText: "Liquidated" }).first(),
     ).toBeVisible();
 
+    const supersessionRace = await exerciseExpiredLoanSupersessionRace(
+      page,
+      context,
+      lenderPage,
+      lenderContext,
+    );
+
     await page.bringToFront();
     const reliabilityTxid = await exerciseManifestRetryReliability(page, context, extensionId);
     await expect.poll(
@@ -186,12 +193,14 @@ test("real lending UI executes every trusted lending action through Apogee", asy
     const observed = await inspectActionHints([...new Set([...borrowerBefore, ...lenderBefore])]);
     expect(countActions(observed)).toEqual({
       [SIMPLICITY_LENDING_V3_CREATE_FACTORY]: 2,
-      [SIMPLICITY_LENDING_V3_CREATE_OFFER]: 3,
-      [SIMPLICITY_LENDING_V3_ACCEPT_OFFER]: 2,
-      [SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL]: 1,
-      [SIMPLICITY_LENDING_V3_REPAY_LOAN]: 1,
+      [SIMPLICITY_LENDING_V3_CREATE_OFFER]: 4,
+      [SIMPLICITY_LENDING_V3_ACCEPT_OFFER]: 3,
+      [SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL]: 2,
+      [SIMPLICITY_LENDING_V3_REPAY_LOAN]:
+        supersessionRace.winnerAction === SIMPLICITY_LENDING_V3_REPAY_LOAN ? 2 : 1,
       [SIMPLICITY_LENDING_V3_CANCEL_OFFER]: 1,
-      [SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER]: 1,
+      [SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER]:
+        supersessionRace.winnerAction === SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER ? 2 : 1,
       [SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT]: 1,
     });
     const historyByTxid = new Map(
@@ -302,6 +311,273 @@ type WalletHistoryRecord = {
     action?: string;
   };
 };
+
+type PendingTxRecordSnapshot = {
+  txid: string;
+  kind: string;
+  conflictOutpoint?: string;
+  confirmationStatus: string;
+  failureReason?: string;
+  supersededByTxid?: string;
+};
+
+type SupersessionRaceResult = {
+  winnerTxid: string;
+  loserTxid: string;
+  winnerAction:
+    | typeof SIMPLICITY_LENDING_V3_REPAY_LOAN
+    | typeof SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER;
+};
+
+async function exerciseExpiredLoanSupersessionRace(
+  borrowerPage: Page,
+  borrowerContext: BrowserContext,
+  lenderPage: Page,
+  lenderContext: BrowserContext,
+): Promise<SupersessionRaceResult> {
+  await borrowerPage.bringToFront();
+  await borrowerPage.goto(new URL("/borrow", DAPP_URL).href);
+  const offerId = await createBorrowOffer(borrowerPage, borrowerContext);
+
+  await lenderPage.bringToFront();
+  await lenderPage.goto(new URL("/supply", DAPP_URL).href);
+  const fundableOffer = await waitForOfferRow(lenderPage, offerId, "Open Offer");
+  await fundableOffer.click();
+  await executeManifestAction(lenderPage, lenderContext, "Fund loan offer", "Accept & Supply");
+
+  await borrowerPage.bringToFront();
+  await borrowerPage.goto(new URL("/borrow", DAPP_URL).href);
+  const activeOffer = await waitForOfferRow(borrowerPage, offerId, "Active");
+  await activeOffer.click();
+  await executeManifestAction(borrowerPage, borrowerContext, "Claim borrowed funds", "Claim Principal");
+
+  await mineBlocks(6);
+  await waitForEsploraTip();
+
+  await borrowerPage.goto(new URL("/borrow", DAPP_URL).href);
+  const borrowerExpiredOffer = await waitForExpiredActiveOffer(borrowerPage, offerId);
+  await borrowerExpiredOffer.click();
+  await expect(borrowerPage.getByRole("heading", { name: /^Repay Offer/ })).toBeVisible();
+
+  await lenderPage.bringToFront();
+  await lenderPage.goto(new URL("/supply", DAPP_URL).href);
+  const lenderExpiredOffer = await waitForExpiredActiveOffer(lenderPage, offerId);
+  await lenderExpiredOffer.click();
+  await expect(lenderPage.getByRole("heading", { name: /^Liquidate Offer/ })).toBeVisible();
+
+  const repaymentApprovalPromise = approvalPage(borrowerContext);
+  const liquidationApprovalPromise = approvalPage(lenderContext);
+  await Promise.all([
+    activateButton(borrowerPage, "Repay Loan"),
+    activateButton(lenderPage, "Liquidate & Claim Collateral"),
+  ]);
+  const [repaymentApproval, liquidationApproval] = await Promise.all([
+    repaymentApprovalPromise,
+    liquidationApprovalPromise,
+  ]);
+  await expect(repaymentApproval.getByText("Repay loan in full", { exact: true })).toBeVisible();
+  await expect(
+    liquidationApproval.getByText("Liquidate expired loan", { exact: true }),
+  ).toBeVisible();
+
+  // Both parties have independently built and reviewed a valid transaction for
+  // the same active-offer outpoint. Simulate one broadcast response being
+  // accepted by the caller but never reaching the node, while its competitor
+  // is submitted normally. This deterministically reproduces the eventual
+  // double-spend resolution state without choosing which party wins.
+  const armed = await fetch(
+    `${PROXY_CONTROL_URL}/ack-next-broadcast-without-submission`,
+    { method: "POST" },
+  );
+  expect(armed.ok).toBe(true);
+  await Promise.all([
+    repaymentApproval.getByRole("button", { name: "Approve & execute" }).click(),
+    liquidationApproval.getByRole("button", { name: "Approve & execute" }).click(),
+  ]);
+
+  const [repaymentTxid, liquidationTxid] = await Promise.all([
+    transactionIdFromOpenModal(borrowerPage),
+    transactionIdFromOpenModal(lenderPage),
+  ]);
+  expect(repaymentTxid).not.toBe(liquidationTxid);
+
+  const [repaymentRecord, liquidationRecord] = await Promise.all([
+    waitForPendingTxRecord(borrowerPage, repaymentTxid),
+    waitForPendingTxRecord(lenderPage, liquidationTxid),
+  ]);
+  expect(repaymentRecord).toMatchObject({
+    txid: repaymentTxid,
+    kind: "repay_offer",
+  });
+  expect(liquidationRecord).toMatchObject({
+    txid: liquidationTxid,
+    kind: "liquidate_offer",
+  });
+  expect(["processing", "failed"]).toContain(repaymentRecord.confirmationStatus);
+  expect(["processing", "failed"]).toContain(liquidationRecord.confirmationStatus);
+  expect(repaymentRecord.conflictOutpoint).toMatch(/^[0-9a-f]{64}:\d+$/);
+  expect(liquidationRecord.conflictOutpoint).toBe(repaymentRecord.conflictOutpoint);
+
+  const mempool = await mempoolTxids();
+  expect(mempool).toHaveLength(1);
+  const winnerTxid = mempool[0]!;
+  expect([repaymentTxid, liquidationTxid]).toContain(winnerTxid);
+  const borrowerWon = winnerTxid === repaymentTxid;
+  const winnerRecord = borrowerWon ? repaymentRecord : liquidationRecord;
+  expect(winnerRecord.confirmationStatus).toBe("processing");
+  const loserTxid = borrowerWon ? liquidationTxid : repaymentTxid;
+  const loserPage = borrowerWon ? lenderPage : borrowerPage;
+  const winnerPage = borrowerWon ? borrowerPage : lenderPage;
+  const expectedFailure = borrowerWon
+    ? "Liquidation was superseded by repayment."
+    : "Repayment was superseded by liquidation.";
+
+  await mineBlock();
+  await waitForEsploraTip();
+  await expect(winnerPage.getByText(/Confirmed|Finalized/, { exact: true })).toBeVisible({
+    timeout: 60_000,
+  });
+  await expect(loserPage.getByText("Transaction Superseded", { exact: true })).toBeVisible({
+    timeout: 60_000,
+  });
+  await expect(loserPage.getByText(expectedFailure, { exact: true })).toBeVisible();
+  await expect(loserPage.getByText("Winning Transaction", { exact: true })).toBeVisible();
+  await expect(loserPage.locator(`a[href*="${winnerTxid}"]`)).toBeVisible();
+
+  const persistedLoser = await waitForPendingTxRecord(loserPage, loserTxid, {
+    confirmationStatus: "failed",
+    failureReason: "superseded",
+    supersededByTxid: winnerTxid,
+  });
+  expect(persistedLoser.conflictOutpoint).toBe(repaymentRecord.conflictOutpoint);
+
+  await expect(rpc("getrawtransaction", [loserTxid])).rejects.toThrow();
+  await expect(inspectActionHints([winnerTxid])).resolves.toMatchObject([
+    {
+      txid: winnerTxid,
+      action: borrowerWon
+        ? SIMPLICITY_LENDING_V3_REPAY_LOAN
+        : SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER,
+    },
+  ]);
+
+  await activateButton(winnerPage, "Done");
+  await loserPage.reload();
+  await expect(loserPage.getByRole("button", { name: "Apogee", exact: true }).first()).toBeVisible();
+  await loserPage.getByRole("button", { name: "Notifications" }).evaluate((button) => {
+    (button as { click(): void }).click();
+  });
+  await expect(loserPage.getByText("Notifications", { exact: true })).toBeVisible();
+  await expect(loserPage.getByText(expectedFailure, { exact: true })).toBeVisible();
+  await expect(loserPage.getByText(`Winning transaction:`, { exact: false })).toBeVisible();
+  await expect(loserPage.locator(`a[href*="${winnerTxid}"]`)).toBeVisible();
+
+  await lenderPage.goto(new URL("/supply", DAPP_URL).href);
+  const terminalStatus = borrowerWon ? "Repaid" : "Liquidated";
+  await expect.poll(async () => {
+    const terminalOffer = offerRow(lenderPage, offerId).filter({ hasText: terminalStatus });
+    if (await terminalOffer.isVisible()) return true;
+    await reloadConnectedDapp(lenderPage);
+    return terminalOffer.isVisible();
+  }, { timeout: 60_000 }).toBe(true);
+
+  return {
+    winnerTxid,
+    loserTxid,
+    winnerAction: borrowerWon
+      ? SIMPLICITY_LENDING_V3_REPAY_LOAN
+      : SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER,
+  };
+}
+
+async function waitForExpiredActiveOffer(page: Page, offerId: string) {
+  const expiredOffer = offerRow(page, offerId)
+    .filter({ hasText: "Active" })
+    .filter({ hasText: "Expired" });
+  await expect.poll(async () => {
+    if (await expiredOffer.isVisible()) return true;
+    await reloadConnectedDapp(page);
+    return expiredOffer.isVisible();
+  }, { timeout: 60_000 }).toBe(true);
+  return expiredOffer;
+}
+
+async function waitForOfferRow(page: Page, offerId: string, status: string) {
+  const row = offerRow(page, offerId).filter({ hasText: status });
+  await expect.poll(async () => {
+    if (await row.isVisible()) return true;
+    await reloadConnectedDapp(page);
+    return row.isVisible();
+  }, { timeout: 60_000 }).toBe(true);
+  return row;
+}
+
+async function reloadConnectedDapp(page: Page): Promise<void> {
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("button", { name: "Apogee", exact: true }).first()).toBeVisible();
+}
+
+function offerRow(page: Page, offerId: string) {
+  return page.locator(`[role="row"][data-key=${JSON.stringify(offerId)}]`);
+}
+
+async function offerIdByCreationTxid(txid: string): Promise<string> {
+  let offerId: string | undefined;
+  await expect.poll(async () => {
+    const response = await fetch(new URL("/backend/offers?limit=100", PROXY_CONTROL_URL));
+    if (!response.ok) return false;
+    const body = await response.json() as {
+      items?: Array<{ id?: unknown; created_at_txid?: unknown }>;
+    };
+    const offer = body.items?.find((item) => item.created_at_txid === txid);
+    offerId = typeof offer?.id === "string" ? offer.id : undefined;
+    return offerId !== undefined;
+  }, { timeout: 60_000 }).toBe(true);
+  if (!offerId) throw new Error(`Indexer did not expose offer created by ${txid}`);
+  return offerId;
+}
+
+async function transactionIdFromOpenModal(page: Page): Promise<string> {
+  const transactionLabel = page.getByText(/^(Transaction ID|Attempted Transaction)$/);
+  await expect(transactionLabel).toBeVisible({ timeout: 60_000 });
+  const href = await transactionLabel.locator("..").getByRole("link").getAttribute("href");
+  const txid = href?.match(/[0-9a-f]{64}/i)?.[0]?.toLowerCase();
+  if (!txid) throw new Error(`Transaction modal did not contain a full txid link: ${href}`);
+  return txid;
+}
+
+async function waitForPendingTxRecord(
+  page: Page,
+  txid: string,
+  expected: Partial<PendingTxRecordSnapshot> = {},
+): Promise<PendingTxRecordSnapshot> {
+  let snapshot: PendingTxRecordSnapshot | null = null;
+  await expect.poll(async () => {
+    snapshot = await pendingTxRecord(page, txid);
+    if (!snapshot) return false;
+    return Object.entries(expected).every(
+      ([key, value]) => snapshot?.[key as keyof PendingTxRecordSnapshot] === value,
+    );
+  }, { timeout: 60_000 }).toBe(true);
+  if (!snapshot) throw new Error(`Pending transaction ${txid} was not persisted.`);
+  return snapshot;
+}
+
+async function pendingTxRecord(page: Page, txid: string): Promise<PendingTxRecordSnapshot | null> {
+  const connection = await discoveredProviderRequest(page, {
+    method: "wallet_getConnection",
+  }) as { chainId: string; accountIdentifier: string };
+  const walletScope = `apogee:${connection.chainId}:${connection.accountIdentifier}`;
+  return page.evaluate(async ({ walletScope, txid }) => {
+    const modulePath = "/src/providers/pendingTransactions/storage.ts";
+    const storage = await import(modulePath) as {
+      loadPendingTxsForWallet(scope: string): Promise<PendingTxRecordSnapshot[]>;
+    };
+    return (await storage.loadPendingTxsForWallet(walletScope)).find(
+      (record) => record.txid === txid,
+    ) ?? null;
+  }, { walletScope, txid });
+}
 
 async function inspectActionHints(txids: string[]): Promise<ActionHintObservation[]> {
   const observations: ActionHintObservation[] = [];
@@ -430,7 +706,7 @@ async function connectLendingDapp(context: BrowserContext) {
 async function createBorrowOffer(
   page: import("@playwright/test").Page,
   context: BrowserContext,
-): Promise<void> {
+): Promise<string> {
   await expect(page.getByRole("button", { name: "Create Borrow Offer" })).toBeEnabled();
   await activateButton(page, "Create Borrow Offer");
   await expect(page.getByText("Create Borrow Offer", { exact: true }).last()).toBeVisible();
@@ -439,8 +715,15 @@ async function createBorrowOffer(
   await page.getByLabel("Fee").fill("0.1");
   await page.getByLabel("Term").click();
   await page.getByRole("option", { name: /5 minutes/ }).click();
-  await executeManifestAction(page, context, "Create borrow offer", "Create Borrow Offer");
-  await expect(page.getByRole("row").filter({ hasText: "Open Offer" }).first()).toBeVisible();
+  const txid = await executeManifestAction(
+    page,
+    context,
+    "Create borrow offer",
+    "Create Borrow Offer",
+  );
+  const offerId = await offerIdByCreationTxid(txid);
+  await waitForOfferRow(page, offerId, "Open Offer");
+  return offerId;
 }
 
 async function executeManifestAction(
@@ -448,7 +731,7 @@ async function executeManifestAction(
   context: BrowserContext,
   actionLabel: string,
   buttonName: string,
-): Promise<void> {
+): Promise<string> {
   const manifestApprovalPromise = approvalPage(context);
   await activateButton(page, buttonName);
   const manifestApproval = await manifestApprovalPromise;
@@ -457,10 +740,12 @@ async function executeManifestAction(
 
   await expect(page.getByRole("button", { name: "Done", exact: true })).toBeEnabled();
   await expect(page.getByText("Transaction ID", { exact: true })).toBeVisible();
+  const txid = await transactionIdFromOpenModal(page);
   await mineBlock();
   await waitForEsploraTip();
   await expect(page.getByText(/Confirmed|Finalized/, { exact: true })).toBeVisible();
   await activateButton(page, "Done");
+  return txid;
 }
 
 type ProviderSettlement =

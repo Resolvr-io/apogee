@@ -16,6 +16,8 @@ and exercises every trusted Simplicity Lending v3 manifest action:
    collect the repayment.
 4. Create and fund a third offer, advance the local chain past expiry, and
    liquidate it.
+5. Create and fund a fourth offer, advance it past expiry, and execute repayment
+   and liquidation concurrently from the borrower and lender wallets.
 
 Every action uses event-based provider discovery, the wallet connection prompt,
 Apogee's manifest review prompt, real wallet signatures, broadcast, confirmation,
@@ -30,6 +32,15 @@ mempool after each boundary, proving failed requests broadcast nothing and all
 successful duplicates resolve to the single reviewed transaction. The resulting
 action hint must also be visible on-chain, in wallet history, and after seed
 recovery.
+
+The concurrent expiry scenario is deliberately winner-agnostic. Both wallets
+build, review, sign, and locally record transactions that spend the same active
+offer outpoint. The harness allows exactly one transaction to reach the node, then
+asserts that it is the sole mempool and on-chain winner. The competing transaction
+must resolve to `Transaction Superseded`, retain its attempted transaction ID and
+the winning transaction ID, and show the same failure and winner link after the
+dapp is reloaded. The final indexed offer state must agree with whichever action
+won.
 
 The wallets are seeded with fragmented L-BTC and principal-asset outputs. The
 scenario asserts that Create Offer, Accept Offer, and Repay Loan each consume

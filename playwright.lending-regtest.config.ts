@@ -7,7 +7,7 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   reporter: process.env.CI ? "github" : "list",
-  timeout: 600_000,
+  timeout: 900_000,
   expect: { timeout: 30_000 },
   use: { trace: "retain-on-failure" },
 });
