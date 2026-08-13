@@ -445,8 +445,11 @@ export function App() {
             >
               <img src="/icons/apogee-logo.svg" alt="Apogee" className="h-6 w-auto" />
             </button>
+            {/* Layout utilities only: .console-placard lives in @layer base, so any
+                type/color utility added alongside would silently win over it. The
+                caps come from text-transform, leaving the DOM text readable. */}
             {activeNetwork && activeNetwork !== "liquid" && (
-              <span className="-translate-x-1/2 -translate-y-1/2 absolute top-1/2 left-1/2 rounded-full border border-[color:var(--warning-border)] bg-[color:var(--warning-bg)] px-2 py-0.5 text-[10px] font-medium text-[color:var(--warning-text)]">
+              <span className="console-placard -translate-x-1/2 -translate-y-1/2 absolute top-1/2 left-1/2">
                 {activeNetwork === "liquidtestnet" ? "Testnet" : "Regtest"}
               </span>
             )}
