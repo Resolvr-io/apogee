@@ -588,6 +588,7 @@ export function Wallet({
             assets={liveAssets}
             policyAsset={liveSync?.policyAssetHex}
             hidden={hidden}
+            isJade={active.signer === "jade"}
           />
         )}
       </SubView>
@@ -1288,6 +1289,7 @@ function Coins({
   assets,
   policyAsset: policyAssetProp,
   hidden,
+  isJade,
 }: {
   walletId: string;
   network: LiquidNetwork;
@@ -1295,11 +1297,26 @@ function Coins({
   assets: Record<string, AssetInfo>;
   policyAsset?: string;
   hidden: boolean;
+  isJade?: boolean;
 }) {
   const [utxos, setUtxos] = useState<WalletUtxoDTO[] | null>(null);
   const [error, setError] = useState("");
   const [busyAsset, setBusyAsset] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "info" | "error"; msg: string } | null>(null);
+
+  // Auto-lock "never" steps up auth on every local send (background/index.ts),
+  // so consolidation needs the same password field the other signing surfaces
+  // render — without it the background rejects with "Enter your password to
+  // send." and this screen has nowhere to type it.
+  const [autoLock, setAutoLock] = useState(15);
+  const [password, setPassword] = useState("");
+  const needsPassword = !isJade && autoLock === 0;
+  useEffect(() => {
+    void wallet
+      .getAutoLock()
+      .then(setAutoLock)
+      .catch(() => {});
+  }, []);
 
   // A monotonic request id orders overlapping loads: the balance-changed
   // listener and the settle poll both fire loads whose responses can land out
@@ -1313,10 +1330,13 @@ function Coins({
   useEffect(() => {
     utxosRef.current = utxos;
   }, [utxos]);
+  // Returns a promise that always resolves (both outcomes are handled below),
+  // so the settle poll can sequence its next tick after the reload has actually
+  // landed rather than after the sync alone.
   const loadUtxos = useCallback(() => {
     const seq = ++loadSeq.current;
     setError("");
-    wallet.getUtxos(walletId).then(
+    return wallet.getUtxos(walletId).then(
       (u) => {
         if (seq !== loadSeq.current) return;
         setUtxos(u);
@@ -1357,6 +1377,8 @@ function Coins({
     Record<string, { txid: string; spent: string[]; stuck?: boolean }>
   >({});
   const settlePolls = useRef(0);
+  // Bumped after every poll attempt, successful or not — see the timer below.
+  const [pollTick, setPollTick] = useState(0);
   useEffect(() => {
     const entries = Object.entries(broadcasts);
     if (!utxos || entries.length === 0) {
@@ -1389,10 +1411,19 @@ function Coins({
     }
     const t = window.setTimeout(() => {
       settlePolls.current += 1;
-      void wallet.sync(walletId).then(loadUtxos, () => undefined);
+      // `pollTick` is what re-arms the loop. Re-running on a fresh `utxos`
+      // identity alone would stall the poll dead on any failure — a rejected
+      // sync touches no state, and a failed reload leaves `utxos` identical —
+      // stranding the card on a live spinner with its Dismiss button gated on
+      // `stuck`, which it could then never reach. Ticking unconditionally
+      // means a failed poll still costs budget, so the card always terminates.
+      void wallet
+        .sync(walletId)
+        .then(loadUtxos, () => undefined)
+        .finally(() => setPollTick((n) => n + 1));
     }, CONSOLIDATION_SETTLE_MS);
     return () => window.clearTimeout(t);
-  }, [broadcasts, utxos, loadUtxos, walletId]);
+  }, [broadcasts, utxos, loadUtxos, walletId, pollTick]);
 
   function dismissBroadcast(assetId: string) {
     setBroadcasts((b) => {
@@ -1451,16 +1482,20 @@ function Coins({
     setBusyAsset(p.assetId);
     setNotice(null);
     try {
-      const sent = await wallet.send(p.pset, {
-        address: p.address,
-        recipientAmount: p.recipientAmount,
-        feeAmount: p.feeAmount,
-        drain: true,
-        toSelf: p.toSelf,
-        ...(p.isToken
-          ? { assetId: p.assetId, assetPrecision: undefined, assetTicker: undefined }
-          : {}),
-      });
+      const sent = await wallet.send(
+        p.pset,
+        {
+          address: p.address,
+          recipientAmount: p.recipientAmount,
+          feeAmount: p.feeAmount,
+          drain: true,
+          toSelf: p.toSelf,
+          ...(p.isToken
+            ? { assetId: p.assetId, assetPrecision: undefined, assetTicker: undefined }
+            : {}),
+        },
+        needsPassword ? password : undefined,
+      );
       // Track the tx instead of a one-line notice: the pending card shows the
       // txid and the poll above clears it once the list reflects the spend.
       settlePolls.current = 0;
@@ -1472,6 +1507,7 @@ function Coins({
         },
       }));
       setPendingConsolidation(null);
+      setPassword("");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (/reject|declin|denied|cancel/i.test(msg)) {
@@ -1571,11 +1607,21 @@ function Coins({
                 <p className="mt-1 text-xs text-[color:var(--text-subtle)]">
                   Network fee: {formatBaseUnits(pendingConsolidation.feeAmount)} sats
                 </p>
+                {needsPassword && (
+                  <Field label="Password (auto-lock is off)">
+                    <Input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      autoFocus
+                    />
+                  </Field>
+                )}
                 <div className="mt-2 flex gap-2">
                   <Button
                     size="sm"
                     className="flex-1"
-                    disabled={busyAsset !== null}
+                    disabled={busyAsset !== null || (needsPassword && !password)}
                     onClick={() => void confirmConsolidate()}
                   >
                     {busyAsset ? <Spinner className="size-3" /> : "Confirm"}
@@ -1585,7 +1631,10 @@ function Coins({
                     size="sm"
                     className="flex-1"
                     disabled={busyAsset !== null}
-                    onClick={() => setPendingConsolidation(null)}
+                    onClick={() => {
+                      setPendingConsolidation(null);
+                      setPassword("");
+                    }}
                   >
                     Cancel
                   </Button>
