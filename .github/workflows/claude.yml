@@ -14,9 +14,15 @@ on:
 
 jobs:
   claude:
+    # Any GitHub user can comment on a public repo, so the @claude trigger must
+    # be gated to people we trust with the workflow's write permissions.
+    # (OWNER/COLLABORATOR covers the repo owner and invited collaborators;
+    # outside contributors still get the automatic PR review workflow, which
+    # runs read-only and receives no secrets on fork PRs.)
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+      (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR') &&
+      ((github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
