@@ -394,7 +394,7 @@ export type WalletRequest =
   // "never" step-up. Absent from non-panel callers.
   | { type: "wallet/getState"; panelSession?: string }
   | { type: "wallet/initializeKeystore"; password: string }
-  | { type: "wallet/unlock"; password: string }
+  | { type: "wallet/unlock"; panelSession?: string; password: string }
   | { type: "wallet/lock" }
   | { type: "wallet/reset" }
   | { type: "wallet/verifyPassword"; password: string }

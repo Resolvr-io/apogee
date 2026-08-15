@@ -174,16 +174,26 @@ async function rescheduleAutoLock(): Promise<void> {
 // (not SW memory) so an SW eviction doesn't re-prompt the same open panel, and
 // with the same lifetime as the unlocked session it guards: gone at browser exit.
 const PANEL_STEPUP_KEY = "apogee:panelStepUp";
-interface PanelStepUp {
-  session: string;
-  pending: boolean;
-}
-async function panelStepUpState(): Promise<PanelStepUp> {
+// session id → still owes a step-up. A MAP, not a single slot: the side panel is
+// per-window, so two open windows are two documents with two session ids, and a
+// single record would have them overwrite each other and ping-pong between
+// step-up prompts forever. Bounded so long-lived sessions can't accumulate.
+const PANEL_STEPUP_MAX = 16;
+async function panelStepUpState(): Promise<Record<string, boolean>> {
   const v = (await browser.storage.session.get(PANEL_STEPUP_KEY))[PANEL_STEPUP_KEY];
-  return v && typeof v === "object" ? (v as PanelStepUp) : { session: "", pending: false };
+  return v && typeof v === "object" ? (v as Record<string, boolean>) : {};
 }
-async function savePanelStepUp(rec: PanelStepUp): Promise<void> {
-  await browser.storage.session.set({ [PANEL_STEPUP_KEY]: rec });
+async function savePanelStepUp(map: Record<string, boolean>): Promise<void> {
+  // Prune to the most recent MAX entries (object key order = insertion order).
+  const entries = Object.entries(map);
+  const bounded = Object.fromEntries(entries.slice(-PANEL_STEPUP_MAX));
+  await browser.storage.session.set({ [PANEL_STEPUP_KEY]: bounded });
+}
+async function setPanelStepUp(session: string, pending: boolean): Promise<void> {
+  const map = await panelStepUpState();
+  delete map[session]; // re-insert so the entry moves to the back (LRU order)
+  map[session] = pending;
+  await savePanelStepUp(map);
 }
 
 // Pin storage.session to trusted contexts — the default, and the only level this
@@ -193,7 +203,11 @@ async function savePanelStepUp(rec: PanelStepUp): Promise<void> {
 // edit. Firefox has no setAccessLevel; its storage.session is extension-only by
 // construction.
 if (typeof browser.storage.session?.setAccessLevel === "function") {
-  void browser.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+  // Loud on failure: a silently widened access level is exactly what the
+  // comment above says this must never become.
+  browser.storage.session
+    .setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" })
+    .catch((err: unknown) => console.error("[apogee] storage.session.setAccessLevel failed", err));
 }
 
 // wallet/* messages that count as genuine user activity and so defer the idle
@@ -474,31 +488,35 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       // password before it gets the wallet UI (the unlocked session otherwise
       // lives until the browser exits). See panelStepUpState for the lifetime.
       if (!msg.panelSession) return s;
-      const rec = await panelStepUpState();
-      if (msg.panelSession === rec.session) {
-        return { ...s, needsStepUp: rec.pending && s.initialized && !s.locked };
+      const known = (await panelStepUpState())[msg.panelSession];
+      if (known !== undefined) {
+        return { ...s, needsStepUp: known && s.initialized && !s.locked };
       }
       const pending = s.initialized && !s.locked && (await autoLockMinutes()) === 0;
-      await savePanelStepUp({ session: msg.panelSession, pending });
+      await setPanelStepUp(msg.panelSession, pending);
       return { ...s, needsStepUp: pending };
     }
 
-    case "wallet/initializeKeystore":
-      return keystore.initialize(msg.password);
+    case "wallet/initializeKeystore": {
+      const r = await keystore.initialize(msg.password);
+      // The user just SET the password — no step-up owed by any panel for this
+      // fresh vault (covers reset → re-onboard without a redundant prompt).
+      await browser.storage.session.remove(PANEL_STEPUP_KEY);
+      return r;
+    }
 
     case "wallet/unlock": {
       const r = await keystore.unlock(msg.password);
       // The user just proved the password — no step-up owed for this panel.
-      await savePanelStepUp({ session: (await panelStepUpState()).session, pending: false });
+      if (msg.panelSession) await setPanelStepUp(msg.panelSession, false);
+      else await browser.storage.session.remove(PANEL_STEPUP_KEY);
       return r;
     }
 
     case "wallet/stepUp": {
       // Same password oracle as unlock/verifyPassword, so it shares the throttle.
       const ok = await keystore.verifyPassword(msg.password);
-      if (ok) {
-        await savePanelStepUp({ session: msg.panelSession ?? (await panelStepUpState()).session, pending: false });
-      }
+      if (ok && msg.panelSession) await setPanelStepUp(msg.panelSession, false);
       return ok;
     }
 
@@ -773,10 +791,9 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
 
     case "wallet/setAutoLock": {
       await browser.storage.local.set({ [AUTOLOCK_KEY]: msg.minutes });
-      // Moving off "never" ends the step-up regime — a pending prompt is moot.
-      if (msg.minutes > 0) {
-        await savePanelStepUp({ session: (await panelStepUpState()).session, pending: false });
-      }
+      // Moving off "never" ends the step-up regime — a pending prompt is moot
+      // for every panel session, not just this one.
+      if (msg.minutes > 0) await browser.storage.session.remove(PANEL_STEPUP_KEY);
       return;
     }
 

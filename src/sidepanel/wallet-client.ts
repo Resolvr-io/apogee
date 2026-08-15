@@ -44,7 +44,7 @@ async function call<T>(msg: WalletRequest): Promise<T> {
 
 export const wallet = {
   getState: () => call<KeystoreState>({ type: "wallet/getState", panelSession: PANEL_SESSION }),
-  unlock: (password: string) => call<void>({ type: "wallet/unlock", password }),
+  unlock: (password: string) => call<void>({ type: "wallet/unlock", panelSession: PANEL_SESSION, password }),
   lock: () => call<void>({ type: "wallet/lock" }),
   reset: () => call<void>({ type: "wallet/reset" }),
   verifyPassword: (password: string) => call<boolean>({ type: "wallet/verifyPassword", password }),
