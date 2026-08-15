@@ -21,7 +21,6 @@ import * as keystore from "@/keystore/keystore";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "@/lib/debug";
 import { SCAN_STATE_DB } from "@/engine/protocol";
 import { providerPsetReviewsMatch } from "@/engine/provider-pset-review";
-import { isNoReceiverError, shouldRetryEngineSend } from "@/lib/engine-retry";
 import { claimSecret, type ParkedSecret } from "@/lib/qr-secret";
 import { evaluateUpdate } from "@/lib/version-check";
 import { APP_VERSION } from "@/version";
@@ -46,6 +45,7 @@ import type {
   DerivedWallet,
   DescriptorInfo,
   EngineRequest,
+  EnginePortReply,
   PrepareSendResult,
   PriceHistory,
   ProviderPsetAnalysisDTO,
@@ -64,6 +64,7 @@ import type {
   SendResult,
   SendReview,
   SyncResult,
+  UiRequest,
   WalletRequest,
   WalletIdentity,
   WalletTxDTO,
@@ -170,7 +171,7 @@ async function rescheduleAutoLock(): Promise<void> {
 // excluded — otherwise the side panel's 20s balance poll would re-arm the alarm
 // forever and an unattended wallet would never idle-lock while the panel is open.
 // Allowlist, so any type not listed fails secure (does not defer the lock).
-const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
+const AUTOLOCK_DEFERRING = new Set<UiRequest["type"]>([
   "wallet/unlock",
   "wallet/create",
   "wallet/restore",
@@ -267,11 +268,11 @@ async function chainServer(network: LiquidNetwork): Promise<string | undefined> 
 const OFFSCREEN_URL = "src/offscreen/offscreen.html";
 let creating: Promise<void> | null = null;
 
-// Bounded wait for the offscreen listener to register (see runEngine). Generous
-// enough to cover module evaluation on a cold, throttled profile, short enough that
-// a genuinely dead document surfaces an error instead of hanging the UI:
-// 8 × 150ms ≈ 1.2s worst case. wasm loads lazily inside `handle`, so this waits only
-// on the listener, not on lwk itself.
+// Bounded wait for the offscreen port to come up (see runEngine). Generous enough
+// to cover module evaluation on a cold, throttled profile plus one reconnect
+// cadence tick (see offscreen.ts), short enough that a genuinely dead document
+// surfaces an error instead of hanging the UI: 8 × 150ms ≈ 1.2s worst case. wasm
+// loads lazily inside `handle`, so this waits only on the channel, not on lwk.
 const ENGINE_READY_RETRIES = 8;
 const ENGINE_READY_RETRY_MS = 150;
 
@@ -310,6 +311,66 @@ async function closeOffscreen(): Promise<void> {
   if (existing.length > 0) await chrome.offscreen.closeDocument().catch(() => {});
 }
 
+// ---- SW ↔ offscreen engine port ---------------------------------------------
+//
+// Engine requests carry the unlocked mnemonic (sign/derive/restore), so they must
+// NEVER ride `runtime.sendMessage`: an untargeted send fans out to every
+// extension context — side panel, prompt, Jade signing tab — so any stray
+// listener or page XSS would receive signing material on every send. The offscreen
+// document instead opens a dedicated runtime.connect port to this worker, and
+// `runEngine` posts id-matched request/reply frames over it. Only the two
+// connected ends ever see a frame. (The request the SW itself sources is already
+// point-to-point; this closes the wire in the other direction too — restore,
+// below, keeps the panel→SW leg off the broadcast channel the same way.)
+
+const ENGINE_PORT_NAME = "apogee-engine";
+// Channel for UI-originated secret-bearing messages (restore mnemonic, scanned
+// seed phrase). Not a wallet/* catch-all — only the two types that must never be
+// broadcast are accepted on it.
+const SECRET_PORT_NAME = "apogee-secret";
+let enginePort: chrome.runtime.Port | null = null;
+let enginePortSeq = 0;
+const engineInFlight = new Map<number, (reply: EnginePortReply) => void>();
+const enginePortWaiters: (() => void)[] = [];
+
+/** Post one request on the engine port and await its id-matched reply. If the
+ *  port dies before the reply, the disconnect handler settles with an error —
+ *  the request may or may not have run, so the caller treats that as a hard
+ *  failure, never a retry. */
+function postEngine(req: EngineRequest): Promise<EnginePortReply> {
+  const port = enginePort;
+  if (!port) throw new Error("engine port is not connected");
+  const id = ++enginePortSeq;
+  return new Promise<EnginePortReply>((resolve, reject) => {
+    engineInFlight.set(id, resolve);
+    try {
+      port.postMessage({ id, req });
+    } catch (e) {
+      engineInFlight.delete(id);
+      reject(e);
+    }
+  });
+}
+
+/** Wait briefly for the offscreen document to connect its port. */
+function waitForEnginePort(ms: number): Promise<chrome.runtime.Port | null> {
+  if (enginePort) return Promise.resolve(enginePort);
+  return new Promise((resolve) => {
+    const t = setTimeout(() => {
+      const i = enginePortWaiters.indexOf(wake);
+      if (i >= 0) enginePortWaiters.splice(i, 1);
+      resolve(enginePort);
+    }, ms);
+    const wake = () => {
+      clearTimeout(t);
+      const i = enginePortWaiters.indexOf(wake);
+      if (i >= 0) enginePortWaiters.splice(i, 1);
+      resolve(enginePort);
+    };
+    enginePortWaiters.push(wake);
+  });
+}
+
 /** Send a request to the offscreen engine and unwrap its reply. */
 // Serialize engine calls. lwk_wasm objects (Wollet/Signer) can't be used
 // re-entrantly: two overlapping fullScan/applyUpdate calls on the same cached
@@ -319,9 +380,10 @@ async function closeOffscreen(): Promise<void> {
 let engineQueue: Promise<unknown> = Promise.resolve();
 
 // One engine round-trip. On Chrome the wasm engine lives in the offscreen document
-// (message it); on Firefox there's no offscreen API, so the engine core runs
-// in-process in this background page. __FIREFOX__ is a build constant, so on Chrome
-// the Firefox branch — and the engine-core import — tree-shake away, and vice versa.
+// (drive it over the engine port); on Firefox there's no offscreen API, so the
+// engine core runs in-process in this background page. __FIREFOX__ is a build
+// constant, so on Chrome the Firefox branch — and the engine-core import —
+// tree-shake away, and vice versa.
 let ffEngine: ((req: EngineRequest) => Promise<unknown>) | null = null;
 async function runEngine<T>(req: EngineRequest): Promise<T> {
   if (__FIREFOX__) {
@@ -329,37 +391,21 @@ async function runEngine<T>(req: EngineRequest): Promise<T> {
     return (await ffEngine(req)) as T;
   }
   await ensureOffscreen();
-  // `createDocument` resolves once the document EXISTS, which is earlier than when
-  // offscreen.ts has evaluated its module and registered its onMessage listener. A
-  // request sent inside that gap reaches no receiver: sendMessage resolves
-  // `undefined` (or throws "Receiving end does not exist"), which used to surface
-  // as a bare "engine error" on the very first load — the first thing a new user
-  // sees. Not install-only either: MV3 evicts the service worker routinely, so the
-  // same window reopens whenever a call rebuilds the document.
-  //
-  // Retry on that specific "nobody was listening" shape only. A reply carrying
-  // `ok: false` is a real engine failure and is NOT retried — re-running a
-  // genuine error would just double the work and hide the cause.
+  // The document exists before offscreen.ts has evaluated and connected its port —
+  // and after an SW eviction the old port is gone until the document's reconnect
+  // timer fires. Retry on "no port yet" only; a reply carrying `ok: false` is a
+  // real engine failure and is NOT retried — re-running a genuine error would just
+  // double the work and hide the cause.
   for (let attempt = 0; ; attempt++) {
-    let reply: { ok?: boolean; value?: unknown; error?: string } | undefined;
-    let noReceiver = false;
-    try {
-      reply = await browser.runtime.sendMessage({ target: "offscreen", req });
-      noReceiver = shouldRetryEngineSend(reply);
-    } catch (e) {
-      // Chrome rejects with "Could not establish connection. Receiving end does
-      // not exist." when the listener isn't registered yet.
-      if (!isNoReceiverError(e)) throw e;
-      noReceiver = true;
-    }
-    if (!noReceiver) {
+    const port = await waitForEnginePort(ENGINE_READY_RETRY_MS);
+    if (port) {
+      const reply = await postEngine(req);
       if (!reply?.ok) throw new Error(reply?.error ?? "engine error");
       return reply.value as T;
     }
     if (attempt >= ENGINE_READY_RETRIES) {
       throw new Error("The wallet engine did not start. Reopen Apogee to try again.");
     }
-    await new Promise((r) => setTimeout(r, ENGINE_READY_RETRY_MS));
     await ensureOffscreen(); // recreate if the document died rather than lagged
   }
 }
@@ -432,7 +478,7 @@ async function walletInfo(walletId?: string) {
   return info;
 }
 
-async function handleUi(msg: WalletRequest): Promise<unknown> {
+async function handleUi(msg: UiRequest): Promise<unknown> {
   await keystore.ensureLoaded(); // recover unlocked state after SW eviction
   switch (msg.type) {
     case "wallet/getState":
@@ -2928,8 +2974,81 @@ browser.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
+// Point-to-point ports (runtime.connect). Unlike an untargeted sendMessage —
+// which fans out to every extension context — a port delivers frames only to
+// the two connected ends, which is what any secret-bearing traffic requires.
+browser.runtime.onConnect.addListener((port) => {
+  // Offscreen document → engine channel. A co-installed extension can connect to
+  // us by id, so check the sender before accepting engine frames — the engine
+  // signs and broadcasts whatever a request carries (mirrors the message router's
+  // origin gate and the pre-port sender check this replaces).
+  if (port.name === ENGINE_PORT_NAME) {
+    if (port.sender?.id !== browser.runtime.id || port.sender?.origin !== EXT_ORIGIN) {
+      port.disconnect();
+      return;
+    }
+    enginePort = port;
+    port.onMessage.addListener((msg: unknown) => {
+      const reply = msg as EnginePortReply;
+      const settle = engineInFlight.get(reply.id);
+      if (settle) {
+        engineInFlight.delete(reply.id);
+        settle(reply);
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      if (enginePort === port) enginePort = null;
+      // Settle anything in flight as a hard failure — the request may have run,
+      // so re-sending it (e.g. a broadcast) is never safe.
+      for (const [, settle] of engineInFlight) {
+        settle({ id: -1, ok: false, error: "The wallet engine stopped. Reopen Apogee to try again." });
+      }
+      engineInFlight.clear();
+      for (const wake of enginePortWaiters.splice(0)) wake();
+    });
+    for (const wake of enginePortWaiters.splice(0)) wake();
+    return;
+  }
+  // Secret-bearing UI traffic — `wallet/restore` (plaintext mnemonic) and
+  // `apogee/qr-secret` (scanned seed phrase) — both of which must not fan out on
+  // the broadcast channel. Anything else on this port is closed unanswered.
+  if (port.name === SECRET_PORT_NAME) {
+    if (port.sender?.origin !== EXT_ORIGIN || port.sender?.id !== browser.runtime.id) {
+      port.disconnect();
+      return;
+    }
+    port.onMessage.addListener((msg: unknown) => {
+      const req = msg as UiRequest | { type: "apogee/qr-secret"; value?: unknown };
+      if (req?.type === "apogee/qr-secret") {
+        // Same parking semantics the broadcast handler used: module-level memory,
+        // one claim, time-boxed (see lib/qr-secret.ts).
+        if (typeof req.value === "string" && req.value.length > 0) {
+          qrSecret = { value: req.value, at: Date.now() };
+        }
+        port.postMessage({ ok: true });
+        return;
+      }
+      if (req?.type !== "wallet/restore") {
+        port.disconnect();
+        return;
+      }
+      handleUi(req)
+        .then((value) => {
+          port.postMessage({ ok: true, value });
+          // Mirror the broadcast router: restore is genuine user activity, so it
+          // re-arms the idle auto-lock.
+          void rescheduleAutoLock();
+        })
+        .catch((err: unknown) => {
+          port.postMessage({ ok: false, error: errMsg(err) });
+        });
+    });
+    return;
+  }
+  port.disconnect(); // unknown channel — don't leave it open
+});
+
 browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg?.target === "offscreen") return false; // belongs to the offscreen doc
   if (typeof msg?.type !== "string") return false;
   // Trust boundary: wallet/* and apogee/* are extension-internal — they come from
   // our own surfaces (side panel, approval prompt, Jade signing tab) and must
@@ -3053,15 +3172,9 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
-  // Scanner hand-off for a seed phrase. Both sides are `apogee/*`, so the
-  // fromExtension gate above already excludes web pages.
-  if (msg.type === "apogee/qr-secret") {
-    const value = (msg as { value?: unknown }).value;
-    if (typeof value !== "string" || value.length === 0) return false;
-    qrSecret = { value, at: Date.now() };
-    sendResponse({ ok: true });
-    return true;
-  }
+  // The scanner's seed-phrase hand-off (`apogee/qr-secret`) deliberately does
+  // NOT have a broadcast case anymore: the phrase arrives on the dedicated
+  // apogee-secret port (see onConnect), so it never fans out to other contexts.
   if (msg.type === "apogee/qr-secret-claim") {
     // Single-use AND time-boxed: read it out, then immediately clear regardless of
     // whether it was still fresh, so a stale value can never be claimed twice.
