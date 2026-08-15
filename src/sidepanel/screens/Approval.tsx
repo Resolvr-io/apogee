@@ -313,6 +313,16 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
                 mono
               />
             )}
+            {sendReview?.assetTicker && (
+              /* The ticker comes from the public asset registry, which an
+                 issued asset can steer — it's a display hint, never proof of
+                 what the asset is. The ID above is the identifier. */
+              <Row
+                label="Label"
+                value={`${sendReview.assetTicker} · registry`}
+                title="Name from the public asset registry, not verified — identify the asset by its ID above."
+              />
+            )}
             <Row
               label={sendReview?.drain ? "Amount (max)" : "Amount"}
               value={tokenAmount}
