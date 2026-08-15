@@ -57,3 +57,12 @@ export async function assetIconSrc(
     return null;
   }
 }
+
+/** Drop every cached icon. The cache keys name the assets the wallet has
+ *  displayed, so a wipe must not leave that fingerprint behind. */
+export async function clearAssetIconCache(): Promise<void> {
+  const all = await browser.storage.local.get(null);
+  const keys = Object.keys(all).filter((k) => k.startsWith(CACHE_PREFIX));
+  failed.clear();
+  if (keys.length > 0) await browser.storage.local.remove(keys);
+}

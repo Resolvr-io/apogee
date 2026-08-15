@@ -23,6 +23,7 @@ import { SCAN_STATE_DB } from "@/engine/protocol";
 import { providerPsetReviewsMatch } from "@/engine/provider-pset-review";
 import { isNoReceiverError, shouldRetryEngineSend } from "@/lib/engine-retry";
 import { claimSecret, type ParkedSecret } from "@/lib/qr-secret";
+import { clearAssetIconCache } from "@/lib/asset-icons";
 import { evaluateUpdate } from "@/lib/version-check";
 import { APP_VERSION } from "@/version";
 import { browser } from "@/lib/ext";
@@ -473,6 +474,9 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
           resolve();
         };
       });
+      // Cached asset icons name the assets the wiped wallet displayed — clear
+      // them so the reset doesn't leave that fingerprint in storage.
+      await clearAssetIconCache();
       return keystore.reset();
     }
 
