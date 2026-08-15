@@ -1,9 +1,6 @@
 import { execSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
-import type { Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import wasm from "vite-plugin-wasm";
@@ -21,36 +18,6 @@ function getCommitHash(): string {
   } catch {
     return "unknown";
   }
-}
-
-// crxjs emits web_accessible_resources with use_dynamic_url: false — stable
-// chrome-extension:// URLs any site can probe to fingerprint the installed
-// extension. Flip it post-build so resource URLs are per-instance (honored on
-// Chromium 130+; older versions ignore the key and fall back to stable URLs).
-function warUseDynamicUrl(): Plugin {
-  let outDir = "dist";
-  return {
-    name: "apogee-war-use-dynamic-url",
-    apply: "build",
-    enforce: "post",
-    configResolved(config) {
-      outDir = config.build.outDir;
-    },
-    closeBundle() {
-      const manifestPath = path.resolve(outDir, "manifest.json");
-      let built: { web_accessible_resources?: Array<Record<string, unknown>> };
-      try {
-        built = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-      } catch {
-        return; // no manifest in this build (e.g. playground) — nothing to do
-      }
-      const wars = built.web_accessible_resources;
-      if (!Array.isArray(wars)) return;
-      if (!wars.some((war) => war.use_dynamic_url !== true)) return;
-      for (const war of wars) war.use_dynamic_url = true;
-      fs.writeFileSync(manifestPath, JSON.stringify(built, null, 2) + "\n");
-    },
-  };
 }
 
 export default defineConfig({
@@ -73,7 +40,6 @@ export default defineConfig({
     wasm(),
     topLevelAwait(),
     crx({ manifest }),
-    warUseDynamicUrl(),
   ],
   build: {
     target: "esnext",
