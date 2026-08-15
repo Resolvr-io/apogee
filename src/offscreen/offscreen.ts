@@ -10,8 +10,12 @@ import type { EngineRequest } from "@/engine/protocol";
 
 console.log("[apogee] offscreen ready");
 
-browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.target !== "offscreen") return false;
+  // The engine will sign and broadcast with whatever the request carries, so
+  // only this extension may reach it — a co-installed extension can message us
+  // directly by id. Mirrors the sender gate in the background router.
+  if (sender.id !== browser.runtime.id) return false;
   handle(msg.req as EngineRequest)
     .then((value) => sendResponse({ ok: true, value }))
     .catch((err: unknown) => sendResponse({ ok: false, error: errMsg(err) }));
