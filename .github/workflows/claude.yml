@@ -4,7 +4,6 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
-  id-token: write
 
 on:
   issue_comment:
@@ -16,11 +15,17 @@ jobs:
   claude:
     # Any GitHub user can comment on a public repo, so the @claude trigger must
     # be gated to people we trust with the workflow's write permissions.
-    # (OWNER/COLLABORATOR covers the repo owner and invited collaborators;
-    # outside contributors still get the automatic PR review workflow, which
-    # runs read-only and receives no secrets on fork PRs.)
+    # OWNER only fires on user-owned repos — this is an org repo, where org
+    # members report MEMBER — so MEMBER is the arm that actually admits the
+    # maintainers. It covers ANY org member (including read-only ones); fine
+    # for a small org, but swap in a `gh api .../permission` gate step if the
+    # org ever outgrows the set of people who should hold contents: write.
+    # The gate trusts the COMMENTER, not the content — a trusted commenter can
+    # still point @claude at untrusted PR text; that residual is inherent.
     if: |
-      (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR') &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR') &&
       ((github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')))
     runs-on: ubuntu-latest
