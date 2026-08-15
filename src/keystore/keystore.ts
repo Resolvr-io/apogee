@@ -28,6 +28,7 @@ import { isValidFingerprint } from "@/lib/utils";
 import {
   type StoreShape,
   VAULT_MIGRATIONS,
+  hasMigrationPath,
   migrateStore,
   mnemonicAad as mnemonicAadFor,
   verifierAad as verifierAadFor,
@@ -285,6 +286,16 @@ export async function unlock(password: string): Promise<void> {
       "This vault was written by a newer version of Apogee. Update the extension, or reset Apogee and re-import your recovery phrase.",
     );
   }
+  // Decide reachability BEFORE the password or the throttle: an unmigratable
+  // older store (or a corrupt version field) would otherwise fail the verifier
+  // check below — its AAD scheme was never written by this build — and read as
+  // "Incorrect password" for the correct password, burning the attempt counter
+  // toward the hard lock.
+  if (store.version !== STORE_VERSION && !hasMigrationPath(store.version, STORE_VERSION, VAULT_MIGRATIONS)) {
+    throw new Error(
+      "Apogee's encrypted storage format changed in this update. Reset Apogee and re-import your recovery phrase.",
+    );
+  }
   await assertAttemptAllowed();
   const key = await deriveKey(password, store.kdf);
   // Verify against the version ON DISK — the verifier is version-bound, and the
@@ -302,7 +313,11 @@ export async function unlock(password: string): Promise<void> {
     try {
       vault = await migrateStore(key, store, STORE_VERSION, VAULT_MIGRATIONS);
       await saveStore(vault);
-    } catch {
+    } catch (err) {
+      // Diagnostic only — the error is an OperationError/quota error, not key
+      // material, and a bare field report of "it told me to reset" is otherwise
+      // indistinguishable between a bad envelope and a failed storage write.
+      console.warn("vault migration failed", err);
       throw new Error(
         "Apogee's encrypted storage format changed in this update and couldn't be upgraded in place. Reset Apogee and re-import your recovery phrase.",
       );
@@ -356,6 +371,12 @@ export async function restoreLocal(snap: Record<string, unknown>): Promise<void>
 export async function verifyPassword(password: string): Promise<boolean> {
   const store = await loadStore();
   if (!store) return false;
+  // These read the verifier under the CURRENT AAD scheme, which is only valid
+  // for a current-version store. Both are step-up auth behind an already-
+  // unlocked vault (which implies a migrated store); refuse an older one
+  // explicitly rather than checking a stale scheme — a wrong-handed "false"
+  // here would burn the unlock throttle for a correct password.
+  if (store.version !== STORE_VERSION) throw new Error("Keystore format needs upgrading — unlock first");
   await assertAttemptAllowed();
   const key = await deriveKey(password, store.kdf);
   const ok = await checkVerifier(key, store.verifier, verifierAad());
@@ -368,6 +389,10 @@ export async function verifyPassword(password: string): Promise<boolean> {
 export async function changePassword(oldPassword: string, newPassword: string): Promise<void> {
   const store = await loadStore();
   if (!store) throw new Error("Keystore not initialized");
+  // Same invariant as verifyPassword — and stronger here: the re-wrap below
+  // writes current-version envelopes regardless of what it read, so running it
+  // against an older store would corrupt every seed in the vault.
+  if (store.version !== STORE_VERSION) throw new Error("Keystore format needs upgrading — unlock first");
   const oldKey = await deriveKey(oldPassword, store.kdf);
   if (!(await checkVerifier(oldKey, store.verifier, verifierAad()))) {
     throw new Error("Incorrect password");
@@ -567,6 +592,13 @@ export async function ensureLoaded(): Promise<void> {
     await sessionClear(SESSION_KEY);
     return;
   }
+  if (store.version !== STORE_VERSION && !hasMigrationPath(store.version, STORE_VERSION, VAULT_MIGRATIONS)) {
+    // Unmigratable here too (corrupt version field or a pruned chain entry):
+    // the verifier check below would fail against an AAD scheme this build
+    // never wrote, and we'd drop a perfectly good session for no reason.
+    await sessionClear(SESSION_KEY);
+    return;
+  }
   const key = await importKeyRaw(sess.k);
   if (!(await checkVerifier(key, store.verifier, verifierAadFor(store.version)))) {
     await sessionClear(SESSION_KEY); // stale session (password changed/tamper)
@@ -580,7 +612,8 @@ export async function ensureLoaded(): Promise<void> {
     try {
       vault = await migrateStore(key, store, STORE_VERSION, VAULT_MIGRATIONS);
       await saveStore(vault);
-    } catch {
+    } catch (err) {
+      console.warn("vault migration failed", err);
       await sessionClear(SESSION_KEY);
       return;
     }

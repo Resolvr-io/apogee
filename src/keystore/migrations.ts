@@ -43,9 +43,12 @@ export async function rewrapEnvelopes(
   fromVersion: number,
 ): Promise<StoreShape> {
   const to = fromVersion + 1;
+  // Driven by the wallets MAP, not `order`: a record that exists but fell out
+  // of `order` (corrupt index) is carried through, not silently deleted — this
+  // runs automatically on every user's first unlock after an update, and the
+  // dropped record would be an encrypted seed.
   const wallets: Record<string, WalletRecord> = {};
-  for (const id of store.order) {
-    const w = store.wallets[id];
+  for (const [id, w] of Object.entries(store.wallets)) {
     if (!w) continue;
     // Hardware wallets have no seed to re-wrap; carry them through unchanged.
     wallets[id] = w.enc
@@ -80,6 +83,24 @@ export type VaultMigration = (key: CryptoKey, store: StoreShape) => Promise<Stor
  * vault key is live; a missing entry falls back to the reset-and-re-import path.
  */
 export const VAULT_MIGRATIONS: Record<number, VaultMigration> = {};
+
+/**
+ * Whether a chain of registered migrations can carry `from` up to `target`.
+ * False for a non-integer/absent version (a corrupt or truncated store) and
+ * for any gap in the chain. Callers use this to refuse an unreachable store
+ * BEFORE deriving a key or touching the unlock throttle — checking the
+ * verifier against an AAD scheme this build never wrote would read as
+ * "Incorrect password" for the correct password and burn the attempt counter.
+ */
+export function hasMigrationPath(
+  from: number,
+  target: number,
+  migrations: Record<number, VaultMigration> = {},
+): boolean {
+  if (!Number.isInteger(from) || from > target) return false;
+  for (let v = from; v < target; v++) if (!migrations[v]) return false;
+  return true;
+}
 
 /**
  * Step a store up to `target`, applying each version's migration in order.

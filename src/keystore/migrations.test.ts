@@ -14,6 +14,7 @@ import type { WalletRecord } from "./keystore";
 import {
   type StoreShape,
   type VaultMigration,
+  hasMigrationPath,
   migrateStore,
   mnemonicAad,
   rewrapEnvelopes,
@@ -83,6 +84,36 @@ describe("rewrapEnvelopes", () => {
     const next = await rewrapEnvelopes(key, store, 2);
     expect(next.wallets.j).toBe(jade);
     expect(next.order).toContain("j");
+  });
+
+  it("carries an orphaned record (in wallets, missing from order) through rather than dropping it", async () => {
+    const key = await testKey();
+    const store = await storeAt(2, { a: "alpha phrase", orphan: "orphan phrase" });
+    store.order = ["a"]; // orphan fell out of the index — must not be deleted
+    const next = await rewrapEnvelopes(key, store, 2);
+    expect(await decryptString(key, next.wallets.orphan.enc!, mnemonicAad(3, "orphan"))).toBe(
+      "orphan phrase",
+    );
+  });
+});
+
+describe("hasMigrationPath", () => {
+  const m: Record<number, VaultMigration> = {
+    2: (k, s) => rewrapEnvelopes(k, s, 2),
+    3: (k, s) => rewrapEnvelopes(k, s, 3),
+  };
+
+  it("is true only when every step on the chain is registered", () => {
+    expect(hasMigrationPath(2, 4, m)).toBe(true);
+    expect(hasMigrationPath(3, 4, m)).toBe(true);
+    expect(hasMigrationPath(2, 5, m)).toBe(false); // v4 step missing
+    expect(hasMigrationPath(1, 4, m)).toBe(false); // v1→2 step missing
+  });
+
+  it("is false for a corrupt or absent version, or a newer-than-target store", () => {
+    expect(hasMigrationPath(Number.NaN, 4, m)).toBe(false);
+    expect(hasMigrationPath(2.5, 4, m)).toBe(false);
+    expect(hasMigrationPath(5, 4, m)).toBe(false);
   });
 });
 
