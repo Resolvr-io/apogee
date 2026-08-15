@@ -328,44 +328,55 @@ const ENGINE_PORT_NAME = "apogee-engine";
 // seed phrase). Not a wallet/* catch-all — only the two types that must never be
 // broadcast are accepted on it.
 const SECRET_PORT_NAME = "apogee-secret";
-let enginePort: chrome.runtime.Port | null = null;
+// One engine-port connection: the port plus ITS in-flight requests. In-flight
+// state is per-connection, not module-global — a superseded port's disconnect
+// (delivered asynchronously, possibly after a newer offscreen document already
+// reconnected) must settle only that port's own requests, never the live
+// connection's.
+interface EngineConn {
+  port: chrome.runtime.Port;
+  inFlight: Map<number, (reply: EnginePortReply) => void>;
+}
+let engineConn: EngineConn | null = null;
 let enginePortSeq = 0;
-const engineInFlight = new Map<number, (reply: EnginePortReply) => void>();
 const enginePortWaiters: (() => void)[] = [];
+
+/** Thrown when the port vanished between waitForEnginePort and the post. */
+class EnginePortGoneError extends Error {}
 
 /** Post one request on the engine port and await its id-matched reply. If the
  *  port dies before the reply, the disconnect handler settles with an error —
  *  the request may or may not have run, so the caller treats that as a hard
  *  failure, never a retry. */
 function postEngine(req: EngineRequest): Promise<EnginePortReply> {
-  const port = enginePort;
-  if (!port) throw new Error("engine port is not connected");
+  const conn = engineConn;
+  if (!conn) throw new EnginePortGoneError("engine port is not connected");
   const id = ++enginePortSeq;
   return new Promise<EnginePortReply>((resolve, reject) => {
-    engineInFlight.set(id, resolve);
+    conn.inFlight.set(id, resolve);
     try {
-      port.postMessage({ id, req });
+      conn.port.postMessage({ id, req });
     } catch (e) {
-      engineInFlight.delete(id);
+      conn.inFlight.delete(id);
       reject(e);
     }
   });
 }
 
 /** Wait briefly for the offscreen document to connect its port. */
-function waitForEnginePort(ms: number): Promise<chrome.runtime.Port | null> {
-  if (enginePort) return Promise.resolve(enginePort);
+function waitForEnginePort(ms: number): Promise<EngineConn | null> {
+  if (engineConn) return Promise.resolve(engineConn);
   return new Promise((resolve) => {
     const t = setTimeout(() => {
       const i = enginePortWaiters.indexOf(wake);
       if (i >= 0) enginePortWaiters.splice(i, 1);
-      resolve(enginePort);
+      resolve(engineConn);
     }, ms);
     const wake = () => {
       clearTimeout(t);
       const i = enginePortWaiters.indexOf(wake);
       if (i >= 0) enginePortWaiters.splice(i, 1);
-      resolve(enginePort);
+      resolve(engineConn);
     };
     enginePortWaiters.push(wake);
   });
@@ -399,9 +410,18 @@ async function runEngine<T>(req: EngineRequest): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     const port = await waitForEnginePort(ENGINE_READY_RETRY_MS);
     if (port) {
-      const reply = await postEngine(req);
-      if (!reply?.ok) throw new Error(reply?.error ?? "engine error");
-      return reply.value as T;
+      try {
+        const reply = await postEngine(req);
+        if (!reply?.ok) throw new Error(reply?.error ?? "engine error");
+        return reply.value as T;
+      } catch (e) {
+        // The port vanished between the wait and the post. Nothing was sent,
+        // so the request definitively did not run — unlike a mid-flight
+        // disconnect, retrying here is safe (and better than surfacing an
+        // internal error for a race the next attempt resolves).
+        if (e instanceof EnginePortGoneError) continue;
+        throw e;
+      }
     }
     if (attempt >= ENGINE_READY_RETRIES) {
       throw new Error("The wallet engine did not start. Reopen Apogee to try again.");
@@ -2987,23 +3007,30 @@ browser.runtime.onConnect.addListener((port) => {
       port.disconnect();
       return;
     }
-    enginePort = port;
+    const conn: EngineConn = { port, inFlight: new Map() };
+    // Two live ports shouldn't be representable, but if the offscreen document
+    // reconnected before the old document's disconnect landed, close the old
+    // one explicitly rather than leaking it — its late disconnect now settles
+    // only its own (by then empty) in-flight map.
+    if (engineConn) engineConn.port.disconnect();
+    engineConn = conn;
     port.onMessage.addListener((msg: unknown) => {
       const reply = msg as EnginePortReply;
-      const settle = engineInFlight.get(reply.id);
+      const settle = conn.inFlight.get(reply.id);
       if (settle) {
-        engineInFlight.delete(reply.id);
+        conn.inFlight.delete(reply.id);
         settle(reply);
       }
     });
     port.onDisconnect.addListener(() => {
-      if (enginePort === port) enginePort = null;
-      // Settle anything in flight as a hard failure — the request may have run,
-      // so re-sending it (e.g. a broadcast) is never safe.
-      for (const [, settle] of engineInFlight) {
+      if (engineConn === conn) engineConn = null;
+      // Settle THIS connection's in-flight requests as a hard failure — the
+      // request may have run, so re-sending it (e.g. a broadcast) is never
+      // safe. A superseded connection's map is empty or already settled.
+      for (const [, settle] of conn.inFlight) {
         settle({ id: -1, ok: false, error: "The wallet engine stopped. Reopen Apogee to try again." });
       }
-      engineInFlight.clear();
+      conn.inFlight.clear();
       for (const wake of enginePortWaiters.splice(0)) wake();
     });
     for (const wake of enginePortWaiters.splice(0)) wake();
@@ -3185,6 +3212,15 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type.startsWith("wallet/")) {
+    // Port-only at runtime, not just at the type level: `wallet/restore`
+    // carries a plaintext mnemonic, and handleUi still knows how to service
+    // it (the secret port calls the same handler). Refuse it here so the
+    // broadcast channel can never carry one — mirrors the removed
+    // `apogee/qr-secret` broadcast case above.
+    if (msg.type === "wallet/restore") {
+      sendResponse({ ok: false, error: "restore is not available on this channel" });
+      return false;
+    }
     const req = msg as WalletRequest;
     handleUi(req)
       .then((value) => {
