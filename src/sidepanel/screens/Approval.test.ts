@@ -127,4 +127,61 @@ describe("ApprovalOverlay", () => {
     expect(markup).toContain("Approve, sign &amp; broadcast");
     expect(markup).not.toContain("sign—not broadcast");
   });
+
+  function sendRequest(
+    review: Partial<Extract<ApprovalRequest, { kind: "send" }>["review"]>,
+  ): ApprovalRequest {
+    return {
+      kind: "send",
+      id: "send-approval-test",
+      origin: "https://example.test",
+      network: "testnet",
+      locked: false,
+      signerKind: "local",
+      review: {
+        address: "tlq1qrecipient",
+        recipientAmount: "1000",
+        feeAmount: "100",
+        drain: false,
+        toSelf: false,
+        ...review,
+      },
+    };
+  }
+
+  it("badges a token send's registry ticker without asserting it for LBTC", () => {
+    const token = renderToStaticMarkup(
+      createElement(ApprovalOverlay, {
+        request: sendRequest({
+          assetId: POLICY_ASSET,
+          assetTicker: "USDT",
+          assetPrecision: 8,
+        }),
+        onClose: vi.fn(),
+      }),
+    );
+    expect(token).toContain("registry · USDT");
+
+    // LBTC is identified by its ticker row alone — a "registry" badge there
+    // would claim a provenance the send never had.
+    const lbtc = renderToStaticMarkup(
+      createElement(ApprovalOverlay, { request: sendRequest({}), onClose: vi.fn() }),
+    );
+    expect(lbtc).not.toContain("registry");
+  });
+
+  it("keeps the registry marker visible when a long ticker is clamped", () => {
+    // The marker leads and the ticker is clamped (Approval Row truncates), so a
+    // hostile long label can't clip the "registry" provenance hint off-screen.
+    const longTicker = "SUPER".repeat(12); // 60 chars, clamp cuts at 24
+    const markup = renderToStaticMarkup(
+      createElement(ApprovalOverlay, {
+        request: sendRequest({ assetId: POLICY_ASSET, assetTicker: longTicker }),
+        onClose: vi.fn(),
+      }),
+    );
+    expect(markup).toContain("registry · SUPER");
+    // The Label row carries the clamped 24-char form, not the full ticker.
+    expect(markup).toContain(`registry · ${longTicker.slice(0, 24)}`);
+  });
 });
