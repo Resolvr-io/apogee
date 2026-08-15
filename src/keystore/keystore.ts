@@ -15,7 +15,6 @@
 import { browser } from "@/lib/ext";
 import {
   type Enc,
-  type Kdf,
   checkVerifier,
   decryptString,
   deriveKey,
@@ -26,6 +25,13 @@ import {
   newKdf,
 } from "./crypto";
 import { isValidFingerprint } from "@/lib/utils";
+import {
+  type StoreShape,
+  VAULT_MIGRATIONS,
+  migrateStore,
+  mnemonicAad as mnemonicAadFor,
+  verifierAad as verifierAadFor,
+} from "./migrations";
 
 export type LiquidNetwork = "liquid" | "liquidtestnet" | "regtest";
 
@@ -44,7 +50,10 @@ const STORE_KEY = "apogee_keystore";
 const ACTIVE_KEY = "apogee_active_wallet";
 const SESSION_KEY = "apogee_session";
 const THROTTLE_KEY = "apogee_unlock_throttle";
-const STORE_VERSION = 2; // v2 binds AES-GCM AAD to each envelope; v1 vaults must be reset
+// v2 binds AES-GCM AAD to each envelope. Older vaults migrate in place while
+// unlocked (see migrations.ts) — v1 predates public release and has no
+// registered path, so those still require a reset.
+const STORE_VERSION = 2;
 
 /** A wallet record as persisted (mnemonic encrypted, descriptor cleartext). */
 export interface WalletRecord {
@@ -56,14 +65,6 @@ export interface WalletRecord {
   fingerprint: string;
   enc?: Enc; // AES-GCM of the BIP-39 mnemonic — absent for hardware (jade) wallets
   createdAt: number;
-}
-
-interface StoreShape {
-  version: number;
-  kdf: Kdf;
-  verifier: Enc;
-  wallets: Record<string, WalletRecord>;
-  order: string[];
 }
 
 /** Public, secret-free view of a wallet (safe to send to the UI). */
@@ -244,12 +245,14 @@ export async function getState(): Promise<KeystoreState> {
 // context so blobs can't be transplanted between records or version-downgraded.
 // The verifier is bound to the store format version; each mnemonic is also bound
 // to its wallet id — all mnemonics share one derived key, so without this a
-// ciphertext could be swapped between wallet slots and still decrypt.
+// ciphertext could be swapped between wallet slots and still decrypt. The
+// version-parameterized scheme lives in migrations.ts (a re-wrap needs both the
+// old and the new AAD); these zero-arg forms always mean the CURRENT version.
 function verifierAad(): string {
-  return `apogee:verifier:v${STORE_VERSION}`;
+  return verifierAadFor(STORE_VERSION);
 }
 function mnemonicAad(walletId: string): string {
-  return `apogee:mnemonic:v${STORE_VERSION}:${walletId}`;
+  return mnemonicAadFor(STORE_VERSION, walletId);
 }
 
 /** Create a fresh keystore behind a password, left unlocked. No wallet yet. */
@@ -270,25 +273,44 @@ export async function initialize(password: string): Promise<void> {
   await clearUnlockFailures(); // fresh vault — a stale counter must not guard it
 }
 
-/** Derive the key from the password, verify it, and decrypt all mnemonics. */
+/** Derive the key from the password, verify it, migrate an older vault format
+ *  in place if needed, and warm the mnemonic cache. */
 export async function unlock(password: string): Promise<void> {
   const store = await loadStore();
   if (!store) throw new Error("Keystore not initialized");
-  if (store.version !== STORE_VERSION) {
+  if (store.version > STORE_VERSION) {
+    // Never touch a newer vault: this build doesn't know its format, and a
+    // wrong-handed write could destroy it (e.g. after downgrading the extension).
     throw new Error(
-      "Apogee's encrypted storage format changed in this update. Reset Apogee and re-import your recovery phrase.",
+      "This vault was written by a newer version of Apogee. Update the extension, or reset Apogee and re-import your recovery phrase.",
     );
   }
   await assertAttemptAllowed();
   const key = await deriveKey(password, store.kdf);
-  if (!(await checkVerifier(key, store.verifier, verifierAad()))) {
+  // Verify against the version ON DISK — the verifier is version-bound, and the
+  // password must prove itself against the vault as it exists, pre-migration.
+  if (!(await checkVerifier(key, store.verifier, verifierAadFor(store.version)))) {
     await recordUnlockFailure();
     throw new Error("Incorrect password");
   }
   await clearUnlockFailures();
+  let vault = store;
+  if (store.version < STORE_VERSION) {
+    // One-step re-wrap while the key is live (see migrations.ts). Nothing is
+    // persisted unless every step succeeds, so a failure leaves the old-format
+    // vault intact and lands on the same recovery message as before.
+    try {
+      vault = await migrateStore(key, store, STORE_VERSION, VAULT_MIGRATIONS);
+      await saveStore(vault);
+    } catch {
+      throw new Error(
+        "Apogee's encrypted storage format changed in this update and couldn't be upgraded in place. Reset Apogee and re-import your recovery phrase.",
+      );
+    }
+  }
   unlockedMnemonics.clear();
-  for (const id of store.order) {
-    const w = store.wallets[id];
+  for (const id of vault.order) {
+    const w = vault.wallets[id];
     if (w?.enc) unlockedMnemonics.set(id, await decryptString(key, w.enc, mnemonicAad(id))); // skip hardware (no seed)
   }
   derivedKey = key;
@@ -541,18 +563,31 @@ export async function ensureLoaded(): Promise<void> {
   const sess = await sessionGet<{ k: string }>(SESSION_KEY);
   if (!sess?.k) return; // genuinely locked
   const store = await loadStore();
-  if (!store || store.version !== STORE_VERSION) {
+  if (!store || store.version > STORE_VERSION) {
     await sessionClear(SESSION_KEY);
     return;
   }
   const key = await importKeyRaw(sess.k);
-  if (!(await checkVerifier(key, store.verifier, verifierAad()))) {
+  if (!(await checkVerifier(key, store.verifier, verifierAadFor(store.version)))) {
     await sessionClear(SESSION_KEY); // stale session (password changed/tamper)
     return;
   }
+  let vault = store;
+  if (store.version < STORE_VERSION) {
+    // The cached session key IS the vault key, so the re-wrap can run here too —
+    // a browser that stayed open across an update migrates without a prompt. On
+    // any failure, drop the session and let unlock() retry with the password.
+    try {
+      vault = await migrateStore(key, store, STORE_VERSION, VAULT_MIGRATIONS);
+      await saveStore(vault);
+    } catch {
+      await sessionClear(SESSION_KEY);
+      return;
+    }
+  }
   unlockedMnemonics.clear();
-  for (const id of store.order) {
-    const w = store.wallets[id];
+  for (const id of vault.order) {
+    const w = vault.wallets[id];
     if (w?.enc) unlockedMnemonics.set(id, await decryptString(key, w.enc, mnemonicAad(id))); // skip hardware
   }
   derivedKey = key;
