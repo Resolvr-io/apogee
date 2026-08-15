@@ -389,12 +389,18 @@ export interface WalletTxDTO {
 // ---- side panel / prompt → service worker ----------------------------------
 
 export type WalletRequest =
-  | { type: "wallet/getState" }
+  // panelSession: random id minted per panel-document load. Lets the SW tell
+  // "same panel session" from "panel closed and reopened" for the auto-lock-
+  // "never" step-up. Absent from non-panel callers.
+  | { type: "wallet/getState"; panelSession?: string }
   | { type: "wallet/initializeKeystore"; password: string }
   | { type: "wallet/unlock"; password: string }
   | { type: "wallet/lock" }
   | { type: "wallet/reset" }
   | { type: "wallet/verifyPassword"; password: string }
+  // Auto-lock "never" step-up: re-verify the password from a reopened panel.
+  // Shares the unlock throttle with unlock/verifyPassword (same password oracle).
+  | { type: "wallet/stepUp"; panelSession?: string; password: string }
   // Unlock-attempt throttle state (fails / cooldown / hard lock) for the UI.
   | { type: "wallet/getUnlockThrottle" }
   // password (first run) initializes the keystore as part of the same call.

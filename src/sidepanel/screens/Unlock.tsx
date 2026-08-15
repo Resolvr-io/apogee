@@ -256,3 +256,48 @@ export function Unlock({
     </WelcomeShell>
   );
 }
+
+/** Auto-lock "never" step-up: the wallet stays unlocked in the background for the
+ *  whole browser session, so a freshly opened panel re-verifies the password
+ *  before it gets the wallet UI. Not the lock screen — there's no vault to
+ *  unlock, just an identity to prove — so the forgot/reset paths don't apply. */
+export function StepUp({ onDone }: { onDone: () => void }) {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      if (!(await wallet.stepUp(password))) throw new Error("Incorrect password");
+      onDone();
+    } catch (err) {
+      // unlockErrMessage: the SW shares the unlock throttle with this oracle.
+      setError(unlockErrMessage(err));
+      setPassword("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <WelcomeShell subtitle="Auto-lock is off. Re-enter your password to continue.">
+      <form onSubmit={submit} className="flex flex-col gap-3">
+        <Field label="Password">
+          <Input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoFocus
+          />
+        </Field>
+        <ErrorText>{error}</ErrorText>
+        <Button type="submit" disabled={busy || !password}>
+          {busy ? <Spinner /> : "Continue"}
+        </Button>
+      </form>
+    </WelcomeShell>
+  );
+}

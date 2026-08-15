@@ -12,7 +12,7 @@ import { Scene, type SceneIntro } from "@/sidepanel/components/Scene";
 import { useAnimations } from "@/sidepanel/use-animations";
 import { useIdleHeartbeat } from "@/sidepanel/use-idle-heartbeat";
 import { Onboarding } from "@/sidepanel/screens/Onboarding";
-import { Unlock } from "@/sidepanel/screens/Unlock";
+import { StepUp, Unlock } from "@/sidepanel/screens/Unlock";
 import { Wallet, type View } from "@/sidepanel/screens/Wallet";
 import { ApprovalOverlay } from "@/sidepanel/screens/Approval";
 import type { ApprovalRequest } from "@/engine/protocol";
@@ -324,7 +324,11 @@ export function App() {
     return () => browser.runtime.onMessage.removeListener(onMsg);
   }, [refresh, showToast]);
 
-  const unlocked = Boolean(state && state.initialized && !state.locked && state.wallets.length > 0);
+  // needsStepUp: auto-lock is "never" and this panel session hasn't re-verified
+  // the password — treat it like locked for what the panel shows (see StepUp).
+  const unlocked = Boolean(
+    state && state.initialized && !state.locked && !state.needsStepUp && state.wallets.length > 0,
+  );
   // Same first-run test useMoonIntro gates the cinematic on. Nothing to replay
   // once a wallet exists by any route (create / restore / watch-only / Jade), so
   // the debug control retires with the screen it belongs to.
@@ -591,6 +595,9 @@ function Body({
   }
   if (state.locked) {
     return <Unlock onDone={refresh} onImport={onImport} onReset={onReset} />;
+  }
+  if (state.needsStepUp) {
+    return <StepUp onDone={refresh} />;
   }
   return (
     <Wallet state={state} view={view} onView={onView} onToast={onToast} onReset={onReset} />

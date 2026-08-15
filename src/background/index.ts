@@ -164,6 +164,38 @@ async function rescheduleAutoLock(): Promise<void> {
   await armAutoLock(minutes);
 }
 
+// ---- auto-lock "never" step-up ----------------------------------------------
+//
+// With auto-lock "never", the unlocked session (and its storage.session key
+// cache) lives until the browser exits — closing the panel restricts nothing. So
+// each NEW panel session must re-verify the password before the wallet UI is
+// shown. The panel mints a random id at document load; this record remembers the
+// last one seen and whether it still owes a step-up. Kept in storage.session
+// (not SW memory) so an SW eviction doesn't re-prompt the same open panel, and
+// with the same lifetime as the unlocked session it guards: gone at browser exit.
+const PANEL_STEPUP_KEY = "apogee:panelStepUp";
+interface PanelStepUp {
+  session: string;
+  pending: boolean;
+}
+async function panelStepUpState(): Promise<PanelStepUp> {
+  const v = (await browser.storage.session.get(PANEL_STEPUP_KEY))[PANEL_STEPUP_KEY];
+  return v && typeof v === "object" ? (v as PanelStepUp) : { session: "", pending: false };
+}
+async function savePanelStepUp(rec: PanelStepUp): Promise<void> {
+  await browser.storage.session.set({ [PANEL_STEPUP_KEY]: rec });
+}
+
+// Pin storage.session to trusted contexts — the default, and the only level this
+// design tolerates: extension pages and the SW only, never content scripts or
+// web pages, which is what keeps the session key cache unreadable outside the
+// extension. Stated explicitly so widening it later is a deliberate, visible
+// edit. Firefox has no setAccessLevel; its storage.session is extension-only by
+// construction.
+if (typeof browser.storage.session?.setAccessLevel === "function") {
+  void browser.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+}
+
 // wallet/* messages that count as genuine user activity and so defer the idle
 // auto-lock. Passive/polled reads (getState, sync, getTransactions, getBalance,
 // getRate, getAsset, qr, getConnectedSites, getAutoLock) are intentionally
@@ -182,6 +214,7 @@ const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
   "wallet/swapQuote",
   "wallet/revealMnemonic",
   "wallet/verifyPassword",
+  "wallet/stepUp",
   "wallet/setAutoLock",
   "wallet/setChainServer",
   "wallet/getAddress",
@@ -435,22 +468,51 @@ async function walletInfo(walletId?: string) {
 async function handleUi(msg: WalletRequest): Promise<unknown> {
   await keystore.ensureLoaded(); // recover unlocked state after SW eviction
   switch (msg.type) {
-    case "wallet/getState":
-      return keystore.getState();
+    case "wallet/getState": {
+      const s = await keystore.getState();
+      // Auto-lock "never": a panel session the SW hasn't seen must re-verify the
+      // password before it gets the wallet UI (the unlocked session otherwise
+      // lives until the browser exits). See panelStepUpState for the lifetime.
+      if (!msg.panelSession) return s;
+      const rec = await panelStepUpState();
+      if (msg.panelSession === rec.session) {
+        return { ...s, needsStepUp: rec.pending && s.initialized && !s.locked };
+      }
+      const pending = s.initialized && !s.locked && (await autoLockMinutes()) === 0;
+      await savePanelStepUp({ session: msg.panelSession, pending });
+      return { ...s, needsStepUp: pending };
+    }
 
     case "wallet/initializeKeystore":
       return keystore.initialize(msg.password);
 
-    case "wallet/unlock":
-      return keystore.unlock(msg.password);
+    case "wallet/unlock": {
+      const r = await keystore.unlock(msg.password);
+      // The user just proved the password — no step-up owed for this panel.
+      await savePanelStepUp({ session: (await panelStepUpState()).session, pending: false });
+      return r;
+    }
+
+    case "wallet/stepUp": {
+      // Same password oracle as unlock/verifyPassword, so it shares the throttle.
+      const ok = await keystore.verifyPassword(msg.password);
+      if (ok) {
+        await savePanelStepUp({ session: msg.panelSession ?? (await panelStepUpState()).session, pending: false });
+      }
+      return ok;
+    }
 
     case "wallet/lock":
       // A parked scanned phrase must not outlive the session that scanned it.
       clearQrSecret();
+      await browser.storage.session.remove(PANEL_STEPUP_KEY);
       return keystore.lock();
 
     case "wallet/reset": {
       clearQrSecret();
+      // The step-up record guards the vault being destroyed — don't let it
+      // (or a pending prompt) survive into the next one.
+      await browser.storage.session.remove(PANEL_STEPUP_KEY);
       // Revoke connected dapp sessions on a wipe, so any connected app
       // disconnects (its next call gets NOT_CONNECTED) instead of going stale.
       await removeAllConnectedSites();
@@ -601,8 +663,8 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
 
     case "wallet/revealMnemonic": {
       // Step-up auth: verifyPassword re-derives + checks the password, but the
-      // returned seed comes from the in-memory unlocked cache (getMnemonic), not a
-      // fresh decrypt — the wallet is already unlocked here.
+      // returned seed comes from the unlocked cache (getMnemonic), not a fresh
+      // decrypt keyed to this attempt — the wallet is already unlocked here.
       if (!(await keystore.verifyPassword(msg.password))) throw new Error("Incorrect password");
       return keystore.getMnemonic(msg.walletId);
     }
@@ -709,9 +771,14 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
     case "wallet/getAutoLock":
       return autoLockMinutes();
 
-    case "wallet/setAutoLock":
+    case "wallet/setAutoLock": {
       await browser.storage.local.set({ [AUTOLOCK_KEY]: msg.minutes });
+      // Moving off "never" ends the step-up regime — a pending prompt is moot.
+      if (msg.minutes > 0) {
+        await savePanelStepUp({ session: (await panelStepUpState()).session, pending: false });
+      }
       return;
+    }
 
     case "wallet/touch":
       // No-op here; the AUTOLOCK_DEFERRING branch in the router re-arms the alarm.
@@ -769,7 +836,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       // A local wallet signs in the offscreen engine with the unlocked mnemonic.
       const sent = await engine<SendResult>({
         kind: "signBroadcast",
-        mnemonic: keystore.getMnemonic(info.id),
+        mnemonic: await keystore.getMnemonic(info.id),
         descriptor: info.descriptor,
         network: info.network,
         pset: msg.pset,
@@ -795,7 +862,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
           throw new Error("Enter your password to swap.");
         }
       }
-      const mnemonic = keystore.getMnemonic(info.id);
+      const mnemonic = await keystore.getMnemonic(info.id);
       // The SideSwap client lives only for this swap call — connect, execute,
       // disconnect. A WebSocket in the service worker is fine (MV3 background).
       const client = new SideSwapClient(info.network);
@@ -2596,7 +2663,7 @@ async function handleApprovalDecision(
       } else {
         const signed = await engine<ProviderPsetSignResultDTO>({
           kind: "signProviderPset",
-          mnemonic: keystore.getMnemonic(pending.walletId),
+          mnemonic: await keystore.getMnemonic(pending.walletId),
           descriptor: pending.descriptor,
           network: pending.network,
           pset: pending.pset,
@@ -2685,7 +2752,7 @@ async function handleApprovalDecision(
     }
   }
   try {
-    const mnemonic = keystore.getMnemonic(pending.walletId);
+    const mnemonic = await keystore.getMnemonic(pending.walletId);
     const result = await engine<SendResult>({
       kind: "signBroadcast",
       mnemonic,
