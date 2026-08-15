@@ -1,12 +1,14 @@
 name: Claude Code Review
 
 # The reviewer only needs to read the diff and post comments — contents stays
-# read-only and there is no OIDC use (auth is the OAuth token secret, which
-# fork PRs never receive). Fork PRs are the classic prompt-injection carrier,
-# so this workflow deliberately holds minimal permissions.
+# read-only, which is the fork-PR hardening that matters (fork PRs never
+# receive the OAuth token secret either). id-token: write is required:
+# claude-code-action fetches an OIDC token at startup even with OAuth-token
+# auth, and without the grant the action dies before the review starts.
 permissions:
   contents: read
   pull-requests: write
+  id-token: write
 
 on:
   pull_request:
