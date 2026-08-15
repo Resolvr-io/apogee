@@ -23,6 +23,10 @@ const ICON_API: Record<LiquidNetwork, string | null> = {
 
 const CACHE_PREFIX = "apogee:asseticon:";
 const failed = new Set<string>(); // in-memory negative cache (session only)
+// Bumped by clearAssetIconCache so an in-flight fetch started BEFORE a wipe
+// can't re-seed the cache after it (the fetch closure captures the generation
+// it started under and drops the result if a clear has since intervened).
+let generation = 0;
 
 /** Icon source for an asset: bundled path, cached/fetched data-URI, or null
  *  (caller renders a monogram fallback). */
@@ -38,6 +42,7 @@ export async function assetIconSrc(
   if (typeof cached === "string") return cached;
   const base = ICON_API[network];
   if (!base) return null;
+  const gen = generation;
   try {
     const res = await fetch(`${base}/${assetId}/icon`);
     if (!res.ok) throw new Error(`${res.status}`);
@@ -50,6 +55,7 @@ export async function assetIconSrc(
       r.onerror = () => reject(r.error ?? new Error("icon read failed"));
       r.readAsDataURL(blob);
     });
+    if (gen !== generation) return null; // cleared mid-fetch — don't re-seed
     await browser.storage.local.set({ [key]: dataUri });
     return dataUri;
   } catch {
@@ -59,10 +65,19 @@ export async function assetIconSrc(
 }
 
 /** Drop every cached icon. The cache keys name the assets the wallet has
- *  displayed, so a wipe must not leave that fingerprint behind. */
+ *  displayed, so a wipe must not leave that fingerprint behind.
+ *
+ *  Storage is the durable part; `failed` and in-flight fetches are per module
+ *  instance (the side panel is the fetcher — the SW's instance never populates
+ *  them), so a clear issued from the SW resets storage and this instance's own
+ *  in-memory state, while the panel's session-scoped state dies with its
+ *  document. Callers must not AWAIT this inside a wipe path as a hard
+ *  dependency — a storage failure here must never block the vault teardown
+ *  (see the reset handler's convention). */
 export async function clearAssetIconCache(): Promise<void> {
+  generation++; // an in-flight fetch from before the clear must not re-seed
+  failed.clear();
   const all = await browser.storage.local.get(null);
   const keys = Object.keys(all).filter((k) => k.startsWith(CACHE_PREFIX));
-  failed.clear();
   if (keys.length > 0) await browser.storage.local.remove(keys);
 }

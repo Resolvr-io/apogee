@@ -475,8 +475,13 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
         };
       });
       // Cached asset icons name the assets the wiped wallet displayed — clear
-      // them so the reset doesn't leave that fingerprint in storage.
-      await clearAssetIconCache();
+      // them so the reset doesn't leave that fingerprint in storage. Failure-
+      // tolerant and NOT awaited: the icon cache is the least important thing
+      // in this handler, and a storage error in front of keystore.reset() would
+      // leave the vault intact on a device the user asked to wipe.
+      clearAssetIconCache().catch((err) => {
+        console.warn("[apogee] asset-icon cache clear failed during reset", err);
+      });
       return keystore.reset();
     }
 
