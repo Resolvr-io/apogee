@@ -15,7 +15,6 @@
 import { browser } from "@/lib/ext";
 import {
   type Enc,
-  type Kdf,
   checkVerifier,
   decryptString,
   deriveKey,
@@ -26,6 +25,14 @@ import {
   newKdf,
 } from "./crypto";
 import { isValidFingerprint } from "@/lib/utils";
+import {
+  type StoreShape,
+  VAULT_MIGRATIONS,
+  hasMigrationPath,
+  migrateStore,
+  mnemonicAad as mnemonicAadFor,
+  verifierAad as verifierAadFor,
+} from "./migrations";
 
 export type LiquidNetwork = "liquid" | "liquidtestnet" | "regtest";
 
@@ -44,7 +51,10 @@ const STORE_KEY = "apogee_keystore";
 const ACTIVE_KEY = "apogee_active_wallet";
 const SESSION_KEY = "apogee_session";
 const THROTTLE_KEY = "apogee_unlock_throttle";
-const STORE_VERSION = 2; // v2 binds AES-GCM AAD to each envelope; v1 vaults must be reset
+// v2 binds AES-GCM AAD to each envelope. Older vaults migrate in place while
+// unlocked (see migrations.ts) — v1 predates public release and has no
+// registered path, so those still require a reset.
+const STORE_VERSION = 2;
 
 /** A wallet record as persisted (mnemonic encrypted, descriptor cleartext). */
 export interface WalletRecord {
@@ -56,14 +66,6 @@ export interface WalletRecord {
   fingerprint: string;
   enc?: Enc; // AES-GCM of the BIP-39 mnemonic — absent for hardware (jade) wallets
   createdAt: number;
-}
-
-interface StoreShape {
-  version: number;
-  kdf: Kdf;
-  verifier: Enc;
-  wallets: Record<string, WalletRecord>;
-  order: string[];
 }
 
 /** Public, secret-free view of a wallet (safe to send to the UI). */
@@ -247,12 +249,14 @@ export async function getState(): Promise<KeystoreState> {
 // context so blobs can't be transplanted between records or version-downgraded.
 // The verifier is bound to the store format version; each mnemonic is also bound
 // to its wallet id — all mnemonics share one derived key, so without this a
-// ciphertext could be swapped between wallet slots and still decrypt.
+// ciphertext could be swapped between wallet slots and still decrypt. The
+// version-parameterized scheme lives in migrations.ts (a re-wrap needs both the
+// old and the new AAD); these zero-arg forms always mean the CURRENT version.
 function verifierAad(): string {
-  return `apogee:verifier:v${STORE_VERSION}`;
+  return verifierAadFor(STORE_VERSION);
 }
 function mnemonicAad(walletId: string): string {
-  return `apogee:mnemonic:v${STORE_VERSION}:${walletId}`;
+  return mnemonicAadFor(STORE_VERSION, walletId);
 }
 
 /** Create a fresh keystore behind a password, left unlocked. No wallet yet. */
@@ -273,22 +277,54 @@ export async function initialize(password: string): Promise<void> {
   await clearUnlockFailures(); // fresh vault — a stale counter must not guard it
 }
 
-/** Derive the key from the password and verify it. Mnemonics decrypt on demand. */
+/** Derive the key from the password, verify it, and migrate an older vault
+ *  format in place if needed. Mnemonics decrypt on demand. */
 export async function unlock(password: string): Promise<void> {
   const store = await loadStore();
   if (!store) throw new Error("Keystore not initialized");
-  if (store.version !== STORE_VERSION) {
+  if (store.version > STORE_VERSION) {
+    // Never touch a newer vault: this build doesn't know its format, and a
+    // wrong-handed write could destroy it (e.g. after downgrading the extension).
+    throw new Error(
+      "This vault was written by a newer version of Apogee. Update the extension, or reset Apogee and re-import your recovery phrase.",
+    );
+  }
+  // Decide reachability BEFORE the password or the throttle: an unmigratable
+  // older store (or a corrupt version field) would otherwise fail the verifier
+  // check below — its AAD scheme was never written by this build — and read as
+  // "Incorrect password" for the correct password, burning the attempt counter
+  // toward the hard lock.
+  if (store.version !== STORE_VERSION && !hasMigrationPath(store.version, STORE_VERSION, VAULT_MIGRATIONS)) {
     throw new Error(
       "Apogee's encrypted storage format changed in this update. Reset Apogee and re-import your recovery phrase.",
     );
   }
   await assertAttemptAllowed();
   const key = await deriveKey(password, store.kdf);
-  if (!(await checkVerifier(key, store.verifier, verifierAad()))) {
+  // Verify against the version ON DISK — the verifier is version-bound, and the
+  // password must prove itself against the vault as it exists, pre-migration.
+  if (!(await checkVerifier(key, store.verifier, verifierAadFor(store.version)))) {
     await recordUnlockFailure();
     throw new Error("Incorrect password");
   }
   await clearUnlockFailures();
+  if (store.version < STORE_VERSION) {
+    // One-step re-wrap while the key is live (see migrations.ts). Nothing is
+    // persisted unless every step succeeds, so a failure leaves the old-format
+    // vault intact and lands on the same recovery message as before.
+    try {
+      const vault = await migrateStore(key, store, STORE_VERSION, VAULT_MIGRATIONS);
+      await saveStore(vault);
+    } catch (err) {
+      // Diagnostic only — the error is an OperationError/quota error, not key
+      // material, and a bare field report of "it told me to reset" is otherwise
+      // indistinguishable between a bad envelope and a failed storage write.
+      console.warn("vault migration failed", err);
+      throw new Error(
+        "Apogee's encrypted storage format changed in this update and couldn't be upgraded in place. Reset Apogee and re-import your recovery phrase.",
+      );
+    }
+  }
   // Mnemonics are NOT decrypted here — getMnemonic decrypts on demand, so a
   // plaintext seed enters SW memory only while that wallet is actually in use,
   // never all wallets at once for the length of the session.
@@ -336,6 +372,12 @@ export async function restoreLocal(snap: Record<string, unknown>): Promise<void>
 export async function verifyPassword(password: string): Promise<boolean> {
   const store = await loadStore();
   if (!store) return false;
+  // These read the verifier under the CURRENT AAD scheme, which is only valid
+  // for a current-version store. Both are step-up auth behind an already-
+  // unlocked vault (which implies a migrated store); refuse an older one
+  // explicitly rather than checking a stale scheme — a wrong-handed "false"
+  // here would burn the unlock throttle for a correct password.
+  if (store.version !== STORE_VERSION) throw new Error("Keystore format needs upgrading — unlock first");
   await assertAttemptAllowed();
   const key = await deriveKey(password, store.kdf);
   const ok = await checkVerifier(key, store.verifier, verifierAad());
@@ -349,6 +391,10 @@ export async function verifyPassword(password: string): Promise<boolean> {
 export async function changePassword(oldPassword: string, newPassword: string): Promise<void> {
   const store = await loadStore();
   if (!store) throw new Error("Keystore not initialized");
+  // Same invariant as verifyPassword — and stronger here: the re-wrap below
+  // writes current-version envelopes regardless of what it read, so running it
+  // against an older store would corrupt every seed in the vault.
+  if (store.version !== STORE_VERSION) throw new Error("Keystore format needs upgrading — unlock first");
   await assertAttemptAllowed();
   const oldKey = await deriveKey(oldPassword, store.kdf);
   if (!(await checkVerifier(oldKey, store.verifier, verifierAad()))) {
@@ -555,14 +601,34 @@ export async function ensureLoaded(): Promise<void> {
   const sess = await sessionGet<{ k: string }>(SESSION_KEY);
   if (!sess?.k) return; // genuinely locked
   const store = await loadStore();
-  if (!store || store.version !== STORE_VERSION) {
+  if (!store || store.version > STORE_VERSION) {
+    await sessionClear(SESSION_KEY);
+    return;
+  }
+  if (store.version !== STORE_VERSION && !hasMigrationPath(store.version, STORE_VERSION, VAULT_MIGRATIONS)) {
+    // Unmigratable here too (corrupt version field or a pruned chain entry):
+    // the verifier check below would fail against an AAD scheme this build
+    // never wrote, and we'd drop a perfectly good session for no reason.
     await sessionClear(SESSION_KEY);
     return;
   }
   const key = await importKeyRaw(sess.k);
-  if (!(await checkVerifier(key, store.verifier, verifierAad()))) {
+  if (!(await checkVerifier(key, store.verifier, verifierAadFor(store.version)))) {
     await sessionClear(SESSION_KEY); // stale session (password changed/tamper)
     return;
+  }
+  if (store.version < STORE_VERSION) {
+    // The cached session key IS the vault key, so the re-wrap can run here too —
+    // a browser that stayed open across an update migrates without a prompt. On
+    // any failure, drop the session and let unlock() retry with the password.
+    try {
+      const vault = await migrateStore(key, store, STORE_VERSION, VAULT_MIGRATIONS);
+      await saveStore(vault);
+    } catch (err) {
+      console.warn("vault migration failed", err);
+      await sessionClear(SESSION_KEY);
+      return;
+    }
   }
   // Same as unlock(): recover the key, decrypt nothing eagerly.
   unlockedMnemonics.clear();
