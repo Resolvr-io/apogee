@@ -4,6 +4,8 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  # claude-code-action fetches an OIDC token at startup even with OAuth-token
+  # auth — without this grant the action dies before doing anything.
   id-token: write
 
 on:
@@ -14,15 +16,27 @@ on:
 
 jobs:
   claude:
+    # Any GitHub user can comment on a public repo, so the @claude trigger must
+    # be gated to people we trust with the workflow's write permissions.
+    # OWNER only fires on user-owned repos — this is an org repo, where org
+    # members report MEMBER — so MEMBER is the arm that actually admits the
+    # maintainers. It covers ANY org member (including read-only ones); fine
+    # for a small org, but swap in a `gh api .../permission` gate step if the
+    # org ever outgrows the set of people who should hold contents: write.
+    # The gate trusts the COMMENTER, not the content — a trusted commenter can
+    # still point @claude at untrusted PR text; that residual is inherent.
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR') &&
+      ((github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')))
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@9d7150bc8a3dae8149739a88019d192b579ad90c # v1
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         with:

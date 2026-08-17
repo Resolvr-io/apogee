@@ -50,6 +50,9 @@ function connect(): void {
 }
 
 console.log("[apogee] offscreen ready");
+// Engine requests arrive over the dedicated port only — the broadcast listener
+// this file used to carry was removed with the port rewrite, which is also what
+// retired the co-installed-extension sender gate on it.
 connect();
 
 function errMsg(err: unknown): string {

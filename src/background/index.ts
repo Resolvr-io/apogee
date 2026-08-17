@@ -22,6 +22,7 @@ import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "
 import { SCAN_STATE_DB } from "@/engine/protocol";
 import { providerPsetReviewsMatch } from "@/engine/provider-pset-review";
 import { claimSecret, type ParkedSecret } from "@/lib/qr-secret";
+import { clearAssetIconCache } from "@/lib/asset-icons";
 import { evaluateUpdate } from "@/lib/version-check";
 import { APP_VERSION } from "@/version";
 import { browser } from "@/lib/ext";
@@ -538,6 +539,14 @@ async function handleUi(msg: UiRequest): Promise<unknown> {
           console.warn("[apogee] scan-state delete blocked during reset");
           resolve();
         };
+      });
+      // Cached asset icons name the assets the wiped wallet displayed — clear
+      // them so the reset doesn't leave that fingerprint in storage. Failure-
+      // tolerant and NOT awaited: the icon cache is the least important thing
+      // in this handler, and a storage error in front of keystore.reset() would
+      // leave the vault intact on a device the user asked to wipe.
+      clearAssetIconCache().catch((err) => {
+        console.warn("[apogee] asset-icon cache clear failed during reset", err);
       });
       return keystore.reset();
     }

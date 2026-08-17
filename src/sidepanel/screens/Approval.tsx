@@ -241,8 +241,11 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
                 ? "Sign PSET"
                 : "Approve transaction"}
         </h2>
-        <p className="-mt-1 truncate text-xs text-[color:var(--text-subtle)]" title={request.origin}>
-          {request.origin}
+        {/* Middle-truncate: clipping the end would hide the registrable
+            domain/TLD behind a long subdomain — the part that identifies the
+            site. Full origin stays on hover. */}
+        <p className="-mt-1 text-xs text-[color:var(--text-subtle)]" title={request.origin}>
+          {shortenHex(request.origin, 18, 14)}
         </p>
       </div>
 
@@ -290,12 +293,9 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
       ) : (
         <>
           <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
-            <Row
-              label="To"
-              value={shortenHex(sendReview?.address ?? "", 10, 8)}
-              title={sendReview?.address}
-              mono
-            />
+            {/* Full address, never truncated — the recipient is the one field
+                the user must be able to verify against what they were told. */}
+            <Row label="To" value={sendReview?.address ?? ""} mono wrap />
             <Row label="Network" value={networkLabel(request.network)} />
             {sendReview?.accountIdentifier && (
               <Row
@@ -311,6 +311,18 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
                 value={shortenHex(sendReview.assetId, 18, 12)}
                 title={sendReview.assetId}
                 mono
+              />
+            )}
+            {sendReview?.assetId && sendReview.assetTicker && (
+              /* The ticker comes from the public asset registry, which an
+                 issued asset can steer — it's a display hint, never proof of
+                 what the asset is. The ID above is the identifier. The marker
+                 leads and the ticker is clamped because Row truncates: a long
+                 hostile ticker must never be able to clip "· registry" off. */
+              <Row
+                label="Label"
+                value={`registry · ${sendReview.assetTicker.slice(0, 24)}`}
+                title={`"${sendReview.assetTicker}" comes from the public asset registry and is not verified — identify the asset by its ID above.`}
               />
             )}
             <Row
