@@ -241,8 +241,11 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
                 ? "Sign PSET"
                 : "Approve transaction"}
         </h2>
-        <p className="-mt-1 truncate text-xs text-[color:var(--text-subtle)]" title={request.origin}>
-          {request.origin}
+        {/* Middle-truncate: clipping the end would hide the registrable
+            domain/TLD behind a long subdomain — the part that identifies the
+            site. Full origin stays on hover. */}
+        <p className="-mt-1 text-xs text-[color:var(--text-subtle)]" title={request.origin}>
+          {shortenHex(request.origin, 18, 14)}
         </p>
       </div>
 
