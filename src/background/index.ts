@@ -21,8 +21,8 @@ import * as keystore from "@/keystore/keystore";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "@/lib/debug";
 import { SCAN_STATE_DB } from "@/engine/protocol";
 import { providerPsetReviewsMatch } from "@/engine/provider-pset-review";
-import { isNoReceiverError, shouldRetryEngineSend } from "@/lib/engine-retry";
 import { claimSecret, type ParkedSecret } from "@/lib/qr-secret";
+import { clearAssetIconCache } from "@/lib/asset-icons";
 import { evaluateUpdate } from "@/lib/version-check";
 import { APP_VERSION } from "@/version";
 import { browser } from "@/lib/ext";
@@ -46,6 +46,7 @@ import type {
   DerivedWallet,
   DescriptorInfo,
   EngineRequest,
+  EnginePortReply,
   PrepareSendResult,
   PriceHistory,
   ProviderPsetAnalysisDTO,
@@ -64,6 +65,7 @@ import type {
   SendResult,
   SendReview,
   SyncResult,
+  UiRequest,
   WalletRequest,
   WalletIdentity,
   WalletTxDTO,
@@ -164,13 +166,59 @@ async function rescheduleAutoLock(): Promise<void> {
   await armAutoLock(minutes);
 }
 
+// ---- auto-lock "never" step-up ----------------------------------------------
+//
+// With auto-lock "never", the unlocked session (and its storage.session key
+// cache) lives until the browser exits — closing the panel restricts nothing. So
+// each NEW panel session must re-verify the password before the wallet UI is
+// shown. The panel mints a random id at document load; this record remembers the
+// last one seen and whether it still owes a step-up. Kept in storage.session
+// (not SW memory) so an SW eviction doesn't re-prompt the same open panel, and
+// with the same lifetime as the unlocked session it guards: gone at browser exit.
+const PANEL_STEPUP_KEY = "apogee:panelStepUp";
+// session id → still owes a step-up. A MAP, not a single slot: the side panel is
+// per-window, so two open windows are two documents with two session ids, and a
+// single record would have them overwrite each other and ping-pong between
+// step-up prompts forever. Bounded so long-lived sessions can't accumulate.
+const PANEL_STEPUP_MAX = 16;
+async function panelStepUpState(): Promise<Record<string, boolean>> {
+  const v = (await browser.storage.session.get(PANEL_STEPUP_KEY))[PANEL_STEPUP_KEY];
+  return v && typeof v === "object" ? (v as Record<string, boolean>) : {};
+}
+async function savePanelStepUp(map: Record<string, boolean>): Promise<void> {
+  // Prune to the most recent MAX entries (object key order = insertion order).
+  const entries = Object.entries(map);
+  const bounded = Object.fromEntries(entries.slice(-PANEL_STEPUP_MAX));
+  await browser.storage.session.set({ [PANEL_STEPUP_KEY]: bounded });
+}
+async function setPanelStepUp(session: string, pending: boolean): Promise<void> {
+  const map = await panelStepUpState();
+  delete map[session]; // re-insert so the entry moves to the back (LRU order)
+  map[session] = pending;
+  await savePanelStepUp(map);
+}
+
+// Pin storage.session to trusted contexts — the default, and the only level this
+// design tolerates: extension pages and the SW only, never content scripts or
+// web pages, which is what keeps the session key cache unreadable outside the
+// extension. Stated explicitly so widening it later is a deliberate, visible
+// edit. Firefox has no setAccessLevel; its storage.session is extension-only by
+// construction.
+if (typeof browser.storage.session?.setAccessLevel === "function") {
+  // Loud on failure: a silently widened access level is exactly what the
+  // comment above says this must never become.
+  browser.storage.session
+    .setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" })
+    .catch((err: unknown) => console.error("[apogee] storage.session.setAccessLevel failed", err));
+}
+
 // wallet/* messages that count as genuine user activity and so defer the idle
 // auto-lock. Passive/polled reads (getState, sync, getTransactions, getBalance,
 // getRate, getAsset, qr, getConnectedSites, getAutoLock) are intentionally
 // excluded — otherwise the side panel's 20s balance poll would re-arm the alarm
 // forever and an unattended wallet would never idle-lock while the panel is open.
 // Allowlist, so any type not listed fails secure (does not defer the lock).
-const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
+const AUTOLOCK_DEFERRING = new Set<UiRequest["type"]>([
   "wallet/unlock",
   "wallet/create",
   "wallet/restore",
@@ -182,6 +230,7 @@ const AUTOLOCK_DEFERRING = new Set<WalletRequest["type"]>([
   "wallet/swapQuote",
   "wallet/revealMnemonic",
   "wallet/verifyPassword",
+  "wallet/stepUp",
   "wallet/setAutoLock",
   "wallet/setChainServer",
   "wallet/getAddress",
@@ -267,11 +316,11 @@ async function chainServer(network: LiquidNetwork): Promise<string | undefined> 
 const OFFSCREEN_URL = "src/offscreen/offscreen.html";
 let creating: Promise<void> | null = null;
 
-// Bounded wait for the offscreen listener to register (see runEngine). Generous
-// enough to cover module evaluation on a cold, throttled profile, short enough that
-// a genuinely dead document surfaces an error instead of hanging the UI:
-// 8 × 150ms ≈ 1.2s worst case. wasm loads lazily inside `handle`, so this waits only
-// on the listener, not on lwk itself.
+// Bounded wait for the offscreen port to come up (see runEngine). Generous enough
+// to cover module evaluation on a cold, throttled profile plus one reconnect
+// cadence tick (see offscreen.ts), short enough that a genuinely dead document
+// surfaces an error instead of hanging the UI: 8 × 150ms ≈ 1.2s worst case. wasm
+// loads lazily inside `handle`, so this waits only on the channel, not on lwk.
 const ENGINE_READY_RETRIES = 8;
 const ENGINE_READY_RETRY_MS = 150;
 
@@ -310,6 +359,77 @@ async function closeOffscreen(): Promise<void> {
   if (existing.length > 0) await chrome.offscreen.closeDocument().catch(() => {});
 }
 
+// ---- SW ↔ offscreen engine port ---------------------------------------------
+//
+// Engine requests carry the unlocked mnemonic (sign/derive/restore), so they must
+// NEVER ride `runtime.sendMessage`: an untargeted send fans out to every
+// extension context — side panel, prompt, Jade signing tab — so any stray
+// listener or page XSS would receive signing material on every send. The offscreen
+// document instead opens a dedicated runtime.connect port to this worker, and
+// `runEngine` posts id-matched request/reply frames over it. Only the two
+// connected ends ever see a frame. (The request the SW itself sources is already
+// point-to-point; this closes the wire in the other direction too — restore,
+// below, keeps the panel→SW leg off the broadcast channel the same way.)
+
+const ENGINE_PORT_NAME = "apogee-engine";
+// Channel for UI-originated secret-bearing messages (restore mnemonic, scanned
+// seed phrase). Not a wallet/* catch-all — only the two types that must never be
+// broadcast are accepted on it.
+const SECRET_PORT_NAME = "apogee-secret";
+// One engine-port connection: the port plus ITS in-flight requests. In-flight
+// state is per-connection, not module-global — a superseded port's disconnect
+// (delivered asynchronously, possibly after a newer offscreen document already
+// reconnected) must settle only that port's own requests, never the live
+// connection's.
+interface EngineConn {
+  port: chrome.runtime.Port;
+  inFlight: Map<number, (reply: EnginePortReply) => void>;
+}
+let engineConn: EngineConn | null = null;
+let enginePortSeq = 0;
+const enginePortWaiters: (() => void)[] = [];
+
+/** Thrown when the port vanished between waitForEnginePort and the post. */
+class EnginePortGoneError extends Error {}
+
+/** Post one request on the engine port and await its id-matched reply. If the
+ *  port dies before the reply, the disconnect handler settles with an error —
+ *  the request may or may not have run, so the caller treats that as a hard
+ *  failure, never a retry. */
+function postEngine(req: EngineRequest): Promise<EnginePortReply> {
+  const conn = engineConn;
+  if (!conn) throw new EnginePortGoneError("engine port is not connected");
+  const id = ++enginePortSeq;
+  return new Promise<EnginePortReply>((resolve, reject) => {
+    conn.inFlight.set(id, resolve);
+    try {
+      conn.port.postMessage({ id, req });
+    } catch (e) {
+      conn.inFlight.delete(id);
+      reject(e);
+    }
+  });
+}
+
+/** Wait briefly for the offscreen document to connect its port. */
+function waitForEnginePort(ms: number): Promise<EngineConn | null> {
+  if (engineConn) return Promise.resolve(engineConn);
+  return new Promise((resolve) => {
+    const t = setTimeout(() => {
+      const i = enginePortWaiters.indexOf(wake);
+      if (i >= 0) enginePortWaiters.splice(i, 1);
+      resolve(engineConn);
+    }, ms);
+    const wake = () => {
+      clearTimeout(t);
+      const i = enginePortWaiters.indexOf(wake);
+      if (i >= 0) enginePortWaiters.splice(i, 1);
+      resolve(engineConn);
+    };
+    enginePortWaiters.push(wake);
+  });
+}
+
 /** Send a request to the offscreen engine and unwrap its reply. */
 // Serialize engine calls. lwk_wasm objects (Wollet/Signer) can't be used
 // re-entrantly: two overlapping fullScan/applyUpdate calls on the same cached
@@ -319,9 +439,10 @@ async function closeOffscreen(): Promise<void> {
 let engineQueue: Promise<unknown> = Promise.resolve();
 
 // One engine round-trip. On Chrome the wasm engine lives in the offscreen document
-// (message it); on Firefox there's no offscreen API, so the engine core runs
-// in-process in this background page. __FIREFOX__ is a build constant, so on Chrome
-// the Firefox branch — and the engine-core import — tree-shake away, and vice versa.
+// (drive it over the engine port); on Firefox there's no offscreen API, so the
+// engine core runs in-process in this background page. __FIREFOX__ is a build
+// constant, so on Chrome the Firefox branch — and the engine-core import —
+// tree-shake away, and vice versa.
 let ffEngine: ((req: EngineRequest) => Promise<unknown>) | null = null;
 async function runEngine<T>(req: EngineRequest): Promise<T> {
   if (__FIREFOX__) {
@@ -329,37 +450,30 @@ async function runEngine<T>(req: EngineRequest): Promise<T> {
     return (await ffEngine(req)) as T;
   }
   await ensureOffscreen();
-  // `createDocument` resolves once the document EXISTS, which is earlier than when
-  // offscreen.ts has evaluated its module and registered its onMessage listener. A
-  // request sent inside that gap reaches no receiver: sendMessage resolves
-  // `undefined` (or throws "Receiving end does not exist"), which used to surface
-  // as a bare "engine error" on the very first load — the first thing a new user
-  // sees. Not install-only either: MV3 evicts the service worker routinely, so the
-  // same window reopens whenever a call rebuilds the document.
-  //
-  // Retry on that specific "nobody was listening" shape only. A reply carrying
-  // `ok: false` is a real engine failure and is NOT retried — re-running a
-  // genuine error would just double the work and hide the cause.
+  // The document exists before offscreen.ts has evaluated and connected its port —
+  // and after an SW eviction the old port is gone until the document's reconnect
+  // timer fires. Retry on "no port yet" only; a reply carrying `ok: false` is a
+  // real engine failure and is NOT retried — re-running a genuine error would just
+  // double the work and hide the cause.
   for (let attempt = 0; ; attempt++) {
-    let reply: { ok?: boolean; value?: unknown; error?: string } | undefined;
-    let noReceiver = false;
-    try {
-      reply = await browser.runtime.sendMessage({ target: "offscreen", req });
-      noReceiver = shouldRetryEngineSend(reply);
-    } catch (e) {
-      // Chrome rejects with "Could not establish connection. Receiving end does
-      // not exist." when the listener isn't registered yet.
-      if (!isNoReceiverError(e)) throw e;
-      noReceiver = true;
-    }
-    if (!noReceiver) {
-      if (!reply?.ok) throw new Error(reply?.error ?? "engine error");
-      return reply.value as T;
+    const port = await waitForEnginePort(ENGINE_READY_RETRY_MS);
+    if (port) {
+      try {
+        const reply = await postEngine(req);
+        if (!reply?.ok) throw new Error(reply?.error ?? "engine error");
+        return reply.value as T;
+      } catch (e) {
+        // The port vanished between the wait and the post. Nothing was sent,
+        // so the request definitively did not run — unlike a mid-flight
+        // disconnect, retrying here is safe (and better than surfacing an
+        // internal error for a race the next attempt resolves).
+        if (e instanceof EnginePortGoneError) continue;
+        throw e;
+      }
     }
     if (attempt >= ENGINE_READY_RETRIES) {
       throw new Error("The wallet engine did not start. Reopen Apogee to try again.");
     }
-    await new Promise((r) => setTimeout(r, ENGINE_READY_RETRY_MS));
     await ensureOffscreen(); // recreate if the document died rather than lagged
   }
 }
@@ -432,25 +546,58 @@ async function walletInfo(walletId?: string) {
   return info;
 }
 
-async function handleUi(msg: WalletRequest): Promise<unknown> {
+async function handleUi(msg: UiRequest): Promise<unknown> {
   await keystore.ensureLoaded(); // recover unlocked state after SW eviction
   switch (msg.type) {
-    case "wallet/getState":
-      return keystore.getState();
+    case "wallet/getState": {
+      const s = await keystore.getState();
+      // Auto-lock "never": a panel session the SW hasn't seen must re-verify the
+      // password before it gets the wallet UI (the unlocked session otherwise
+      // lives until the browser exits). See panelStepUpState for the lifetime.
+      if (!msg.panelSession) return s;
+      const known = (await panelStepUpState())[msg.panelSession];
+      if (known !== undefined) {
+        return { ...s, needsStepUp: known && s.initialized && !s.locked };
+      }
+      const pending = s.initialized && !s.locked && (await autoLockMinutes()) === 0;
+      await setPanelStepUp(msg.panelSession, pending);
+      return { ...s, needsStepUp: pending };
+    }
 
-    case "wallet/initializeKeystore":
-      return keystore.initialize(msg.password);
+    case "wallet/initializeKeystore": {
+      const r = await keystore.initialize(msg.password);
+      // The user just SET the password — no step-up owed by any panel for this
+      // fresh vault (covers reset → re-onboard without a redundant prompt).
+      await browser.storage.session.remove(PANEL_STEPUP_KEY);
+      return r;
+    }
 
-    case "wallet/unlock":
-      return keystore.unlock(msg.password);
+    case "wallet/unlock": {
+      const r = await keystore.unlock(msg.password);
+      // The user just proved the password — no step-up owed for this panel.
+      if (msg.panelSession) await setPanelStepUp(msg.panelSession, false);
+      else await browser.storage.session.remove(PANEL_STEPUP_KEY);
+      return r;
+    }
+
+    case "wallet/stepUp": {
+      // Same password oracle as unlock/verifyPassword, so it shares the throttle.
+      const ok = await keystore.verifyPassword(msg.password);
+      if (ok && msg.panelSession) await setPanelStepUp(msg.panelSession, false);
+      return ok;
+    }
 
     case "wallet/lock":
       // A parked scanned phrase must not outlive the session that scanned it.
       clearQrSecret();
+      await browser.storage.session.remove(PANEL_STEPUP_KEY);
       return keystore.lock();
 
     case "wallet/reset": {
       clearQrSecret();
+      // The step-up record guards the vault being destroyed — don't let it
+      // (or a pending prompt) survive into the next one.
+      await browser.storage.session.remove(PANEL_STEPUP_KEY);
       // Revoke connected dapp sessions on a wipe, so any connected app
       // disconnects (its next call gets NOT_CONNECTED) instead of going stale.
       await removeAllConnectedSites();
@@ -472,6 +619,14 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
           console.warn("[apogee] scan-state delete blocked during reset");
           resolve();
         };
+      });
+      // Cached asset icons name the assets the wiped wallet displayed — clear
+      // them so the reset doesn't leave that fingerprint in storage. Failure-
+      // tolerant and NOT awaited: the icon cache is the least important thing
+      // in this handler, and a storage error in front of keystore.reset() would
+      // leave the vault intact on a device the user asked to wipe.
+      clearAssetIconCache().catch((err) => {
+        console.warn("[apogee] asset-icon cache clear failed during reset", err);
       });
       return keystore.reset();
     }
@@ -601,8 +756,8 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
 
     case "wallet/revealMnemonic": {
       // Step-up auth: verifyPassword re-derives + checks the password, but the
-      // returned seed comes from the in-memory unlocked cache (getMnemonic), not a
-      // fresh decrypt — the wallet is already unlocked here.
+      // returned seed comes from the unlocked cache (getMnemonic), not a fresh
+      // decrypt keyed to this attempt — the wallet is already unlocked here.
       if (!(await keystore.verifyPassword(msg.password))) throw new Error("Incorrect password");
       return keystore.getMnemonic(msg.walletId);
     }
@@ -709,9 +864,13 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
     case "wallet/getAutoLock":
       return autoLockMinutes();
 
-    case "wallet/setAutoLock":
+    case "wallet/setAutoLock": {
       await browser.storage.local.set({ [AUTOLOCK_KEY]: msg.minutes });
+      // Moving off "never" ends the step-up regime — a pending prompt is moot
+      // for every panel session, not just this one.
+      if (msg.minutes > 0) await browser.storage.session.remove(PANEL_STEPUP_KEY);
       return;
+    }
 
     case "wallet/touch":
       // No-op here; the AUTOLOCK_DEFERRING branch in the router re-arms the alarm.
@@ -769,7 +928,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
       // A local wallet signs in the offscreen engine with the unlocked mnemonic.
       const sent = await engine<SendResult>({
         kind: "signBroadcast",
-        mnemonic: keystore.getMnemonic(info.id),
+        mnemonic: await keystore.getMnemonic(info.id),
         descriptor: info.descriptor,
         network: info.network,
         pset: msg.pset,
@@ -795,7 +954,7 @@ async function handleUi(msg: WalletRequest): Promise<unknown> {
           throw new Error("Enter your password to swap.");
         }
       }
-      const mnemonic = keystore.getMnemonic(info.id);
+      const mnemonic = await keystore.getMnemonic(info.id);
       // The SideSwap client lives only for this swap call — connect, execute,
       // disconnect. A WebSocket in the service worker is fine (MV3 background).
       const client = new SideSwapClient(info.network);
@@ -2596,7 +2755,7 @@ async function handleApprovalDecision(
       } else {
         const signed = await engine<ProviderPsetSignResultDTO>({
           kind: "signProviderPset",
-          mnemonic: keystore.getMnemonic(pending.walletId),
+          mnemonic: await keystore.getMnemonic(pending.walletId),
           descriptor: pending.descriptor,
           network: pending.network,
           pset: pending.pset,
@@ -2685,7 +2844,7 @@ async function handleApprovalDecision(
     }
   }
   try {
-    const mnemonic = keystore.getMnemonic(pending.walletId);
+    const mnemonic = await keystore.getMnemonic(pending.walletId);
     const result = await engine<SendResult>({
       kind: "signBroadcast",
       mnemonic,
@@ -2928,8 +3087,88 @@ browser.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
+// Point-to-point ports (runtime.connect). Unlike an untargeted sendMessage —
+// which fans out to every extension context — a port delivers frames only to
+// the two connected ends, which is what any secret-bearing traffic requires.
+browser.runtime.onConnect.addListener((port) => {
+  // Offscreen document → engine channel. A co-installed extension can connect to
+  // us by id, so check the sender before accepting engine frames — the engine
+  // signs and broadcasts whatever a request carries (mirrors the message router's
+  // origin gate and the pre-port sender check this replaces).
+  if (port.name === ENGINE_PORT_NAME) {
+    if (port.sender?.id !== browser.runtime.id || port.sender?.origin !== EXT_ORIGIN) {
+      port.disconnect();
+      return;
+    }
+    const conn: EngineConn = { port, inFlight: new Map() };
+    // Two live ports shouldn't be representable, but if the offscreen document
+    // reconnected before the old document's disconnect landed, close the old
+    // one explicitly rather than leaking it — its late disconnect now settles
+    // only its own (by then empty) in-flight map.
+    if (engineConn) engineConn.port.disconnect();
+    engineConn = conn;
+    port.onMessage.addListener((msg: unknown) => {
+      const reply = msg as EnginePortReply;
+      const settle = conn.inFlight.get(reply.id);
+      if (settle) {
+        conn.inFlight.delete(reply.id);
+        settle(reply);
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      if (engineConn === conn) engineConn = null;
+      // Settle THIS connection's in-flight requests as a hard failure — the
+      // request may have run, so re-sending it (e.g. a broadcast) is never
+      // safe. A superseded connection's map is empty or already settled.
+      for (const [, settle] of conn.inFlight) {
+        settle({ id: -1, ok: false, error: "The wallet engine stopped. Reopen Apogee to try again." });
+      }
+      conn.inFlight.clear();
+      for (const wake of enginePortWaiters.splice(0)) wake();
+    });
+    for (const wake of enginePortWaiters.splice(0)) wake();
+    return;
+  }
+  // Secret-bearing UI traffic — `wallet/restore` (plaintext mnemonic) and
+  // `apogee/qr-secret` (scanned seed phrase) — both of which must not fan out on
+  // the broadcast channel. Anything else on this port is closed unanswered.
+  if (port.name === SECRET_PORT_NAME) {
+    if (port.sender?.origin !== EXT_ORIGIN || port.sender?.id !== browser.runtime.id) {
+      port.disconnect();
+      return;
+    }
+    port.onMessage.addListener((msg: unknown) => {
+      const req = msg as UiRequest | { type: "apogee/qr-secret"; value?: unknown };
+      if (req?.type === "apogee/qr-secret") {
+        // Same parking semantics the broadcast handler used: module-level memory,
+        // one claim, time-boxed (see lib/qr-secret.ts).
+        if (typeof req.value === "string" && req.value.length > 0) {
+          qrSecret = { value: req.value, at: Date.now() };
+        }
+        port.postMessage({ ok: true });
+        return;
+      }
+      if (req?.type !== "wallet/restore") {
+        port.disconnect();
+        return;
+      }
+      handleUi(req)
+        .then((value) => {
+          port.postMessage({ ok: true, value });
+          // Mirror the broadcast router: restore is genuine user activity, so it
+          // re-arms the idle auto-lock.
+          void rescheduleAutoLock();
+        })
+        .catch((err: unknown) => {
+          port.postMessage({ ok: false, error: errMsg(err) });
+        });
+    });
+    return;
+  }
+  port.disconnect(); // unknown channel — don't leave it open
+});
+
 browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg?.target === "offscreen") return false; // belongs to the offscreen doc
   if (typeof msg?.type !== "string") return false;
   // Trust boundary: wallet/* and apogee/* are extension-internal — they come from
   // our own surfaces (side panel, approval prompt, Jade signing tab) and must
@@ -3053,15 +3292,9 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
-  // Scanner hand-off for a seed phrase. Both sides are `apogee/*`, so the
-  // fromExtension gate above already excludes web pages.
-  if (msg.type === "apogee/qr-secret") {
-    const value = (msg as { value?: unknown }).value;
-    if (typeof value !== "string" || value.length === 0) return false;
-    qrSecret = { value, at: Date.now() };
-    sendResponse({ ok: true });
-    return true;
-  }
+  // The scanner's seed-phrase hand-off (`apogee/qr-secret`) deliberately does
+  // NOT have a broadcast case anymore: the phrase arrives on the dedicated
+  // apogee-secret port (see onConnect), so it never fans out to other contexts.
   if (msg.type === "apogee/qr-secret-claim") {
     // Single-use AND time-boxed: read it out, then immediately clear regardless of
     // whether it was still fresh, so a stale value can never be claimed twice.
@@ -3072,6 +3305,15 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type.startsWith("wallet/")) {
+    // Port-only at runtime, not just at the type level: `wallet/restore`
+    // carries a plaintext mnemonic, and handleUi still knows how to service
+    // it (the secret port calls the same handler). Refuse it here so the
+    // broadcast channel can never carry one — mirrors the removed
+    // `apogee/qr-secret` broadcast case above.
+    if (msg.type === "wallet/restore") {
+      sendResponse({ ok: false, error: "restore is not available on this channel" });
+      return false;
+    }
     const req = msg as WalletRequest;
     handleUi(req)
       .then((value) => {

@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import fs from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
@@ -20,7 +21,24 @@ function getCommitHash(): string {
   }
 }
 
-export default defineConfig({
+// Mirror of the package.json `prebuild` refusal, enforced by Vite itself so a
+// raw `vite build` (which skips pnpm hooks) is guarded too: any .env file Vite
+// would load in production means VITE_* values — e.g. the enterprise OAuth
+// client secret — get baked into the bundle. Development mode is exempt; dev
+// builds with enterprise debugging are throwaway and never zipped.
+function assertNoEnvFiles(): void {
+  for (const name of [".env", ".env.local", ".env.production", ".env.production.local"]) {
+    if (fs.existsSync(name)) {
+      throw new Error(
+        `refusing to build: ${name} is present (credentials could ship in the bundle) — remove it or use the CI release build`,
+      );
+    }
+  }
+}
+
+export default defineConfig(({ mode }) => {
+  if (mode !== "development") assertNoEnvFiles();
+  return {
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
@@ -66,4 +84,5 @@ export default defineConfig({
     // crxjs HMR uses a dedicated websocket port.
     hmr: { port: 5174 },
   },
+  };
 });

@@ -236,24 +236,51 @@ async function seedTestWallet(context: BrowserContext, extensionId: string): Pro
   await extensionPage.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
   const reply = await extensionPage.evaluate(
     async ({ mnemonic }) => {
+      // Restore travels over the dedicated "apogee-secret" port, exactly like
+      // the panel's own wallet client — the broadcast channel rejects it.
       const extension = globalThis as typeof globalThis & {
         chrome: {
           runtime: {
-            sendMessage(message: unknown): Promise<{ ok: boolean; error?: string }>;
+            connect(connectInfo: { name: string }): {
+              postMessage(message: unknown): void;
+              disconnect(): void;
+              onMessage: {
+                addListener(listener: (message: unknown) => void): void;
+                removeListener(listener: (message: unknown) => void): void;
+              };
+              onDisconnect: {
+                addListener(listener: () => void): void;
+                removeListener(listener: () => void): void;
+              };
+            };
           };
         };
       };
-      return extension.chrome.runtime.sendMessage({
-        type: "wallet/restore",
-        password: "provider-test-password",
-        mnemonic,
-        label: "Provider conformance wallet",
-        network: "liquidtestnet",
+      const port = extension.chrome.runtime.connect({ name: "apogee-secret" });
+      const reply = await new Promise<{ ok: boolean; error?: string } | null>((resolve) => {
+        const done = (r: { ok: boolean; error?: string } | null) => {
+          port.onMessage.removeListener(onMessage);
+          port.onDisconnect.removeListener(onDisconnect);
+          resolve(r);
+        };
+        const onMessage = (m: unknown) => done(m as { ok: boolean; error?: string });
+        const onDisconnect = () => done(null);
+        port.onMessage.addListener(onMessage);
+        port.onDisconnect.addListener(onDisconnect);
+        port.postMessage({
+          type: "wallet/restore",
+          password: "provider-test-password",
+          mnemonic,
+          label: "Provider conformance wallet",
+          network: "liquidtestnet",
+        });
       });
+      port.disconnect();
+      return reply;
     },
     { mnemonic: TEST_MNEMONIC },
   );
-  expect(reply.ok, reply.error).toBe(true);
+  expect(reply?.ok, reply?.error).toBe(true);
   await extensionPage.close();
 }
 
