@@ -111,6 +111,10 @@ export function Send({
       assets[assetId]?.ticker ??
       assets[assetId]?.name ??
       shortenHex(assetId, 6, 6));
+  // Only a label that actually came from the registry carries the "registry"
+  // provenance the approval screen badges — a hardcoded KNOWN_ASSETS label or
+  // the hex fallback would make that row assert a source it didn't have.
+  const registryTicker = isLbtc ? null : (assets[assetId]?.ticker ?? assets[assetId]?.name ?? null);
   const lbtcSats = sync?.lbtcSats ?? 0;
   const balance = isLbtc ? lbtcSats : (sync?.balance[assetId] ?? 0);
   // Tokens the picker offers (positive balances only); the picker renders only
@@ -284,7 +288,7 @@ export function Send({
         toSelf: prepared.toSelf,
         ...(isLbtc
           ? {}
-          : { assetId, assetTicker: assetLabel, assetPrecision: precision }),
+          : { assetId, assetTicker: registryTicker, assetPrecision: precision }),
       };
       setTxid((await wallet.send(prepared.pset, review, needsPassword ? password : undefined)).txid);
       setStep("sent");

@@ -1202,7 +1202,8 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         };
         const info: AssetInfo = {
           name: c.name ?? null,
-          ticker: c.ticker ?? null,
+          // Contract JSON is issuer-controlled — type-check like precision.
+          ticker: typeof c.ticker === "string" ? c.ticker : null,
           precision: typeof c.precision === "number" ? c.precision : null,
         };
         return info;

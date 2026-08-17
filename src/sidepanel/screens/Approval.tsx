@@ -313,6 +313,18 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
                 mono
               />
             )}
+            {sendReview?.assetId && sendReview.assetTicker && (
+              /* The ticker comes from the public asset registry, which an
+                 issued asset can steer — it's a display hint, never proof of
+                 what the asset is. The ID above is the identifier. The marker
+                 leads and the ticker is clamped because Row truncates: a long
+                 hostile ticker must never be able to clip "· registry" off. */
+              <Row
+                label="Label"
+                value={`registry · ${sendReview.assetTicker.slice(0, 24)}`}
+                title={`"${sendReview.assetTicker}" comes from the public asset registry and is not verified — identify the asset by its ID above.`}
+              />
+            )}
             <Row
               label={sendReview?.drain ? "Amount (max)" : "Amount"}
               value={tokenAmount}
