@@ -31,6 +31,11 @@ import type {
 import { browser } from "@/lib/ext";
 import type { UpdateCheck } from "@/lib/version-check";
 
+/** Random id minted per panel-document load. Lets the service worker tell
+ *  "same panel session" from "panel closed and reopened" — the trigger for the
+ *  auto-lock-"never" password step-up. */
+const PANEL_SESSION = crypto.randomUUID();
+
 async function call<T>(msg: WalletRequest): Promise<T> {
   const reply = (await browser.runtime.sendMessage(msg)) as Reply<T> | undefined;
   if (!reply) throw new Error("no response from background");
@@ -63,11 +68,14 @@ async function portCall<T>(msg: RestoreWalletRequest): Promise<T> {
 }
 
 export const wallet = {
-  getState: () => call<KeystoreState>({ type: "wallet/getState" }),
-  unlock: (password: string) => call<void>({ type: "wallet/unlock", password }),
+  getState: () => call<KeystoreState>({ type: "wallet/getState", panelSession: PANEL_SESSION }),
+  unlock: (password: string) => call<void>({ type: "wallet/unlock", panelSession: PANEL_SESSION, password }),
   lock: () => call<void>({ type: "wallet/lock" }),
   reset: () => call<void>({ type: "wallet/reset" }),
   verifyPassword: (password: string) => call<boolean>({ type: "wallet/verifyPassword", password }),
+  /** Re-verify the password on panel reopen while auto-lock is "never". */
+  stepUp: (password: string) =>
+    call<boolean>({ type: "wallet/stepUp", panelSession: PANEL_SESSION, password }),
   getUnlockThrottle: () => call<UnlockThrottle>({ type: "wallet/getUnlockThrottle" }),
   create: (password: string, label: string, network: LiquidNetwork) =>
     call<CreatedWallet>({ type: "wallet/create", password, label, network }),

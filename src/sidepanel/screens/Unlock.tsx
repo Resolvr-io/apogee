@@ -256,3 +256,105 @@ export function Unlock({
     </WelcomeShell>
   );
 }
+
+/** Auto-lock "never" step-up: the wallet stays unlocked in the background for the
+ *  whole browser session, so a freshly opened panel re-verifies the password
+ *  before it gets the wallet UI. Not the lock screen — there's no vault to
+ *  unlock, just an identity to prove — so the forgot/reset paths don't apply
+ *  HERE. But this oracle shares the unlock throttle, and the hard lock's
+ *  message points at restore/reset, which only the real lock screen offers — so
+ *  a "Lock wallet" escape must exist, or a throttled-out user is pinned to a
+ *  form that refuses every submission until the browser restarts. */
+export function StepUp({ onDone }: { onDone: () => void }) {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  // Same display-only throttle view as the lock screen (see Unlock).
+  const [throttle, setThrottle] = useState<UnlockThrottle | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const refreshThrottle = useCallback(async () => {
+    try {
+      setNow(Date.now());
+      setThrottle(await wallet.getUnlockThrottle());
+    } catch {
+      /* display-only; the keystore still enforces on submit */
+    }
+  }, []);
+  useEffect(() => {
+    void refreshThrottle();
+  }, [refreshThrottle]);
+
+  const blocked = throttle?.blocked ?? false;
+  const coolingDown = !blocked && throttle?.retryAt != null && throttle.retryAt > now;
+  useEffect(() => {
+    if (!coolingDown) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [coolingDown]);
+  useEffect(() => {
+    if (throttle?.retryAt != null && throttle.retryAt <= now) void refreshThrottle();
+  }, [throttle, now, refreshThrottle]);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      if (!(await wallet.stepUp(password))) throw new Error("Incorrect password");
+      onDone();
+    } catch (err) {
+      // unlockErrMessage: the SW shares the unlock throttle with this oracle.
+      setError(unlockErrMessage(err));
+      setPassword("");
+      void refreshThrottle();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Drops to the real lock screen, where the forgot/reset paths live — the
+  // escape hatch for the throttle hard-lock (and for a user who'd rather just
+  // lock than re-verify). onDone is the panel's refresh, so state re-reads.
+  async function lockWallet() {
+    setBusy(true);
+    try {
+      await wallet.lock();
+      onDone();
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <WelcomeShell subtitle="Auto-lock is off. Re-enter your password to continue.">
+      <form onSubmit={submit} className="flex flex-col gap-3">
+        <Field label="Password">
+          <Input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoFocus
+            disabled={blocked || coolingDown}
+          />
+        </Field>
+        {blocked ? (
+          <ErrorText>{UNLOCK_BLOCKED_TEXT}</ErrorText>
+        ) : coolingDown ? (
+          <ErrorText>
+            {`Too many failed attempts. Try again in ${formatCooldown((throttle?.retryAt ?? 0) - now)}.`}
+          </ErrorText>
+        ) : (
+          error && <ErrorText>{error}</ErrorText>
+        )}
+        <Button type="submit" disabled={busy || blocked || coolingDown || !password}>
+          {busy ? <Spinner /> : "Continue"}
+        </Button>
+        <Button type="button" variant="secondary" disabled={busy} onClick={() => void lockWallet()}>
+          Lock wallet
+        </Button>
+      </form>
+    </WelcomeShell>
+  );
+}

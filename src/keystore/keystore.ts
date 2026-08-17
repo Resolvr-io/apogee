@@ -83,6 +83,9 @@ export interface KeystoreState {
   locked: boolean;
   activeWalletId: string | null;
   wallets: WalletInfo[];
+  // Set by the SW router (not the keystore): auto-lock is "never", the wallet is
+  // unlocked, and this panel session hasn't re-verified the password yet.
+  needsStepUp?: boolean;
 }
 
 /** Fields a caller supplies to persist a new wallet (derived via the engine). */
@@ -270,7 +273,7 @@ export async function initialize(password: string): Promise<void> {
   await clearUnlockFailures(); // fresh vault — a stale counter must not guard it
 }
 
-/** Derive the key from the password, verify it, and decrypt all mnemonics. */
+/** Derive the key from the password and verify it. Mnemonics decrypt on demand. */
 export async function unlock(password: string): Promise<void> {
   const store = await loadStore();
   if (!store) throw new Error("Keystore not initialized");
@@ -286,11 +289,10 @@ export async function unlock(password: string): Promise<void> {
     throw new Error("Incorrect password");
   }
   await clearUnlockFailures();
+  // Mnemonics are NOT decrypted here — getMnemonic decrypts on demand, so a
+  // plaintext seed enters SW memory only while that wallet is actually in use,
+  // never all wallets at once for the length of the session.
   unlockedMnemonics.clear();
-  for (const id of store.order) {
-    const w = store.wallets[id];
-    if (w?.enc) unlockedMnemonics.set(id, await decryptString(key, w.enc, mnemonicAad(id))); // skip hardware (no seed)
-  }
   derivedKey = key;
   await persistSession(key);
 }
@@ -522,12 +524,20 @@ export async function getDescriptor(id: string): Promise<string> {
   return rec.descriptor;
 }
 
-/** Decrypted mnemonic for a wallet (requires unlock). For engine + reveal. */
-export function getMnemonic(id: string): string {
-  if (isLocked()) throw new Error("Keystore is locked");
-  const m = unlockedMnemonics.get(id);
-  if (!m) throw new Error("No local seed for this wallet (hardware signer or not unlocked)");
-  return m;
+/** Decrypted mnemonic for a wallet (requires unlock). For engine + reveal.
+ *  Decrypted on demand and cached until lock: unlock() deliberately does not
+ *  warm every wallet's seed, so plaintext mnemonics exist in SW memory one at a
+ *  time, only for wallets that actually sign. */
+export async function getMnemonic(id: string): Promise<string> {
+  if (isLocked() || !derivedKey) throw new Error("Keystore is locked");
+  const cached = unlockedMnemonics.get(id);
+  if (cached) return cached;
+  const store = await loadStore();
+  const rec = store?.wallets[id];
+  if (!rec?.enc) throw new Error("No local seed for this wallet (hardware signer)");
+  const mnemonic = await decryptString(derivedKey, rec.enc, mnemonicAad(id));
+  unlockedMnemonics.set(id, mnemonic);
+  return mnemonic;
 }
 
 // ---- MV3 session recovery ----
@@ -554,10 +564,7 @@ export async function ensureLoaded(): Promise<void> {
     await sessionClear(SESSION_KEY); // stale session (password changed/tamper)
     return;
   }
+  // Same as unlock(): recover the key, decrypt nothing eagerly.
   unlockedMnemonics.clear();
-  for (const id of store.order) {
-    const w = store.wallets[id];
-    if (w?.enc) unlockedMnemonics.set(id, await decryptString(key, w.enc, mnemonicAad(id))); // skip hardware
-  }
   derivedKey = key;
 }
