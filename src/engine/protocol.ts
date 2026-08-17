@@ -339,10 +339,18 @@ export interface ChainServerHealth {
   providers?: ProviderProbe[]; // per-provider, automatic mode only
 }
 
-/** Envelope the SW sends; the offscreen listener filters on `target`. */
-export interface EngineEnvelope {
-  target: "offscreen";
+/** Envelope for one engine round-trip on the SW↔offscreen port. */
+export interface EnginePortMessage {
+  id: number;
   req: EngineRequest;
+}
+
+/** Reply to an EnginePortMessage, matched by id. */
+export interface EnginePortReply {
+  id: number;
+  ok: boolean;
+  value?: unknown;
+  error?: string;
 }
 
 /** Watch-only material derived from a mnemonic (handed to the keystore). */
@@ -399,16 +407,9 @@ export type WalletRequest =
   | { type: "wallet/getUnlockThrottle" }
   // password (first run) initializes the keystore as part of the same call.
   | { type: "wallet/create"; password?: string; label: string; network: LiquidNetwork }
-  // `replace` (forgot-password recovery): wipe the existing unlockable-no-more
-  // vault first, but only after the phrase validates, so a typo can't destroy it.
-  | {
-      type: "wallet/restore";
-      password?: string;
-      mnemonic: string;
-      label: string;
-      network: LiquidNetwork;
-      replace?: boolean;
-    }
+  // NOTE: `wallet/restore` is deliberately NOT here — its plaintext mnemonic
+  // must never ride the broadcast runtime.sendMessage channel. It travels on a
+  // dedicated runtime.connect port (see RestoreWalletRequest below).
   | { type: "wallet/sync"; walletId?: string }
   | { type: "wallet/getAddress"; walletId?: string; index?: number }
   | { type: "wallet/getBalance"; walletId?: string }
@@ -495,6 +496,23 @@ export type WalletRequest =
       sendAmount?: number; // base units of the send asset (sell-exact mode)
       recvAmount?: number; // base units of the receive asset (receive-exact mode)
     };
+
+/** `wallet/restore` over the dedicated point-to-point port. Same shape the
+ *  broadcast variant had — it just never fans out to other extension contexts.
+ *  `replace` (forgot-password recovery): wipe the existing unlockable-no-more
+ *  vault first, but only after the phrase validates, so a typo can't destroy it. */
+export interface RestoreWalletRequest {
+  type: "wallet/restore";
+  password?: string;
+  mnemonic: string;
+  label: string;
+  network: LiquidNetwork;
+  replace?: boolean;
+}
+
+/** Everything the SW's UI router accepts: broadcast wallet/* messages plus the
+ *  port-only restore request. */
+export type UiRequest = WalletRequest | RestoreWalletRequest;
 
 /** What `wallet/create` returns: the persisted wallet + the phrase to back up. */
 export interface CreatedWallet {

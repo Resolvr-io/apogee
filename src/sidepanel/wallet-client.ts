@@ -11,6 +11,7 @@ import type {
   PriceHistory,
   PriceRange,
   Reply,
+  RestoreWalletRequest,
   SendResult,
   SendReview,
   SwapQuotePreview,
@@ -37,6 +38,30 @@ async function call<T>(msg: WalletRequest): Promise<T> {
   return reply.value;
 }
 
+/** Point-to-point request over a dedicated runtime.connect port. An untargeted
+ *  `sendMessage` fans out to every extension context, so any message carrying a
+ *  plaintext seed phrase must travel this way instead — only the service worker
+ *  ever receives it. */
+async function portCall<T>(msg: RestoreWalletRequest): Promise<T> {
+  const port = browser.runtime.connect({ name: "apogee-secret" });
+  const reply = await new Promise<Reply<T> | null>((resolve) => {
+    const done = (r: Reply<T> | null) => {
+      port.onMessage.removeListener(onMessage);
+      port.onDisconnect.removeListener(onDisconnect);
+      resolve(r);
+    };
+    const onMessage = (m: unknown) => done(m as Reply<T>);
+    const onDisconnect = () => done(null);
+    port.onMessage.addListener(onMessage);
+    port.onDisconnect.addListener(onDisconnect);
+    port.postMessage(msg);
+  });
+  port.disconnect();
+  if (!reply) throw new Error("no response from background");
+  if (!reply.ok) throw new Error(reply.error);
+  return reply.value;
+}
+
 export const wallet = {
   getState: () => call<KeystoreState>({ type: "wallet/getState" }),
   unlock: (password: string) => call<void>({ type: "wallet/unlock", password }),
@@ -46,13 +71,15 @@ export const wallet = {
   getUnlockThrottle: () => call<UnlockThrottle>({ type: "wallet/getUnlockThrottle" }),
   create: (password: string, label: string, network: LiquidNetwork) =>
     call<CreatedWallet>({ type: "wallet/create", password, label, network }),
+  /** Restore from a seed phrase. Sent over a dedicated port, never broadcast —
+   *  the request carries the plaintext mnemonic. */
   restore: (
     password: string,
     mnemonic: string,
     label: string,
     network: LiquidNetwork,
     replace?: boolean,
-  ) => call<WalletInfo>({ type: "wallet/restore", password, mnemonic, label, network, replace }),
+  ) => portCall<WalletInfo>({ type: "wallet/restore", password, mnemonic, label, network, replace }),
   sync: (walletId?: string) => call<SyncResult>({ type: "wallet/sync", walletId }),
   getAddress: (walletId?: string, index?: number) =>
     call<AddressDTO>({ type: "wallet/getAddress", walletId, index }),
