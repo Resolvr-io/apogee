@@ -342,14 +342,18 @@ export async function verifyPassword(password: string): Promise<boolean> {
   return ok;
 }
 
-/** Re-wrap every wallet under a new password. Requires the current one. */
+/** Re-wrap every wallet under a new password. Requires the current one.
+ *  Shares the unlock throttle — the old-password check is the same oracle. */
 export async function changePassword(oldPassword: string, newPassword: string): Promise<void> {
   const store = await loadStore();
   if (!store) throw new Error("Keystore not initialized");
+  await assertAttemptAllowed();
   const oldKey = await deriveKey(oldPassword, store.kdf);
   if (!(await checkVerifier(oldKey, store.verifier, verifierAad()))) {
+    await recordUnlockFailure();
     throw new Error("Incorrect password");
   }
+  await clearUnlockFailures();
   const kdf = newKdf();
   const newKey = await deriveKey(newPassword, kdf);
   const wallets: Record<string, WalletRecord> = {};
