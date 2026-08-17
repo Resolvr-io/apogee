@@ -290,12 +290,9 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
       ) : (
         <>
           <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
-            <Row
-              label="To"
-              value={shortenHex(sendReview?.address ?? "", 10, 8)}
-              title={sendReview?.address}
-              mono
-            />
+            {/* Full address, never truncated — the recipient is the one field
+                the user must be able to verify against what they were told. */}
+            <Row label="To" value={sendReview?.address ?? ""} mono wrap />
             <Row label="Network" value={networkLabel(request.network)} />
             {sendReview?.accountIdentifier && (
               <Row
