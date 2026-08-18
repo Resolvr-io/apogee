@@ -276,10 +276,14 @@ including on broadcast failure.
 
 The first release retains at most 100 successful terminal results for seven days in
 extension-local storage. Concurrent retries with the same scoped `requestId` share
-one execution; reuse with different request data is rejected. The result is written
-before the provider promise resolves. There remains a narrow browser/storage-failure
-window between successful network submission and durable result storage; eliminating
-it requires a signed-transaction broadcast checkpoint and retry/resume state.
+one execution; reuse with different request data is rejected. Before submission,
+Apogee encrypts and durably stores the exact signed transaction, its review, and its
+expected result in a wallet-bound checkpoint. A persistence failure prevents
+broadcast. An identical retry first looks up the saved transaction; if it is already
+known it returns the original result, otherwise it requires an explicit recovery
+approval before rebroadcasting the exact saved bytes. Recovery never rebuilds or
+re-signs the transaction, and the checkpoint remains durable until the terminal
+result is successfully stored.
 
 ## First implementation limits
 

@@ -1,7 +1,9 @@
 # TX Manifest runtime feasibility spike
 
-Status: completed feasibility spike, 2026-08-07. This is not a production
-implementation and must not be enabled for mainnet funds.
+Status: completed feasibility spike, 2026-08-07. Its boundary was subsequently
+promoted into the testnet-only implementation described by
+[`tx-manifest-internal-spec.md`](tx-manifest-internal-spec.md). Mainnet remains
+disabled pending the separate release-hardening and security-review work.
 
 ## Question
 
@@ -93,18 +95,14 @@ The reference implementation should be mined for models, algorithms, and test
 vectors, but not vendored wholesale. Useful logic should be extracted behind
 in-memory and host-supplied adapters, ideally upstream where practical.
 
-## What remains after the wallet-facing slice
+## Follow-up scope after promotion
 
-- A live newly constructed testnet acceptance using a funded software wallet; the
-  automated suite currently uses offline confirmed-chain vectors and host mocks.
-- Issuance/reissuance parity with the deployed contract.
-- BIP340 wallet-witness derivation and Jade support.
-- Network-aware minimum-change/dust calibration for fee-dependent change outputs.
-- Crash-safe signed-transaction broadcast checkpointing to close the narrow gap
-  between network acceptance and durable terminal-result storage.
-- Manual Chrome/Firefox provider smoke tests and a final optimized bundle-size budget.
-
-These are implementation milestones, not reasons to add more public RPCs.
+The promoted implementation now has live testnet and full regtest lifecycle
+validation, issuance support, calibrated minimum change, dynamic fees, and a
+crash-safe signed-transaction broadcast checkpoint. The remaining signer and
+release work is Jade support, mainnet enablement and independent security review,
+plus continued bundle-size and cross-browser validation. These are follow-up
+milestones, not reasons to add more public RPCs.
 
 ## Implemented wallet-facing slice
 

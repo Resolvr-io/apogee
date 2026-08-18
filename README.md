@@ -109,8 +109,13 @@ The implementation is in [`src/provider/liquid-provider.ts`](src/provider/liquid
 Developers can exercise the real injected boundary with the
 [Liquid provider playground](docs/liquid-provider-playground.md).
 The standard provider currently implements `getBalance`, `getUTXOs`,
-`getWalletDescriptor`, `sendTransfer`, and `signPset`. Descriptor disclosure is a separate,
-explicit per-origin permission: Apogee returns only a checksummed ordinary
+`getWalletDescriptor`, `sendTransfer`, and `signPset`. It also exposes the
+experimental `experimental_getTxManifestSupport` and
+`experimental_executeTxManifest` methods for Apogee's compiled-in trusted
+Simplicity Lending v3 bundle. TX Manifest execution is currently limited to
+Liquid testnet software wallets and fails closed for unknown bundles, mainnet,
+Jade, and watch-only wallets. Descriptor disclosure is a separate, explicit
+per-origin permission: Apogee returns only a checksummed ordinary
 public descriptor and never exports its SLIP-77 master blinding key.
 PSET signing is also separately permissioned and individually approved. Its
 [wallet-scoped analyzer](docs/provider-pset-analyzer.md) revalidates every
@@ -121,6 +126,15 @@ result includes both the signed PSET and its transaction id.
 
 ## Unreleased
 
+- **Trusted Simplicity Lending transactions.** Event-discovered dapps can ask
+  whether Apogee recognizes the built-in Lending v3 manifest, then request any
+  of its eight supported lifecycle actions. Apogee independently resolves chain
+  state, selects wallet inputs, constructs and dry-runs the covenant transaction,
+  shows the exact effects for approval, signs, broadcasts, and safely resumes an
+  interrupted broadcast. Verified action hints restore human-readable lending
+  activity from the seed. This first release is deliberately restricted to
+  Liquid testnet software wallets; Jade, mainnet, partial repayment, and remotely
+  installed manifests remain follow-up work.
 - **Smaller things** — the Testnet/Regtest marker beside the logo is now a
   hard-edged caution placard in the console voice rather than a rounded pill.
 
@@ -210,6 +224,9 @@ Notes for 0.6.0 and earlier live on the
 - [Blockstream Liquid Wallet Kit (`lwk_wasm` / LWK)](https://github.com/Blockstream/lwk),
   [Blockstream Jade](https://blockstream.com/jade/), the
   [Liquid Network](https://liquid.net/), and Blockstream's Esplora.
+- The vendored Simplicity Lending contract sources retain their upstream
+  licensing and exact revision provenance in the shipped
+  [third-party notices](public/THIRD_PARTY_NOTICES.md).
 - **Fonts** — [Satoshi](https://www.fontshare.com/fonts/satoshi) (Indian Type
   Foundry, via Fontshare's free license) for the UI, and **Apogee Telemetry**
   for numeric displays: our patched build of
