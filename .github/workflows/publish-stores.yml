@@ -1,0 +1,137 @@
+name: Publish to stores
+
+# Pushing a v* tag publishes the GitHub Release (release.yml); this workflow
+# then submits those zips to the Chrome Web Store and AMO. It downloads the
+# release assets rather than rebuilding, so what the stores review is bit-for-
+# bit what the GitHub Release shipped.
+#
+# Deliberately inert until it's wired up (docs/release-automation.md):
+#   - the automatic path (after Release) is gated on the STORE_PUBLISH_AUTOMATION
+#     repo variable, so nothing fires until the secrets exist
+#   - the manual path (workflow_dispatch) is always available and fails fast
+#     with a pointer to the docs if a secret is missing
+#   - both jobs sit in the `stores` environment, so a required reviewer can be
+#     attached there before anything ships
+# Store reviews run asynchronously on Google's and Mozilla's side; the jobs
+# end at "submitted".
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (defaults to the latest release)"
+        type: string
+      draft:
+        description: "Chrome only: upload as a draft, skip publish"
+        type: boolean
+        default: false
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  chrome:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v') &&
+       vars.STORE_PUBLISH_AUTOMATION == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: stores
+    steps:
+      - name: Resolve tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.tag || github.event.workflow_run.head_branch }}"
+          if [ -z "$TAG" ]; then
+            TAG="$(gh release list --limit 1 --json tagName --jq '.[0].tagName')"
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Download the release zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" --pattern "apogee-*-chrome.zip" --output apogee-chrome.zip
+
+      # The tag ↔ package.json check already ran in release.yml; this re-checks
+      # the zip's own manifest so a stale asset can never reach the store.
+      - name: Verify the zip's manifest version
+        run: |
+          MV="$(unzip -p apogee-chrome.zip manifest.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).version))')"
+          if [ "$MV" != "${TAG#v}" ]; then
+            echo "zip manifest $MV != tag ${TAG#v}" >&2; exit 1
+          fi
+          echo "manifest version $MV ✓"
+
+      - name: Submit to the Chrome Web Store
+        env:
+          CWS_SERVICE_ACCOUNT_JSON: ${{ secrets.CWS_SERVICE_ACCOUNT_JSON }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+          CWS_ITEM_ID: ${{ vars.CWS_ITEM_ID }}
+        run: |
+          ARGS=(apogee-chrome.zip)
+          if [ "${{ inputs.draft }}" = "true" ]; then ARGS+=(--no-publish); fi
+          node scripts/publish-chrome.ts "${ARGS[@]}"
+
+  firefox:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v') &&
+       vars.STORE_PUBLISH_AUTOMATION == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: stores
+    steps:
+      - name: Resolve tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.tag || github.event.workflow_run.head_branch }}"
+          if [ -z "$TAG" ]; then
+            TAG="$(gh release list --limit 1 --json tagName --jq '.[0].tagName')"
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Download the release zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" --pattern "apogee-*-firefox.zip" --output apogee-firefox.zip
+
+      - name: Verify the zip's manifest version
+        run: |
+          MV="$(unzip -p apogee-firefox.zip manifest.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).version))')"
+          if [ "$MV" != "${TAG#v}" ]; then
+            echo "zip manifest $MV != tag ${TAG#v}" >&2; exit 1
+          fi
+          echo "manifest version $MV ✓"
+
+      - name: Submit to AMO
+        env:
+          AMO_API_KEY: ${{ secrets.AMO_API_KEY }}
+          AMO_API_SECRET: ${{ secrets.AMO_API_SECRET }}
+          AMO_ADDON_SLUG: ${{ vars.AMO_ADDON_SLUG }}
+        run: node scripts/publish-firefox.ts apogee-firefox.zip "$AMO_ADDON_SLUG"
