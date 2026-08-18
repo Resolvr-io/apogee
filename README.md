@@ -142,6 +142,40 @@ result includes both the signed PSET and its transaction id.
   so a wrong or missing rate can misprice this figure but can never change what
   leaves the wallet. See [`docs/price-sources.md`](docs/price-sources.md).
 
+## 0.7.0
+
+A security-hardening release: everything below hardens what Apogee already
+does — no workflow changes.
+
+- **Approvals show exactly what you're agreeing to.** Send approvals display
+  the recipient's full address instead of a shortened one, and the requesting
+  site's domain stays visible even when the origin is long. Token sends mark
+  registry-sourced names as unverified — the asset ID, not the label, is what
+  identifies the asset.
+- **Your seed phrase no longer crosses the extension's broadcast channel.**
+  Restoring a wallet and scanning a seed-phrase QR travel over a private,
+  point-to-point connection between the panel and the wallet backend, where no
+  other extension context can observe them.
+- **Encrypted storage upgrades itself in place.** When Apogee's encrypted
+  storage format changes, your wallet migrates automatically the first time you
+  unlock — no re-import needed. A vault that can't be upgraded says so
+  immediately instead of reporting a wrong password, and unlock attempts are
+  never wasted on one.
+- **Changing your password is throttled like unlocking.** The progressive
+  lockout that guards unlocking now also guards the old-password check when
+  changing your password.
+- **Less of your wallet stays decrypted while unlocked.** Seeds are decrypted
+  only for the moment a wallet signs, not all at once for the whole session.
+  A password step-up that hits the lockout now shows its countdown and offers a
+  way back out.
+- **Under the hood** — the wallet engine rides out service-worker restarts with
+  reconnect backoff and per-connection state; resetting the wallet also clears
+  the cached asset icons it displayed; CI third-party actions are pinned to
+  commit SHAs and the review bot only answers trusted commenters; a dependency
+  with a known advisory (postcss) is held to its patched version. The at-rest
+  and provider threat model is now documented in
+  [`SECURITY.md`](SECURITY.md).
+
 ## 0.6.0
 
 - **Swap L-BTC and USDt in the wallet.** A new Swap screen quotes an instant swap
