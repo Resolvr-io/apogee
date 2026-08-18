@@ -1,0 +1,71 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Run hermetic unit tests
+        run: pnpm test
+
+  tx-manifest-runtime:
+    # This pinned Linux platform is the canonical producer for the checked-in
+    # browser runtime. macOS output is valid but not byte-identical.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v31
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.92.0
+          target: wasm32-unknown-unknown
+          # Keep the artifact build independent of the action's default
+          # `RUSTFLAGS=-D warnings`; the build script supplies its canonical
+          # path-remapping flags itself. Caching is configured explicitly below.
+          rustflags: ""
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/tx-manifest-runtime -> target
+
+      - name: Test the native runtime
+        run: cargo test --manifest-path crates/tx-manifest-runtime/Cargo.toml --locked
+
+      - name: Rebuild the checked-in browser runtime
+        run: bash scripts/build-tx-manifest-runtime.sh
+
+      - name: Verify browser runtime provenance
+        run: git diff --exit-code -- src/tx-manifest/runtime/pkg

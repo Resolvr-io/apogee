@@ -27,6 +27,7 @@ Pinned inputs:
 - `elements` 0.25.3
 - simplicity-lending `8f8ace33963788a0ed901c160a1187f8489e2c55`
 - `wasm-bindgen` 0.2.121 (matching the generated browser loader)
+- Rust 1.92.0 via the repository's `rust-toolchain.toml`
 
 Run native tests:
 
@@ -43,3 +44,9 @@ npm run build:tx-manifest-runtime
 The generated WASM is lazy-loaded by Apogee's engine. Wallet coin selection,
 signing, approval binding, fresh network access, idempotency, and broadcasting stay
 in the host; blinding and Simplicity execution remain inside this runtime boundary.
+The build remaps checkout, Cargo, and Rust source roots to canonical paths before
+compilation so developer usernames and machine-specific paths do not enter the
+shipped binary. The pinned Linux CI job is the canonical artifact producer and
+rebuilds and byte-compares the checked-in browser runtime against the committed Rust
+source. A local macOS build is valid for development, but Rust's host-specific
+toolchain components do not currently guarantee the same bytes as the Linux build.
