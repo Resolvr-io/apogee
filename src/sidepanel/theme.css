@@ -774,6 +774,31 @@
     letter-spacing: 0.12em;
     color: var(--text-strong);
   }
+  /* Network caution placard (TESTNET / REGTEST). 2001 sets its warning signage
+     in all caps on a hard-edged rectangular plate — "EXPLOSIVE BOLTS",
+     "EMERGENCY HATCH CLOSE" — so the pill this replaced was the one shape the
+     reference never uses. Tracking sits between .console-overline (0.18em) and
+     the wider signage, which is as far as it goes before the plate has to grow
+     to hold it. Amber tokens carry the caution; the face carries the era. */
+  .console-placard {
+    font-family: var(--font-telemetry-wide);
+    font-size: 9.5px;
+    font-weight: 400;
+    line-height: 1;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    /* letter-spacing appends a trailing space after the final letter, which
+       drags centered text visibly left. A matching indent puts it back. */
+    text-indent: 0.2em;
+    color: var(--warning-text);
+    background: var(--warning-bg);
+    border: 1px solid var(--warning-border);
+    /* Not rounded-full: a placard, not a pill. 2px keeps it from reading as a
+       CSS default hard corner at this size. */
+    border-radius: 2px;
+    padding: 3px 7px;
+  }
+
   /* Console readout value (fingerprint, version): quiet telemetry ink, no halo.
 
      Note the layer: this lives in @layer base, so a Tailwind color utility on the

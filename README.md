@@ -141,6 +141,8 @@ result includes both the signed PSET and its transaction id.
 - **Display only.** Send and Swap read per-asset balances straight from the chain,
   so a wrong or missing rate can misprice this figure but can never change what
   leaves the wallet. See [`docs/price-sources.md`](docs/price-sources.md).
+- **Smaller things** — the Testnet/Regtest marker beside the logo is now a
+  hard-edged caution placard in the console voice rather than a rounded pill.
 
 ## 0.7.0
 
