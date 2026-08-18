@@ -56,6 +56,26 @@ jobs:
           echo "Chrome zip:";  unzip -l "apogee-${VERSION}-chrome.zip" | tail -3
           echo "Firefox zip:"; unzip -l "apogee-${VERSION}-firefox.zip" | tail -3
 
+      # Release notes come from the README's section for this version, so the
+      # changelog has ONE source: the GitHub Release, the landing site's
+      # /releases mirror (which renders the release body), and the README all
+      # show the same text. A missing section is a hard failure rather than a
+      # release published with a placeholder.
+      - name: Extract release notes from the README
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          awk -v v="## ${VERSION}" '
+            $0 == v {found=1; next}
+            found && /^## / {exit}
+            found {print}
+          ' README.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "No '## ${VERSION}' section found in README.md" >&2
+            exit 1
+          fi
+          printf '\n[Full changelog](https://github.com/%s#readme)\n' "${GITHUB_REPOSITORY}" >> RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -63,6 +83,6 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           gh release create "${GITHUB_REF_NAME}" \
             --title "Apogee ${VERSION}" \
-            --notes "See the changelog in the README for details." \
+            --notes-file RELEASE_NOTES.md \
             "apogee-${VERSION}-chrome.zip" \
             "apogee-${VERSION}-firefox.zip"

@@ -123,6 +123,11 @@ result includes both the signed PSET and its transaction id.
 
 ## Unreleased
 
+- **Smaller things** — the Testnet/Regtest marker beside the logo is now a
+  hard-edged caution placard in the console voice rather than a rounded pill.
+
+## 0.7.0
+
 - **The balance is the whole portfolio, not just L-BTC.** A wallet holding USDt
   and no L-BTC used to read "0 sats" at the top of the panel while the Tokens
   list right below it showed a real balance. The headline figure now folds in
@@ -137,18 +142,23 @@ result includes both the signed PSET and its transaction id.
   in flight the figure keeps the same "not final" pulse the wallet already uses
   for an unconfirmed balance, and stops pulsing once the rate has definitively
   failed rather than pulsing forever. A wallet holding only L-BTC sees no change
-  at all — same figure, same wording.
-- **Display only.** Send and Swap read per-asset balances straight from the chain,
-  so a wrong or missing rate can misprice this figure but can never change what
-  leaves the wallet. See [`docs/price-sources.md`](docs/price-sources.md).
-- **Smaller things** — the Testnet/Regtest marker beside the logo is now a
-  hard-edged caution placard in the console voice rather than a rounded pill.
-
-## 0.7.0
-
-A security-hardening release: everything below hardens what Apogee already
-does — no workflow changes.
-
+  at all — same figure, same wording. Send and Swap read per-asset balances
+  straight from the chain, so a wrong or missing rate can misprice this figure
+  but can never change what leaves the wallet. See
+  [`docs/price-sources.md`](docs/price-sources.md).
+- **Coins: see and tidy your unspent outputs.** A new screen under Settings lists
+  every UTXO grouped by asset, and combines one asset's outputs into a single
+  output when they've fragmented across many small pieces. The pending
+  consolidation shows its txid with an explorer link and clears itself once the
+  chain sees it.
+- **Liquid apps can do more, and each capability is its own permission.** Beyond
+  connecting and requesting a send, an app can ask for your unspent outputs, a
+  public wallet descriptor, or a signature on a transaction it built — granted or
+  refused one at a time. A signing request is revalidated against the wallet by
+  its own [PSET analyzer](docs/provider-pset-analyzer.md) and shows the exact
+  inputs, recipients, asset changes, and fees before you approve; Apogee returns
+  the signed transaction and broadcasts only when the app asked and you agreed.
+  Apps discover the wallet through the standard `liquid:requestProvider` event.
 - **Approvals show exactly what you're agreeing to.** Send approvals display
   the recipient's full address instead of a shortened one, and the requesting
   site's domain stays visible even when the origin is long. Token sends mark
@@ -170,6 +180,10 @@ does — no workflow changes.
   only for the moment a wallet signs, not all at once for the whole session.
   A password step-up that hits the lockout now shows its countdown and offers a
   way back out.
+- **Smaller things** — a one-time intro plays on first run; transactions open in
+  liquid.network rather than blockstream.info; amounts are set in the telemetry
+  face with tickers in the body face; a Settings drawer scrolls itself into view
+  instead of opening off-screen.
 - **Under the hood** — the wallet engine rides out service-worker restarts with
   reconnect backoff and per-connection state; resetting the wallet also clears
   the cached asset icons it displayed; CI third-party actions are pinned to
