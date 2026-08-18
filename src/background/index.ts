@@ -27,10 +27,7 @@ import { claimSecret, type ParkedSecret } from "@/lib/qr-secret";
 import { clearAssetIconCache } from "@/lib/asset-icons";
 import { evaluateUpdate } from "@/lib/version-check";
 import { APP_VERSION } from "@/version";
-import {
-  isTxManifestExecutionNetwork,
-  txManifestExpectedGenesisHash,
-} from "@/tx-manifest/network";
+import { txManifestExpectedGenesisHash } from "@/tx-manifest/network";
 import { browser } from "@/lib/ext";
 // Static imports — dynamic import() is disallowed in the MV3 service worker
 // global scope per the HTML spec (Chrome blocks it at runtime).
@@ -105,6 +102,7 @@ import {
   serializeLiquidRpcError,
 } from "@/provider/liquid-rpc-errors";
 import { finalizeAndBroadcastProviderPset } from "@/provider/liquid-provider-pset-broadcast";
+import { withAuthorizedProviderTxManifestExecution } from "@/provider/liquid-provider-tx-manifest-authorization";
 import {
   SIMPLICITY_LENDING_V3_ACCEPT_OFFER,
   SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT,
@@ -2119,127 +2117,88 @@ async function executeProviderTxManifest(
   invocation: LiquidExecuteTxManifestParams,
 ): Promise<LiquidExecuteTxManifestResult> {
   try {
-    const connection = await migrateLegacyConnection(origin);
-    if (!connection?.permissions.methods.includes(LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST)) {
-      throw providerError(
-        LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
-        "This origin is not authorized to execute TX Manifests.",
-        LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
-      );
-    }
-    if (
-      invocation.chainId !== connection.chainId ||
-      invocation.accountIdentifier !== connection.accountIdentifier
-    ) {
-      throw providerError(
-        LIQUID_RPC_ERROR_CODES.INVALID_PARAMS,
-        "The TX Manifest chain and account must exactly match the connected wallet.",
-        LIQUID_RPC_ERROR_REASONS.INVALID_PARAMS,
-        { path: "params.accountIdentifier" },
-      );
-    }
-    const info = await walletInfo(connection.walletId).catch(async () => {
-      await removeConnectedSite(origin);
-      throw providerError(
-        LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
-        "The connected wallet is no longer available.",
-        LIQUID_RPC_ERROR_REASONS.UNAUTHORIZED,
-      );
-    });
-    if (!isTxManifestExecutionNetwork(info.network)) {
-      throw providerError(
-        LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
-        "TX Manifest execution is not enabled for this Liquid network.",
-        LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
-        { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST, cause: "network" },
-      );
-    }
-    if (info.signer !== "local") {
-      throw providerError(
-        LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
-        info.signer === "jade"
-          ? "Jade TX Manifest execution is not enabled until BIP340 signing support is verified."
-          : "A watch-only wallet cannot execute TX Manifests.",
-        LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
-        { method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST, cause: info.signer },
-      );
-    }
-
-    const revision = connectionRevision(origin);
-    const generation = connectionGeneration;
-    const invocationDigest = await taggedCanonicalJsonHash(
-      "apogee/tx-manifest-invocation/v1",
-      invocation,
-    );
-    const key = txManifestIdempotencyKey({
-      origin,
-      accountIdentifier: invocation.accountIdentifier,
-      chainId: invocation.chainId,
-      requestId: invocation.requestId,
-    });
-    return await txManifestIdempotency.execute(
-      key,
-      invocationDigest,
-      async () => {
-        const plan = await engine<TxManifestRequirementPlan>({
-          kind: "resolveTxManifestRequirements",
+    return await withAuthorizedProviderTxManifestExecution(origin, invocation, {
+      loadConnection: migrateLegacyConnection,
+      loadWallet: walletInfo,
+      disconnect: removeConnectedSite,
+      continueExecution: async (connection, info) => {
+        const revision = connectionRevision(origin);
+        const generation = connectionGeneration;
+        const invocationDigest = await taggedCanonicalJsonHash(
+          "apogee/tx-manifest-invocation/v1",
           invocation,
-        });
-        const preparedContext = await prepareProviderTxManifest(
-          origin,
-          connection,
-          info,
-          revision,
-          generation,
-          plan,
         );
-        const review = await txManifestApprovalReview(preparedContext, info.network);
-        const id = `appr-${approvalSeq++}-${Date.now()}`;
-        const approval: ApprovalRequest = {
-          kind: "executeTxManifest",
-          id,
+        const key = txManifestIdempotencyKey({
           origin,
-          review,
-          network: toDappNetwork(info.network),
-          locked: keystore.isLocked(),
-          signerKind: info.signer,
-        };
-        return await new Promise<LiquidExecuteTxManifestResult>((resolve, reject) => {
-          parkApproval(id, {
-            kind: "executeTxManifest",
-            request: approval,
-            origin,
-            walletId: info.id,
-            descriptor: info.descriptor,
-            network: info.network,
-            invocation,
-            plan,
-            expectedPlanDigest: preparedContext.prepared.planDigest,
-            reviewedFee: {
-              actualFee: preparedContext.prepared.review.fee,
-              selectionFee: preparedContext.prepared.feeSelectionTarget,
-            },
-            executionKey: key,
-            invocationDigest,
-            permissionMethod: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST,
-            revision,
-            generation,
-            resolve: resolve as (result: unknown) => void,
-            reject,
-          });
-          void routeApproval(approval);
+          accountIdentifier: invocation.accountIdentifier,
+          chainId: invocation.chainId,
+          requestId: invocation.requestId,
         });
+        return txManifestIdempotency.execute(
+          key,
+          invocationDigest,
+          async () => {
+            const plan = await engine<TxManifestRequirementPlan>({
+              kind: "resolveTxManifestRequirements",
+              invocation,
+            });
+            const preparedContext = await prepareProviderTxManifest(
+              origin,
+              connection,
+              info,
+              revision,
+              generation,
+              plan,
+            );
+            const review = await txManifestApprovalReview(preparedContext, info.network);
+            const id = `appr-${approvalSeq++}-${Date.now()}`;
+            const approval: ApprovalRequest = {
+              kind: "executeTxManifest",
+              id,
+              origin,
+              review,
+              network: toDappNetwork(info.network),
+              locked: keystore.isLocked(),
+              signerKind: info.signer,
+            };
+            return new Promise<LiquidExecuteTxManifestResult>((resolve, reject) => {
+              parkApproval(id, {
+                kind: "executeTxManifest",
+                request: approval,
+                origin,
+                walletId: info.id,
+                descriptor: info.descriptor,
+                network: info.network,
+                invocation,
+                plan,
+                expectedPlanDigest: preparedContext.prepared.planDigest,
+                reviewedFee: {
+                  actualFee: preparedContext.prepared.review.fee,
+                  selectionFee: preparedContext.prepared.feeSelectionTarget,
+                },
+                executionKey: key,
+                invocationDigest,
+                permissionMethod: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST,
+                revision,
+                generation,
+                resolve: resolve as (result: unknown) => void,
+                reject,
+              });
+              void routeApproval(approval);
+            });
+          },
+          (checkpoint) =>
+            resumeProviderTxManifest(
+              origin,
+              invocation,
+              info,
+              revision,
+              generation,
+              checkpoint,
+            ),
+        );
       },
-      (checkpoint) =>
-        resumeProviderTxManifest(
-          origin,
-          invocation,
-          info,
-          revision,
-          generation,
-          checkpoint,
-        ),
-    );
+    });
   } catch (error) {
     if (error instanceof LiquidRpcError) throw error;
     throw txManifestExecutionError(error);
