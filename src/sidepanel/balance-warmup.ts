@@ -12,18 +12,28 @@
 // in that view), and a lock re-arms it explicitly.
 
 import { useEffect, useState } from "react";
+import { MAX_DIGIT_STRIKE_MS } from "@/sidepanel/digit-cycle";
 
-/** Longest a strike can run: the biggest delay (190ms) plus the longest duration
- *  (980ms) in digitCycle, rounded up. After this the flag clears, so a later
- *  remount doesn't re-apply a class whose animation has already finished. */
-const STRIKE_MS = 1_300;
+/** Longest a strike can run, with margin — derived from digitCycle's actual
+ *  range rather than a hand-copied number, so retuning it can't silently
+ *  desync this. Both the visible flag and the decision memo below expire on
+ *  this window. */
+const STRIKE_MS = MAX_DIGIT_STRIKE_MS + 100;
 
 let armed = true;
 let lastUnconfirmed = false;
 let lastSats: string | null = null;
-// Memo of the last decision, so repeat calls for the same state are idempotent —
-// StrictMode invokes effects twice in development, and a denomination toggle
-// re-runs them with the same underlying balance.
+// Memo of the last decision, so repeat calls for the SAME state within one
+// short window are idempotent — StrictMode invokes effects twice in
+// development, and a denomination toggle re-runs them with the same
+// underlying balance. Expires after STRIKE_MS (below) rather than only on
+// armBalanceStrike(): without that expiry, a component that unmounts and
+// remounts with an unchanged (sats, unconfirmed) — returning from the
+// step-up screen, which unmounts Wallet — would read this stale decision
+// forever and replay an animation that already finished. `armed`,
+// `lastUnconfirmed` and `lastSats` are NOT expired here: they're the actual
+// state machine that detects the next real change, and have to persist
+// indefinitely for that to work.
 let memo: { key: string; strike: boolean } | null = null;
 
 /** Re-arm, so the next balance shown strikes again. Called on lock. */
@@ -61,6 +71,14 @@ function shouldStrike(sats: string, unconfirmed: boolean): boolean {
   lastUnconfirmed = unconfirmed;
   lastSats = sats;
   memo = { key, strike };
+  // Only ever one live timer per fresh computation: a repeat call for the
+  // same key returns early above without scheduling another. The guard
+  // checks the memo still names THIS key before clearing it, so an unrelated
+  // later write (a different key) can't have its memo clobbered by an
+  // earlier key's stale expiry.
+  setTimeout(() => {
+    if (memo?.key === key) memo = null;
+  }, STRIKE_MS);
   return strike;
 }
 
@@ -80,8 +98,15 @@ export const __shouldStrike = shouldStrike;
 export function useBalanceStrike(sats: string, unconfirmed: boolean, ready: boolean): boolean {
   const [strike, setStrike] = useState(false);
   useEffect(() => {
-    if (!ready) return;
-    if (!shouldStrike(sats, unconfirmed)) return;
+    // Both early-return paths must clear a strike from a PRIOR run explicitly:
+    // the timeout below only fires on the run that set it, so a deps change
+    // landing here mid-strike (cleanup already killed that timeout) would
+    // otherwise leave `strike` latched true forever — and since it never goes
+    // false→true again, no future real strike could replay either.
+    if (!ready || !shouldStrike(sats, unconfirmed)) {
+      setStrike(false);
+      return;
+    }
     setStrike(true);
     const t = window.setTimeout(() => setStrike(false), STRIKE_MS);
     return () => window.clearTimeout(t);

@@ -299,6 +299,9 @@ export function Wallet({
   // The whole portfolio as one LBTC-denominated figure — see lib/portfolio.ts.
   const total = portfolioTotal({ sync, btcUsd });
   const holdsPeggedToken = total.holdsPegged;
+  // Also read by the "not final" pulse below — hoisted so the two don't
+  // duplicate the same `txs.some(...)` scan.
+  const hasUnconfirmed = txs.some((t) => t.height === null);
   // Balance strike (the neon warm-up). MUST live up here with the other hooks:
   // `view !== "home"` returns early below, so calling it beside the hero render
   // made it conditional — React saw fewer hooks on Settings and blanked the panel.
@@ -310,7 +313,7 @@ export function Wallet({
   // those is a confirmation.
   const warmup = useBalanceStrike(
     String(total.totalSats),
-    txs.some((t) => t.height === null),
+    hasUnconfirmed,
     !(hidden || !sync) && (denom !== "fiat" || rate != null),
   );
   useEffect(() => {
@@ -615,7 +618,6 @@ export function Wallet({
     );
   }
 
-  const hasUnconfirmed = txs.some((t) => t.height === null);
   // A held token whose price hasn't landed means the figure is still settling —
   // reuse the existing "not final" affordance rather than inventing one.
   // `priceFailed` gives it a terminal state so it can't pulse forever.

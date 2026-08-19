@@ -10,6 +10,7 @@ import type {
 } from "react";
 import { AlertTriangle, Check, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { digitCycle } from "@/sidepanel/digit-cycle";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 
@@ -315,18 +316,6 @@ export function figureSegments(
  *  lettering comes for free; only the "1" is narrow (0.52ch, both widths). It
  *  gets a 0.7ch cell — enough padding to keep a hint of the grid without
  *  reading as a gap next to the wide digits. */
-/** Per-glyph warm-up timing. Deterministic from the glyph's position rather than
- *  random, so a re-render mid-animation can't re-roll a digit's beat and restart
- *  it — and so the pattern is reproducible when tuning it. The two primes give a
- *  long-period, non-obvious sequence: no two adjacent digits share a beat, and
- *  the figure lights raggedly rather than left-to-right. */
-function digitCycle(index: number): { delay: number; duration: number } {
-  return {
-    delay: (index * 37) % 190,
-    duration: 620 + ((index * 53) % 5) * 90,
-  };
-}
-
 export function TelemetryNumber({
   value,
   wide = false,
@@ -338,8 +327,8 @@ export function TelemetryNumber({
   wide?: boolean;
   glow?: boolean;
   // Play the neon strike once as these numerals appear (see .telemetry-digit).
-  // Callers arm it via takeBalanceWarmup(); passing it on every render would
-  // replay the flicker on every balance poll.
+  // Callers decide this via useBalanceStrike() (balance-warmup.ts); passing it
+  // on every render would replay the flicker on every balance poll.
   warmup?: boolean;
   className?: string;
 }) {
