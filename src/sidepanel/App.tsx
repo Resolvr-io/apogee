@@ -3,6 +3,7 @@ import { Compass, Lock, RotateCcw, Settings } from "lucide-react";
 import type { KeystoreState } from "@/keystore/keystore";
 import { DEBUG_ENTERPRISE_BUILD } from "@/lib/debug";
 import { useDemoFunds } from "@/lib/demo-funds";
+import { armBalanceWarmup } from "@/sidepanel/balance-warmup";
 import { ErrorText, IconButton, LoadingPill } from "@/sidepanel/components/ui";
 import { ToastView, type ToastNotice } from "@/sidepanel/components/Toast";
 import { ConnectionBar } from "@/sidepanel/components/ConnectionBar";
@@ -302,6 +303,9 @@ export function App() {
       const m = msg as { type?: string; request?: ApprovalRequest; id?: string };
       if (m.type === "apogee/locked") {
         setApproval(null); // dismiss any stale approval overlay on lock
+        // The numerals strike again on the next unlock — being locked out and
+        // back in is exactly the moment the display should read as coming alive.
+        armBalanceWarmup();
         // Reset to the balance view: auto-lock can fire while the user is on a
         // sub-view (e.g. Settings), and without this they'd return there after
         // unlocking (or recovering a seed) instead of the balance. Manual lock
@@ -369,6 +373,7 @@ export function App() {
 
   async function lock() {
     await wallet.lock();
+    armBalanceWarmup();
     setView("home");
     await refresh();
   }
