@@ -4,10 +4,13 @@
 // prompt popup when it isn't. Reject (or closing the popup) fails the request.
 
 import { useEffect, useState } from "react";
-import { Check } from "lucide-react";
-import type { ApprovalRequest } from "@/engine/protocol";
+import { Check, Eye, Send, PenLine, FileCode2, Coins, KeyRound, Bell } from "lucide-react";
+import type { ApprovalRequest, TxManifestAssetMeta } from "@/engine/protocol";
 import { formatAssetAmountExact, formatBaseUnits } from "@/lib/format";
 import { shortenHex } from "@/lib/utils";
+import { KNOWN_ASSETS } from "@/lib/asset-registry";
+import type { LiquidNetwork } from "@/keystore/keystore";
+import { AssetIcon } from "@/sidepanel/components/AssetIcon";
 import {
   Button,
   Card,
@@ -92,9 +95,56 @@ export function ApprovalOverlay({
   );
 }
 
+/** Human-readable labels for RPC methods shown on the connect screen. */
+const METHOD_LABELS: Record<string, { label: string; description: string; icon: typeof Eye; sensitive?: boolean }> = {
+  getBalance: { label: "Read balances", description: "See this account's asset balances.", icon: Eye },
+  sendTransfer: { label: "Request sends", description: "Ask to send funds — each send needs your approval.", icon: Send },
+  signPset: {
+    label: "Sign transactions",
+    description:
+      "Ask for transaction signatures. Each transaction needs your approval and separately shows its exact inputs, recipients, asset changes, and fees.",
+    icon: PenLine,
+  },
+  experimental_getTxManifestSupport: {
+    label: "Check contract support",
+    description: "See which trusted contract bundles and actions this wallet supports.",
+    icon: FileCode2,
+  },
+  experimental_executeTxManifest: {
+    label: "Execute contracts",
+    description: "Request contract actions like lending. Each action is built, verified, and shown for approval before signing.",
+    icon: FileCode2,
+  },
+  getUTXOs: {
+    label: "View coin history",
+    description:
+      "Reveals individual coins, amounts, and transaction links for this account, including associated addresses. Does not reveal blinding keys or other wallet secrets.",
+    icon: Coins,
+    sensitive: true,
+  },
+  getWalletDescriptor: {
+    label: "Derive addresses",
+    description:
+      "Lets this site derive and correlate this account's scripts and unconfidential addresses. Does not reveal private spend keys, blinding keys, or the ability to unblind outputs.",
+    icon: KeyRound,
+    sensitive: true,
+  },
+};
+
+/** Human-readable labels for wallet events shown on the connect screen. */
+const EVENT_LABELS: Record<string, { label: string; description: string; icon: typeof Eye }> = {
+  bip122_walletDescriptorChanged: {
+    label: "Watch address changes",
+    description: "Be notified when this account's public wallet descriptor changes.",
+    icon: Bell,
+  },
+};
+
 export function Approval({ request, onClose }: { request: ApprovalRequest; onClose: () => void }) {
   const isConnect = request.kind === "connect";
   const isPset = request.kind === "signPset";
+  const isManifest = request.kind === "executeTxManifest";
+  const resumesManifest = request.kind === "executeTxManifest" && request.recovery === true;
   const broadcastsPset = request.kind === "signPset" && request.broadcast;
   const sendReview = request.kind === "send" ? request.review : null;
   const tokenAmount = sendReview?.assetId
@@ -118,9 +168,10 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
   const [error, setError] = useState("");
   // Brief confirmation (checkmark) shown after a successful decision, before the
   // overlay closes. Kind-aware: connect → Connected, send → Sent, provider
-  // PSET → Signed or Sent according to its approved broadcast flag, and Jade
-  // send → Approved while the device flow continues.
-  const [done, setDone] = useState<"" | "connected" | "sent" | "approved" | "signed">("");
+  // PSET → Signed or Sent according to its approved broadcast flag, manifest →
+  // Executed (not "Sent" — claiming collateral or repaying a loan isn't a send),
+  // and Jade send → Approved while the device flow continues.
+  const [done, setDone] = useState<"" | "connected" | "sent" | "approved" | "signed" | "executed">("");
   const [autoLock, setAutoLock] = useState(15);
   const [sendPassword, setSendPassword] = useState("");
   // Auto-lock "never" steps up auth: any local signing requires the password.
@@ -167,9 +218,11 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
             ? "sent"
             : isPset
               ? "signed"
-              : jade
-                ? "approved"
-                : "sent",
+              : isManifest
+                ? "executed"
+                : jade
+                  ? "approved"
+                  : "sent",
       );
     } catch (err) {
       setError(errMessage(err));
@@ -195,7 +248,9 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
         ? "Sent"
         : done === "signed"
           ? "Signed"
-          : "Approved";
+          : done === "executed"
+            ? "Executed"
+            : "Approved";
     // Connect success uses a blue Sputnik glyph (vs the green check for sends),
     // so the two outcomes read differently at a glance — and it nods to Apogee's
     // orbital/telemetry theme.
@@ -239,7 +294,11 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
               ? "Sign & broadcast PSET"
               : isPset
                 ? "Sign PSET"
-                : "Approve transaction"}
+                : isManifest
+                  ? resumesManifest
+                    ? "Resume contract transaction"
+                    : "Execute contract action"
+                  : "Approve transaction"}
         </h2>
         {/* Middle-truncate: clipping the end would hide the registrable
             domain/TLD behind a long subdomain — the part that identifies the
@@ -250,45 +309,81 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
       </div>
 
       {request.kind === "connect" ? (
-        <>
+        <div className="flex flex-col gap-3">
           <p className="text-sm text-[color:var(--text-secondary)]">
             {request.legacy
-              ? "This site wants to connect to your wallet. It will see your addresses and balance, but can't move funds without your approval."
-              : "This site is requesting the wallet permissions shown below. Transaction and signing requests still require their own review."}
+              ? "This site wants to connect. It will see your addresses and balance, but can't move funds without your approval."
+              : "This site wants to connect. Review what it's asking for — every transaction still needs your approval."}
           </p>
-          {!request.legacy && request.methods.includes("getUTXOs") && (
-            <p className="mt-2 text-xs leading-relaxed text-[color:var(--warning-text)]">
-              UTXO access reveals individual coins, addresses, amounts, and transaction links for
-              this account. It does not reveal blinding keys or other wallet secrets.
-            </p>
-          )}
-          {!request.legacy && request.methods.includes("getWalletDescriptor") && (
-            <p className="mt-2 text-xs leading-relaxed text-[color:var(--warning-text)]">
-              Descriptor access lets this site derive and correlate this account&apos;s scripts and
-              unconfidential addresses. It does not reveal private spend keys, blinding keys, or
-              the ability to unblind outputs.
-            </p>
-          )}
-          {!request.legacy && request.methods.includes("signPset") && (
-            <p className="mt-2 text-xs leading-relaxed text-[color:var(--warning-text)]">
-              PSET signing lets this site ask for transaction signatures. Every request still
-              shows its exact inputs, recipients, asset changes, and fees for separate approval.
-            </p>
-          )}
-          <dl className="mt-3 flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
+          <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
             <Row label="Wallet" value={request.fingerprint.toUpperCase()} console />
             <Row label="Network" value={networkLabel(request.network)} />
-            {!request.legacy && <Row label="Methods" value={request.methods.join(", ")} mono />}
-            {!request.legacy && request.events.length > 0 && (
-              <Row label="Events" value={request.events.join(", ")} mono />
-            )}
           </dl>
-        </>
+          {!request.legacy && (request.methods.length > 0 || request.events.length > 0) && (
+            <ReviewSection title="Permissions">
+              {request.methods.map((method) => {
+                const info = METHOD_LABELS[method];
+                const Icon = info?.icon;
+                return (
+                  <div
+                    key={method}
+                    className="flex items-start gap-2.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-2.5"
+                  >
+                    {Icon && (
+                      <Icon
+                        size={16}
+                        className={`mt-0.5 shrink-0 ${info?.sensitive ? "text-[color:var(--warning-text)]" : "text-[color:var(--text-subtle)]"}`}
+                      />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-sm font-medium ${info?.sensitive ? "text-[color:var(--warning-text)]" : "text-[color:var(--text-primary)]"}`}>
+                        {info?.label ?? method}
+                      </div>
+                      {info?.description && (
+                        <div className="mt-0.5 text-xs leading-relaxed text-[color:var(--text-subtle)]">
+                          {info.description}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              {request.events.map((event) => {
+                const info = EVENT_LABELS[event];
+                const Icon = info?.icon;
+                return (
+                  <div
+                    key={event}
+                    className="flex items-start gap-2.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-2.5"
+                  >
+                    {Icon && <Icon size={16} className="mt-0.5 shrink-0 text-[color:var(--text-subtle)]" />}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium text-[color:var(--text-primary)]">
+                        {info?.label ?? event}
+                      </div>
+                      {info?.description && (
+                        <div className="mt-0.5 text-xs leading-relaxed text-[color:var(--text-subtle)]">
+                          {info.description}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </ReviewSection>
+          )}
+        </div>
       ) : request.kind === "signPset" ? (
         <ProviderPsetReview
           review={request.review}
           network={request.network}
           broadcast={request.broadcast}
+        />
+      ) : request.kind === "executeTxManifest" ? (
+        <TxManifestReview
+          review={request.review}
+          network={request.network}
+          recovery={request.recovery === true}
         />
       ) : (
         <>
@@ -420,6 +515,8 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
                 : jade
                   ? "Approve & sign on Jade"
                   : "Approve & sign"
+            ) : isManifest ? (
+              resumesManifest ? "Resume broadcast" : "Approve & execute"
             ) : jade ? (
               "Approve & sign on Jade"
             ) : (
@@ -432,6 +529,249 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
         </div>
       )}
     </Card>
+  );
+}
+
+type TxManifestReviewDTO = Extract<
+  ApprovalRequest,
+  { kind: "executeTxManifest" }
+>["review"];
+
+/** Look up resolved metadata with a shortened-hex fallback for unregistered assets. */
+function metaFor(review: TxManifestReviewDTO, assetId: string): TxManifestAssetMeta {
+  return review.assets?.[assetId] ?? {
+    label: shortenHex(assetId, 6, 6),
+    ticker: null,
+    precision: null,
+    source: "fallback",
+  };
+}
+
+/** Older checkpoints predate `source`, so recover built-in provenance by ID. */
+function manifestAssetSource(
+  meta: TxManifestAssetMeta,
+  assetId: string,
+): NonNullable<TxManifestAssetMeta["source"]> {
+  if (meta.source) return meta.source;
+  if (KNOWN_ASSETS[assetId]) return "builtin";
+  const fallback = shortenHex(assetId, 6, 6);
+  return meta.ticker == null && meta.precision == null && meta.label === fallback
+    ? "fallback"
+    : "registry";
+}
+
+/** Map the Approval screen's DappNetwork to the LiquidNetwork AssetIcon expects. */
+function manifestSpecNetwork(network: "mainnet" | "testnet" | "regtest"): LiquidNetwork {
+  return network === "mainnet" ? "liquid" : network === "testnet" ? "liquidtestnet" : "regtest";
+}
+
+/** A token row: icon + role label + asset name on the left, precision-scaled amount on the right. */
+function ManifestAssetRow({
+  review,
+  assetId,
+  amount,
+  specNetwork,
+  roleLabel,
+  strong,
+}: {
+  review: TxManifestReviewDTO;
+  assetId: string;
+  amount: string;
+  specNetwork: LiquidNetwork;
+  roleLabel: string;
+  strong?: boolean;
+}) {
+  const meta = metaFor(review, assetId);
+  const source = manifestAssetSource(meta, assetId);
+  const displayLabel =
+    source === "registry" ? `registry · ${meta.label.slice(0, 24)}` : meta.label;
+  return (
+    <div className="flex items-center gap-2.5 py-1">
+      <AssetIcon assetId={assetId} label={meta.label} network={specNetwork} size="size-8" textSize="text-xs" />
+      <div className="min-w-0 flex-1">
+        <div className={`text-sm ${strong ? "text-[color:var(--text-strong)]" : "text-[color:var(--text-primary)]"}`}>
+          {roleLabel}
+        </div>
+        <div
+          className="text-[10px] text-[color:var(--text-subtle)]"
+          title={
+            source === "registry"
+              ? `"${meta.label}" comes from the public asset registry and is not verified. Identify the asset by its exact ID in Asset identities.`
+              : assetId
+          }
+        >
+          {displayLabel}
+        </div>
+        <div className="font-mono text-[9px] text-[color:var(--text-subtle)]" title={assetId}>
+          {shortenHex(assetId, 12, 10)}
+        </div>
+      </div>
+      <div className="shrink-0 text-right">
+        <TelemetryNumber value={formatAssetAmountExact(amount, meta.precision)} glow={false} />
+        <div className="font-mono text-[9px] text-[color:var(--text-subtle)]">
+          {formatBaseUnits(amount)} {assetId === review.feeAssetId ? "sats" : "base units"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function manifestTechnicalAssets(
+  review: TxManifestReviewDTO,
+): Array<{ label: string; value: string }> {
+  const assets: Array<{ label: string; value: string | undefined }> = [
+    { label: "Fee asset", value: review.feeAssetId },
+    {
+      label: "Factory asset",
+      value: "factoryAssetId" in review ? review.factoryAssetId : undefined,
+    },
+    {
+      label: "Principal asset",
+      value: "principalAssetId" in review ? review.principalAssetId : undefined,
+    },
+    {
+      label: "Collateral asset",
+      value: "collateralAssetId" in review ? review.collateralAssetId : undefined,
+    },
+    {
+      label: "Borrower NFT",
+      value: "borrowerNftAssetId" in review ? review.borrowerNftAssetId : undefined,
+    },
+    {
+      label: "Lender NFT",
+      value: "lenderNftAssetId" in review ? review.lenderNftAssetId : undefined,
+    },
+  ];
+  return assets.filter(
+    (asset): asset is { label: string; value: string } => asset.value !== undefined,
+  );
+}
+
+function TxManifestReview({
+  review,
+  network,
+  recovery = false,
+}: {
+  review: TxManifestReviewDTO;
+  network: "mainnet" | "testnet" | "regtest";
+  recovery?: boolean;
+}) {
+  const specNetwork = manifestSpecNetwork(network);
+  const feeMeta = metaFor(review, review.feeAssetId);
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Header: what the user is approving, prominent. */}
+      <div className="rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-subtle)]">
+          {review.protocolLabel}
+        </div>
+        <div className="text-base font-semibold text-[color:var(--text-strong)]">
+          {review.actionLabel}
+        </div>
+        <div className="mt-1 text-xs text-[color:var(--text-secondary)]">
+          {networkLabel(network)} · {recovery ? "resume exact saved broadcast" : "approve to sign and broadcast"}
+        </div>
+      </div>
+      {recovery && (
+        <p className="text-sm text-[color:var(--text-secondary)]">
+          Apogee previously saved this exact signed transaction after you approved it, but could
+          not durably confirm submission. Resuming broadcasts those same bytes; it does not rebuild
+          or re-sign the transaction.
+        </p>
+      )}
+
+      {review.kind === "createFactory" ? (
+        <ReviewSection title="Borrower setup">
+          <ReviewItem>
+            <ManifestAssetRow review={review} assetId={review.factoryAssetId} amount="1" specNetwork={specNetwork} roleLabel="Factory asset" strong />
+            <ManifestAssetRow review={review} assetId={review.feeAssetId} amount={review.fundingAmount} specNetwork={specNetwork} roleLabel="Funding input" />
+            <Row label="Factory auth NFT" value="1 to this wallet" strong />
+          </ReviewItem>
+        </ReviewSection>
+      ) : review.kind === "acceptOffer" || review.kind === "createOffer" ? (
+        <ReviewSection title="Loan terms">
+          <ReviewItem>
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.principalAmount} specNetwork={specNetwork} roleLabel="Principal" strong />
+            <ManifestAssetRow review={review} assetId={review.collateralAssetId} amount={review.collateralAmount} specNetwork={specNetwork} roleLabel="Collateral" />
+            {review.kind === "acceptOffer" && review.lenderNftAssetId && (
+              <ManifestAssetRow review={review} assetId={review.lenderNftAssetId} amount="1" specNetwork={specNetwork} roleLabel="Lender NFT received" />
+            )}
+            <Row label="Interest" value={`${formatBaseUnits(review.interestRateBasisPoints)} bps`} />
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.totalDebt} specNetwork={specNetwork} roleLabel="Total debt" />
+            <Row label="Expires at height" value={String(review.expirationHeight)} />
+          </ReviewItem>
+        </ReviewSection>
+      ) : review.kind === "claimLenderVault" ? (
+        <ReviewSection title="Repayment collected">
+          <ReviewItem>
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.principalAmount} specNetwork={specNetwork} roleLabel="Net to wallet" strong />
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.grossDebt} specNetwork={specNetwork} roleLabel="Gross repayment" />
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.interestAmount} specNetwork={specNetwork} roleLabel="Interest included" />
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.protocolFeeAmount} specNetwork={specNetwork} roleLabel="Protocol fee" />
+            <ManifestAssetRow review={review} assetId={review.lenderNftAssetId} amount="1" specNetwork={specNetwork} roleLabel="Lender NFT burned" />
+          </ReviewItem>
+        </ReviewSection>
+      ) : (
+        <ReviewSection title={review.kind === "claimPrincipal" ? "Funds claimed" : review.kind === "cancelOffer" ? "Offer cancelled" : review.kind === "repayLoan" ? "Loan repaid" : "Expired loan liquidated"}>
+          <ReviewItem>
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.principalAmount} specNetwork={specNetwork} roleLabel="Principal" />
+            <ManifestAssetRow review={review} assetId={review.collateralAssetId} amount={review.collateralAmount} specNetwork={specNetwork} roleLabel="Collateral" strong />
+            {review.totalDebt !== undefined && (
+              <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.totalDebt} specNetwork={specNetwork} roleLabel="Total debt" />
+            )}
+            {review.protocolFeeAmount !== undefined && (
+              <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.protocolFeeAmount} specNetwork={specNetwork} roleLabel="Protocol fee" />
+            )}
+            <Row label="Expiration height" value={String(review.expirationHeight)} />
+          </ReviewItem>
+        </ReviewSection>
+      )}
+
+      <ReviewSection title="Wallet effect">
+        <ReviewItem>
+          <ManifestAssetRow review={review} assetId={review.feeAssetId} amount={review.fee} specNetwork={specNetwork} roleLabel="Network fee" strong />
+          {"principalChange" in review && BigInt(review.principalChange) !== 0n && (
+            <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.principalChange} specNetwork={specNetwork} roleLabel="Principal change" />
+          )}
+          {review.kind === "createOffer" && BigInt(review.collateralChange) !== 0n && (
+            <ManifestAssetRow review={review} assetId={review.collateralAssetId} amount={review.collateralChange} specNetwork={specNetwork} roleLabel="Collateral change" />
+          )}
+          {BigInt(review.feeChange) !== 0n && (
+            <ManifestAssetRow review={review} assetId={review.feeAssetId} amount={review.feeChange} specNetwork={specNetwork} roleLabel={`${feeMeta.label} change`} />
+          )}
+        </ReviewItem>
+      </ReviewSection>
+
+      <ReviewSection title="Asset identities">
+        <ReviewItem>
+          {manifestTechnicalAssets(review).map(({ label, value }) => (
+            <Row key={label} label={label} value={value} mono wrap />
+          ))}
+        </ReviewItem>
+      </ReviewSection>
+
+      <details className="rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-xs">
+        <summary className="cursor-pointer text-[color:var(--text-secondary)]">Technical details</summary>
+        <div className="mt-2 flex flex-col gap-2">
+          {[
+            { label: "Account", value: review.accountIdentifier },
+            { label: "Request", value: review.requestId },
+            { label: "Bundle", value: review.bundleHash },
+            { label: "Manifest action", value: review.action },
+          ].map(({ label, value }) => (
+            <div key={label}>
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-subtle)]">
+                {label}
+              </div>
+              <div className="mt-0.5 break-all font-mono text-[color:var(--text-primary)]">
+                {value}
+              </div>
+            </div>
+          ))}
+        </div>
+      </details>
+    </div>
   );
 }
 

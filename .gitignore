@@ -1,11 +1,14 @@
 node_modules/
 dist/
+dist-lending-regtest/
 *.zip
 .DS_Store
 *.log
 .vite/
+.pnpm-store/
 playwright-report/
 test-results/
+target/
 
 # local-only env (enterprise API credentials for dev/test) — never commit
 .env.local

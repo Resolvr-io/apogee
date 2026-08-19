@@ -17,6 +17,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  FileCode2,
   Eye,
   EyeOff,
   Lock,
@@ -473,7 +474,12 @@ export function Wallet({
           : `${formatSats(amt)} sats`;
     onToast({
       id: Date.now(),
-      title: received ? "Received" : "Sent",
+      title:
+        tx.txManifest?.status === "verified"
+          ? tx.txManifest.actionLabel
+          : received
+            ? "Received"
+            : "Sent",
       message,
       kind: received ? "success" : "info",
     });
@@ -1126,6 +1132,8 @@ function TxRow({
     tx.balanceChange !== 0 &&
     ((tx.balanceChange > 0 && token[1] < 0) || (tx.balanceChange < 0 && token[1] > 0));
 
+  const isManifest = tx.txManifest != null;
+
   const receive = token ? token[1] > 0 : tx.balanceChange >= 0;
   const pending = tx.height === null;
   const explorer = explorerTxUrl(network, tx.txid);
@@ -1173,27 +1181,67 @@ function TxRow({
   } else {
     amountText = ""; // not used for swap rows
   }
+  const manifestLabel =
+    tx.txManifest?.status === "verified"
+      ? tx.txManifest.actionLabel
+      : tx.txManifest?.status === "unsupported"
+        ? "Unsupported manifest action"
+        : tx.txManifest?.status === "unverified"
+          ? "Unverified manifest marker"
+          : null;
+  const activityIdentity = (
+    <span className="flex min-w-0 flex-1 flex-col">
+      {manifestLabel && (
+        <span
+          className={cn(
+            "truncate text-sm",
+            tx.txManifest?.status === "verified"
+              ? "text-[color:var(--text-primary)]"
+              : "text-[color:var(--warning-text)]",
+          )}
+          title={manifestLabel}
+        >
+          {manifestLabel}
+        </span>
+      )}
+      <span
+        className={cn(
+          "text-[color:var(--text-primary)]",
+          manifestLabel && "text-[11px] text-[color:var(--text-subtle)]",
+          !manifestLabel && "text-sm",
+        )}
+      >
+        {formatRelative(tx.timestamp)}
+      </span>
+    </span>
+  );
   return (
     <details className="drawer">
       <summary className="flex items-center gap-2.5 px-3 py-2">
         <span
-          aria-label={isSwap ? "Swap" : receive ? "Received" : "Sent"}
+          aria-label={isSwap ? "Swap" : isManifest ? "Contract" : receive ? "Received" : "Sent"}
           className={cn(
             "flex size-8 shrink-0 items-center justify-center rounded-full",
-            isSwap
+            isSwap || isManifest
               ? "bg-[color:var(--accent-soft)] text-[color:var(--accent-strong)]"
               : receive
                 ? "bg-[color:var(--success-bg)] text-[color:var(--success-text)]"
                 : "bg-[color:var(--danger-bg)] text-[color:var(--danger-text)]",
           )}
         >
-          {isSwap ? <ArrowLeftRight size={16} /> : receive ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}
+          {isSwap ? (
+            <ArrowLeftRight size={16} />
+          ) : isManifest ? (
+            <FileCode2 size={16} />
+          ) : receive ? (
+            <ArrowDownLeft size={16} />
+          ) : (
+            <ArrowUpRight size={16} />
+          )}
         </span>
         {isSwap ? (
           <>
-            <span className="flex min-w-0 flex-1 flex-col">
-              <span className="text-sm text-[color:var(--text-primary)]">{formatRelative(tx.timestamp)}</span>
-            </span>
+            {activityIdentity}
             <span className="ml-auto flex items-center gap-2">
               <span className={cn("text-sm text-[color:var(--text-strong)]", pending && "animate-pulse")}>
                 {hidden ? (
@@ -1210,7 +1258,7 @@ function TxRow({
           </>
         ) : (
           <>
-            <span className="text-sm text-[color:var(--text-primary)]">{formatRelative(tx.timestamp)}</span>
+            {activityIdentity}
             <span className="ml-auto flex items-center gap-2">
               <span className={cn("text-sm text-[color:var(--text-strong)]", pending && "animate-pulse")}>
                 {hidden ? (
@@ -1250,6 +1298,26 @@ function TxRow({
         </div>
         <Row label="Time" value={formatTimestamp(tx.timestamp)} />
         <Row label="Status" value={pending ? "Unconfirmed" : `Block ${tx.height}`} />
+        {tx.txManifest?.status === "verified" && (
+          <>
+            <Row
+              label="Protocol"
+              value={`${tx.txManifest.protocolLabel} ${tx.txManifest.version}`}
+            />
+            <Row label="Action" value={tx.txManifest.actionLabel} />
+            <Row label="Manifest" value="Verified wallet action" />
+            <Row
+              label="Bundle"
+              value={shortenHex(tx.txManifest.bundleHash.replace(/^sha256:/, ""), 6, 6)}
+            />
+          </>
+        )}
+        {tx.txManifest?.status === "unsupported" && (
+          <Row label="Manifest" value="Unsupported on-chain bundle" />
+        )}
+        {tx.txManifest?.status === "unverified" && (
+          <Row label="Manifest" value="Marker could not be verified" />
+        )}
         {isSwap && swapSentText && swapRecvText && (
           <>
             <Row label="Delivered" value={swapSentText.replace(/^[+-]/, "")} />

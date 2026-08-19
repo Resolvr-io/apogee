@@ -259,6 +259,50 @@ function mnemonicAad(walletId: string): string {
   return mnemonicAadFor(STORE_VERSION, walletId);
 }
 
+function txManifestCheckpointAad(context: string): string {
+  return `apogee:tx-manifest-checkpoint:v1:${context}`;
+}
+
+async function txManifestCheckpointKey(walletId: string): Promise<CryptoKey> {
+  // Deriving from the wallet seed keeps checkpoints readable after a password
+  // change while still making an unlocked wallet a prerequisite for recovery.
+  const mnemonic = await getMnemonic(walletId);
+  const material = new TextEncoder().encode(
+    `apogee:tx-manifest-checkpoint-key:v1:${walletId}:${mnemonic}`,
+  );
+  const digest = await crypto.subtle.digest("SHA-256", material);
+  return crypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, [
+    "encrypt",
+    "decrypt",
+  ]);
+}
+
+/** Seal an unresolved signed TX Manifest payload for durable local storage. */
+export async function sealTxManifestCheckpoint(
+  walletId: string,
+  context: string,
+  plaintext: string,
+): Promise<Enc> {
+  return encryptString(
+    await txManifestCheckpointKey(walletId),
+    plaintext,
+    txManifestCheckpointAad(context),
+  );
+}
+
+/** Open a durable checkpoint. This intentionally fails while the wallet is locked. */
+export async function openTxManifestCheckpoint(
+  walletId: string,
+  context: string,
+  encrypted: Enc,
+): Promise<string> {
+  return decryptString(
+    await txManifestCheckpointKey(walletId),
+    encrypted,
+    txManifestCheckpointAad(context),
+  );
+}
+
 /** Create a fresh keystore behind a password, left unlocked. No wallet yet. */
 export async function initialize(password: string): Promise<void> {
   if (await isInitialized()) throw new Error("Keystore already initialized");

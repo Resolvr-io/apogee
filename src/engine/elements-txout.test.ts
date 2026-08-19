@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractElementsTxOut } from "./elements-txout";
+import { extractElementsTxOut, inspectElementsTransaction } from "./elements-txout";
 
 const EXPLICIT_TXOUT =
   "016d521c38ec1ea15734ae22b7c46064412829c0d0579f0a713d1c04ede979026f" +
@@ -31,6 +31,26 @@ describe("extractElementsTxOut", () => {
   it("accepts an explicit 32-byte nonce", () => {
     const explicitNonce = EXPLICIT_TXOUT.replace("00160014", `01${"55".repeat(32)}160014`);
     expect(hex(extractElementsTxOut(transaction([explicitNonce]), 0))).toBe(explicitNonce);
+  });
+
+  it("reports input count, scripts, and explicit marker output facts", () => {
+    const marker =
+      `01${"11".repeat(32)}` +
+      "010000000000000000" +
+      "00" +
+      "04" +
+      "6a026869";
+    const shape = inspectElementsTransaction(transaction([EXPLICIT_TXOUT, marker]));
+    expect(shape.inputCount).toBe(1);
+    expect(shape.outputs.map((output) => hex(output.scriptPubKey))).toEqual([
+      "0014272f557c30d2f520b6d4ae1dbdddaaf08708939f",
+      "6a026869",
+    ]);
+    expect(shape.outputs[1]).toMatchObject({
+      explicitAsset: true,
+      explicitValue: 0n,
+      nullNonce: true,
+    });
   });
 
   it("skips issuance data while locating the output vector", () => {

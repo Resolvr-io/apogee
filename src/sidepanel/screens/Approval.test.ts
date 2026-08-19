@@ -16,6 +16,9 @@ vi.mock("@/sidepanel/wallet-client", () => ({
 import { ApprovalOverlay } from "./Approval";
 
 const POLICY_ASSET = "11".repeat(32);
+const PRINCIPAL_ASSET = "55".repeat(32);
+const COLLATERAL_ASSET = "66".repeat(32);
+const LENDER_NFT_ASSET = "77".repeat(32);
 
 describe("ApprovalOverlay", () => {
   it("keeps a long PSET review in a vertically scrollable side-panel overlay", () => {
@@ -183,5 +186,174 @@ describe("ApprovalOverlay", () => {
     expect(markup).toContain("registry · SUPER");
     // The Label row carries the clamped 24-char form, not the full ticker.
     expect(markup).toContain(`registry · ${longTicker.slice(0, 24)}`);
+  });
+
+  it("explains requested contract permissions in human terms", () => {
+    const request: Extract<ApprovalRequest, { kind: "connect" }> = {
+      kind: "connect",
+      id: "connect-approval-test",
+      origin: "https://lending.example.test",
+      network: "testnet",
+      fingerprint: "aabbccdd",
+      signerKind: "local",
+      locked: false,
+      methods: [
+        "experimental_getTxManifestSupport",
+        "experimental_executeTxManifest",
+        "getBalance",
+      ],
+      events: ["bip122_walletDescriptorChanged"],
+      legacy: false,
+    };
+    const markup = renderToStaticMarkup(
+      createElement(ApprovalOverlay, { request, onClose: vi.fn() }),
+    );
+
+    expect(markup).toContain("Check contract support");
+    expect(markup).toContain("Execute contracts");
+    expect(markup).toContain("Read balances");
+    expect(markup).toContain("Watch address changes");
+    expect(markup).toContain("public wallet descriptor changes");
+    expect(markup).toContain("Each action is built, verified, and shown for approval");
+  });
+
+  it("shows trusted lending intent and makes manifest broadcast explicit", () => {
+    const request: Extract<ApprovalRequest, { kind: "executeTxManifest" }> = {
+      kind: "executeTxManifest",
+      id: "manifest-approval-test",
+      origin: "https://lending.example.test",
+      network: "testnet",
+      locked: false,
+      signerKind: "local",
+      review: {
+        kind: "acceptOffer",
+        protocolLabel: "Simplicity Lending",
+        actionLabel: "Fund loan offer",
+        requestId: "accept-offer-3",
+        accountIdentifier: `bip122:${"22".repeat(16)}:${"33".repeat(16)}`,
+        bundleHash: `sha256:${"44".repeat(32)}`,
+        action: "lending_contract.AcceptOffer",
+        lenderNftAssetId: LENDER_NFT_ASSET,
+        principalAssetId: PRINCIPAL_ASSET,
+        principalAmount: "100000000",
+        collateralAssetId: COLLATERAL_ASSET,
+        collateralAmount: "250000000",
+        interestRateBasisPoints: "500",
+        totalDebt: "105000000",
+        expirationHeight: 500000,
+        feeAssetId: POLICY_ASSET,
+        fee: "1000",
+        principalChange: "2500",
+        feeChange: "9000",
+        assets: {
+          [POLICY_ASSET]: { label: "LBTC", ticker: "LBTC", precision: 8, source: "builtin" },
+          [PRINCIPAL_ASSET]: { label: "TEST-USDT", ticker: "TEST-USDT", precision: 8, source: "registry" },
+          [COLLATERAL_ASSET]: { label: "Collateral", ticker: "COL", precision: 8, source: "registry" },
+          [LENDER_NFT_ASSET]: { label: "Lender NFT", ticker: null, precision: null, source: "fallback" },
+        },
+      },
+    };
+    const markup = renderToStaticMarkup(
+      createElement(ApprovalOverlay, { request, onClose: vi.fn() }),
+    );
+    const text = markup.replace(/<[^>]+>/g, "");
+    expect(markup).toContain("Execute contract action");
+    expect(markup).toContain("Simplicity Lending");
+    expect(markup).toContain("Fund loan offer");
+    expect(markup).toContain("approve to sign and broadcast");
+    expect(markup).toContain("Approve &amp; execute");
+    expect(markup).toContain("Network fee");
+    expect(markup).toContain("Principal");
+    expect(markup).toContain("registry · TEST-USDT");
+    expect(markup).toContain("registry · Collateral");
+    expect(markup).not.toContain("registry · LBTC");
+    expect(text).toContain(PRINCIPAL_ASSET);
+    expect(text).toContain(COLLATERAL_ASSET);
+    expect(text).toContain(LENDER_NFT_ASSET);
+    expect(text).toContain("Lender NFT received");
+    expect(markup).toContain("100,000,000 base units");
+    expect(markup).toContain("1,000 sats");
+    expect(text).toContain("1.00");
+    expect(text).toContain("2.50");
+  });
+
+  it("explains that recovery broadcasts exact saved bytes without signing again", () => {
+    const request: Extract<ApprovalRequest, { kind: "executeTxManifest" }> = {
+      kind: "executeTxManifest",
+      id: "manifest-recovery-test",
+      origin: "https://lending.example.test",
+      network: "testnet",
+      locked: false,
+      signerKind: "local",
+      recovery: true,
+      review: {
+        kind: "acceptOffer",
+        protocolLabel: "Simplicity Lending",
+        actionLabel: "Fund loan offer",
+        requestId: "accept-offer-3",
+        accountIdentifier: `bip122:${"22".repeat(16)}:${"33".repeat(16)}`,
+        bundleHash: `sha256:${"44".repeat(32)}`,
+        action: "lending_contract.AcceptOffer",
+        principalAssetId: PRINCIPAL_ASSET,
+        principalAmount: "100000000",
+        collateralAssetId: COLLATERAL_ASSET,
+        collateralAmount: "250000000",
+        interestRateBasisPoints: "500",
+        totalDebt: "105000000",
+        expirationHeight: 500000,
+        feeAssetId: POLICY_ASSET,
+        fee: "1000",
+        principalChange: "2500",
+        feeChange: "9000",
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      createElement(ApprovalOverlay, { request, onClose: vi.fn() }),
+    );
+
+    expect(markup).toContain("Resume contract transaction");
+    expect(markup).toContain("exact signed transaction");
+    expect(markup).toContain("does not rebuild or re-sign");
+    expect(markup).toContain("Resume broadcast");
+    expect(markup).not.toContain("Approval signs and broadcasts it");
+  });
+
+  it("shows the lender's net collection, protocol fee, and NFT burn", () => {
+    const request: Extract<ApprovalRequest, { kind: "executeTxManifest" }> = {
+      kind: "executeTxManifest",
+      id: "claim-manifest-approval-test",
+      origin: "https://lending.example.test",
+      network: "testnet",
+      locked: false,
+      signerKind: "local",
+      review: {
+        kind: "claimLenderVault",
+        protocolLabel: "Simplicity Lending",
+        actionLabel: "Collect loan repayment",
+        requestId: "claim-offer-3",
+        accountIdentifier: `bip122:${"22".repeat(16)}:${"33".repeat(16)}`,
+        bundleHash: `sha256:${"44".repeat(32)}`,
+        action: "lending_contract.ClaimLenderVault",
+        principalAssetId: PRINCIPAL_ASSET,
+        principalAmount: "104500000",
+        grossDebt: "105000000",
+        interestAmount: "5000000",
+        protocolFeeAmount: "500000",
+        lenderNftAssetId: COLLATERAL_ASSET,
+        feeAssetId: POLICY_ASSET,
+        fee: "1000",
+        feeChange: "9000",
+        assets: { [POLICY_ASSET]: { label: "LBTC", ticker: "LBTC", precision: 8 } },
+      },
+    };
+    const markup = renderToStaticMarkup(
+      createElement(ApprovalOverlay, { request, onClose: vi.fn() }),
+    );
+    expect(markup).toContain("Collect loan repayment");
+    expect(markup).toContain("Repayment collected");
+    expect(markup).toContain("Net to wallet");
+    expect(markup).toContain("Protocol fee");
+    expect(markup).toContain("Lender NFT burned");
   });
 });

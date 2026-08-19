@@ -5,7 +5,8 @@
 // unit tests in orchestrator.test.ts which validate against a simulation of
 // the server logic.
 //
-// Run with: npx vitest run src/sideswap/integration.test.ts
+// Excluded from the hermetic default suite. Run explicitly with:
+// pnpm test:sideswap:integration
 //
 // These tests require network access to wss://api-testnet.sideswap.io.
 

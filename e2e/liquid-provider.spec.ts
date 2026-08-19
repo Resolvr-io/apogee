@@ -8,6 +8,8 @@ const PLAYGROUND_LOCALHOST = "http://localhost:4173/";
 const TEST_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const MAINNET_POLICY_ASSET =
   "bip122:1466275836220db2944ca059a3a10ef6/elip144:6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d";
+const LENDING_V3_BUNDLE_HASH =
+  "sha256:debdae89777fdd21fec2d763efe028876f267ff214aca9ddf9b3735d7657be15";
 
 test.describe.serial("Liquid browser provider", () => {
   let context: BrowserContext;
@@ -52,6 +54,34 @@ test.describe.serial("Liquid browser provider", () => {
     await expect(page.locator("#checks .fail")).toHaveCount(0);
     await expect(page.getByTestId("frame-result")).toHaveText("same-origin: 0 · opaque: 0");
 
+    const methods = await discoveredProviderMethods(page);
+    expect(methods).toEqual(
+      expect.arrayContaining([
+        "experimental_getTxManifestSupport",
+        "experimental_executeTxManifest",
+      ]),
+    );
+    const support = await discoveredProviderRequest(page, {
+      method: "experimental_getTxManifestSupport",
+      params: { bundleHash: LENDING_V3_BUNDLE_HASH },
+    });
+    expect(support).toMatchObject({
+      supported: true,
+      bundleHash: LENDING_V3_BUNDLE_HASH,
+      status: "builtin",
+      protocol: { name: "simplicity-lending", version: "v3" },
+      supportedActions: [
+        "issuance_factory.CreateFactory",
+        "lending_contract.CreateOffer",
+        "lending_contract.AcceptOffer",
+        "lending_contract.ClaimPrincipal",
+        "lending_contract.RepayLoan",
+        "lending_contract.CancelOffer",
+        "lending_contract.LiquidateOffer",
+        "lending_contract.ClaimLenderVault",
+      ],
+    });
+
     // getBalance is implemented, but account data remains unavailable until the
     // calling origin obtains an explicit connection grant.
     await page.getByRole("button", { name: "Get balance" }).click();
@@ -83,7 +113,7 @@ test.describe.serial("Liquid browser provider", () => {
     });
     await page.getByRole("button", { name: "Connect · getBalance" }).click();
     const approval = await approvalPromise;
-    await expect(approval.getByText("getBalance", { exact: true })).toBeVisible();
+    await expect(approval.getByText("Read balances", { exact: true })).toBeVisible();
     await approval.getByRole("button", { name: "Connect", exact: true }).click();
 
     await expect(page.getByTestId("result")).toContainText('"accountIdentifier"');
@@ -105,7 +135,7 @@ test.describe.serial("Liquid browser provider", () => {
     });
     await page.getByRole("button", { name: "Enable · sendTransfer" }).click();
     const transferApproval = await transferApprovalPromise;
-    await expect(transferApproval.locator("dd").filter({ hasText: "sendTransfer" })).toBeVisible();
+    await expect(transferApproval.getByText("Request sends", { exact: true })).toBeVisible();
     await transferApproval.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(page.getByTestId("result")).toContainText('"sendTransfer"');
 
@@ -114,8 +144,8 @@ test.describe.serial("Liquid browser provider", () => {
     });
     await page.getByRole("button", { name: "Enable · signPset" }).click();
     const signApproval = await signApprovalPromise;
-    await expect(signApproval.locator("dd").filter({ hasText: "signPset" })).toBeVisible();
-    await expect(signApproval.getByText(/every request still shows/i)).toBeVisible();
+    await expect(signApproval.getByText("Sign transactions", { exact: true })).toBeVisible();
+    await expect(signApproval.getByText(/each transaction needs your approval/i)).toBeVisible();
     await signApproval.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(page.getByTestId("result")).toContainText('"signPset"');
 
@@ -133,9 +163,8 @@ test.describe.serial("Liquid browser provider", () => {
     });
     await page.getByRole("button", { name: "Enable · getUTXOs" }).click();
     const utxoApproval = await utxoApprovalPromise;
-    await expect(utxoApproval.locator("dd").filter({ hasText: "getUTXOs" })).toBeVisible();
-    await expect(utxoApproval.getByText(/reveals individual coins/i)).toBeVisible();
-    await expect(utxoApproval.getByText(/does not reveal blinding keys/i)).toBeVisible();
+    await expect(utxoApproval.getByText("View coin history", { exact: true })).toBeVisible();
+    await expect(utxoApproval.getByText(/individual coins, amounts, and transaction links/i)).toBeVisible();
     await utxoApproval.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(page.getByTestId("result")).toContainText('"getUTXOs"');
 
@@ -175,14 +204,10 @@ test.describe.serial("Liquid browser provider", () => {
     });
     await otherOrigin.getByRole("button", { name: "Enable · descriptor + event" }).click();
     const descriptorApproval = await descriptorApprovalPromise;
-    await expect(
-      descriptorApproval.locator("dd").filter({ hasText: "getWalletDescriptor" }),
-    ).toBeVisible();
-    await expect(
-      descriptorApproval.locator("dd").filter({ hasText: "bip122_walletDescriptorChanged" }),
-    ).toBeVisible();
+    await expect(descriptorApproval.getByText("Derive addresses", { exact: true })).toBeVisible();
+    await expect(descriptorApproval.getByText("Watch address changes", { exact: true })).toBeVisible();
     await expect(descriptorApproval.getByText(/derive and correlate/i)).toBeVisible();
-    await expect(descriptorApproval.getByText(/does not reveal private spend keys/i)).toBeVisible();
+    await expect(descriptorApproval.getByText(/public wallet descriptor changes/i)).toBeVisible();
     await descriptorApproval.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(otherOrigin.getByTestId("result")).toContainText('"getWalletDescriptor"');
     await expect(otherOrigin.getByTestId("timeline")).toContainText(
@@ -324,4 +349,32 @@ async function requestDescriptorEventWithoutMethod(page: Page): Promise<unknown>
       return { code: providerError.code, data: providerError.data };
     }
   });
+}
+
+async function discoveredProviderMethods(page: Page): Promise<string[]> {
+  const capabilities = (await discoveredProviderRequest(page, {
+    method: "wallet_getCapabilities",
+  })) as { methods: string[] };
+  return capabilities.methods;
+}
+
+async function discoveredProviderRequest(page: Page, request: unknown): Promise<unknown> {
+  return page.evaluate(async (providerRequest) => {
+    const pageWindow = globalThis as typeof globalThis & {
+      addEventListener(type: string, listener: (event: Event) => void): void;
+      dispatchEvent(event: Event): boolean;
+      removeEventListener(type: string, listener: (event: Event) => void): void;
+    };
+    const detail = await new Promise<{
+      provider: { request(args: unknown): Promise<unknown> };
+    }>((resolve) => {
+      const receive = (event: Event) => {
+        pageWindow.removeEventListener("liquid:announceProvider", receive);
+        resolve((event as CustomEvent).detail);
+      };
+      pageWindow.addEventListener("liquid:announceProvider", receive);
+      pageWindow.dispatchEvent(new Event("liquid:requestProvider"));
+    });
+    return detail.provider.request(providerRequest);
+  }, request);
 }

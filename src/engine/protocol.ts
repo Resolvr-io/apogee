@@ -8,6 +8,34 @@
 // keystore. Requests are plain JSON (structured-clone over chrome.runtime).
 
 import type { LiquidNetwork, WalletInfo, WalletSigner } from "@/keystore/keystore";
+import type { TxManifestBundleHash } from "@/tx-manifest/registry";
+import type { TxManifestHistoryAnnotation } from "@/tx-manifest/history";
+import type {
+  AcceptOfferRequirementPlan,
+  ClaimLenderVaultRequirementPlan,
+  CreateFactoryRequirementPlan,
+  CreateOfferRequirementPlan,
+  CancelOfferRequirementPlan,
+  ClaimPrincipalRequirementPlan,
+  LiquidateOfferRequirementPlan,
+  RepayLoanRequirementPlan,
+  TxManifestInvocation,
+} from "@/tx-manifest/requirements";
+import type { AcceptOfferChainWalletSnapshot } from "@/tx-manifest/prepare-accept-offer";
+import type { ClaimLenderVaultChainWalletSnapshot } from "@/tx-manifest/prepare-claim-lender-vault";
+import type {
+  AcceptOfferVerifiedChainSnapshot,
+  ClaimLenderVaultVerifiedChainSnapshot,
+  HostedPreparedAcceptOfferExecution,
+  HostedPreparedClaimLenderVaultExecution,
+  NewLendingVerifiedChainSnapshot,
+} from "@/tx-manifest/wallet-host";
+import type {
+  TxManifestCovenantCompileSpec,
+  TxManifestCovenantDryRunSpec,
+  TxManifestCovenantFinalizeSpec,
+  TxManifestPsetBuildSpec,
+} from "@/tx-manifest/runtime";
 
 // ---- service worker → offscreen engine -------------------------------------
 
@@ -18,6 +46,70 @@ export const SCAN_STATE_DB = "apogee-scan-state";
 
 /** A request executed inside the offscreen document against lwk_wasm. */
 export type EngineRequest =
+  | { kind: "getTxManifestSupport"; bundleHash: TxManifestBundleHash }
+  | { kind: "resolveTxManifestRequirements"; invocation: TxManifestInvocation }
+  | { kind: "compileTxManifestCovenant"; spec: TxManifestCovenantCompileSpec }
+  | { kind: "inspectTxManifestTransactionOutput"; transactionHex: string; vout: number }
+  | {
+      kind: "inspectTxManifestAddress";
+      address: string;
+      network: TxManifestCovenantCompileSpec["network"];
+    }
+  | { kind: "dryRunTxManifestCovenant"; spec: TxManifestCovenantDryRunSpec }
+  | { kind: "buildTxManifestPset"; spec: TxManifestPsetBuildSpec }
+  | { kind: "finalizeTxManifestCovenant"; spec: TxManifestCovenantFinalizeSpec }
+  | {
+      kind: "prepareLendingV3AcceptOffer";
+      plan: AcceptOfferRequirementPlan;
+      snapshot: AcceptOfferChainWalletSnapshot;
+    }
+  | {
+      kind: "prepareLendingV3AcceptOfferWithWallet";
+      descriptor: string;
+      network: LiquidNetwork;
+      plan: AcceptOfferRequirementPlan;
+      chainSnapshot: AcceptOfferVerifiedChainSnapshot;
+    }
+  | {
+      kind: "dryRunLendingV3AcceptOffer";
+      transactionHex: string;
+      parentTransactions: string[];
+      genesisHash: string;
+      covenants: HostedPreparedAcceptOfferExecution["covenants"];
+    }
+  | {
+      kind: "prepareLendingV3ClaimLenderVault";
+      plan: ClaimLenderVaultRequirementPlan;
+      snapshot: ClaimLenderVaultChainWalletSnapshot;
+    }
+  | {
+      kind: "prepareLendingV3ClaimLenderVaultWithWallet";
+      descriptor: string;
+      network: LiquidNetwork;
+      plan: ClaimLenderVaultRequirementPlan;
+      chainSnapshot: ClaimLenderVaultVerifiedChainSnapshot;
+    }
+  | {
+      kind: "dryRunLendingV3ClaimLenderVault";
+      transactionHex: string;
+      parentTransactions: string[];
+      genesisHash: string;
+      vault: HostedPreparedClaimLenderVaultExecution["vault"];
+    }
+  | {
+      kind: "prepareLendingV3NewActionWithWallet";
+      descriptor: string;
+      network: LiquidNetwork;
+      assetContractDomain: string;
+      plan:
+        | CreateFactoryRequirementPlan
+        | CreateOfferRequirementPlan
+        | ClaimPrincipalRequirementPlan
+        | CancelOfferRequirementPlan
+        | RepayLoanRequirementPlan
+        | LiquidateOfferRequirementPlan;
+      chainSnapshot: NewLendingVerifiedChainSnapshot;
+    }
   | { kind: "generateMnemonic"; words?: 12 | 24 }
   | { kind: "deriveWallet"; mnemonic: string; network: LiquidNetwork }
   | { kind: "sync"; descriptor: string; network: LiquidNetwork; esploraUrl?: string }
@@ -25,6 +117,13 @@ export type EngineRequest =
   | { kind: "getBalance"; descriptor: string; network: LiquidNetwork }
   | { kind: "getTransactions"; descriptor: string; network: LiquidNetwork }
   | { kind: "signPset"; mnemonic: string; network: LiquidNetwork; pset: string }
+  | {
+      kind: "signTxManifestPset";
+      mnemonic: string;
+      descriptor: string;
+      network: LiquidNetwork;
+      pset: string;
+    }
   | { kind: "getRate"; currency: string } // BTC price in `currency` (median of sources)
   // Hourly BTC price history for the price chart, newest-last, in `currency`.
   // `range` selects the window; see `PriceRange` and `engine-core.ts` getPriceHistory.
@@ -69,9 +168,18 @@ export type EngineRequest =
   // authorization after finalization and immediately before the irreversible
   // network action.
   | { kind: "finalizePset"; descriptor: string; network: LiquidNetwork; pset: string }
+  | { kind: "extractPsetTransaction"; pset: string }
   // Submit an already-finalized PSET. All transaction cryptography and
   // extraction remain inside LWK; this request only selects the chain server.
   | { kind: "broadcastPset"; network: LiquidNetwork; pset: string; esploraUrl?: string }
+  // Recovery submits the exact signed transaction saved before the original
+  // network attempt. No plan rebuilding or signing occurs on this path.
+  | {
+      kind: "broadcastTransaction";
+      network: LiquidNetwork;
+      transactionHex: string;
+      esploraUrl?: string;
+    }
   // `drain` (send max): for LBTC, drain the wallet (fee deducted from the
   // amount); for a token (`asset` set), send the full token balance (the fee is
   // paid in LBTC, so no deduction). `sats` is in the asset's base units.
@@ -244,6 +352,91 @@ export interface ProviderPsetApprovalReviewDTO extends ProviderPsetAnalysisDTO {
   accountIdentifier: string;
 }
 
+/** Resolved display metadata for a single asset id in a manifest review. */
+export interface TxManifestAssetMeta {
+  /** Known label, registry ticker/name, or shortened-hex fallback. */
+  label: string;
+  ticker: string | null;
+  precision: number | null;
+  /** Provenance of presentation-only metadata; never an asset identity proof. */
+  source?: "builtin" | "registry" | "fallback";
+}
+
+interface TxManifestApprovalReviewBaseDTO {
+  protocolLabel: string;
+  actionLabel: string;
+  requestId: string;
+  accountIdentifier: string;
+  bundleHash: string;
+  action: string;
+  feeAssetId: string;
+  fee: string;
+  feeChange: string;
+  /**
+   * Resolved metadata for every distinct asset id in this review. Optional so
+   * durable recovery checkpoints written by older builds remain renderable.
+   */
+  assets?: Record<string, TxManifestAssetMeta>;
+}
+
+export type TxManifestApprovalReviewDTO =
+  | (TxManifestApprovalReviewBaseDTO & {
+      kind: "createFactory";
+      factoryAssetId: string;
+      fundingAmount: string;
+    })
+  | (TxManifestApprovalReviewBaseDTO & {
+      kind: "createOffer";
+      factoryAssetId: string;
+      borrowerNftAssetId: string;
+      lenderNftAssetId: string;
+      principalAssetId: string;
+      principalAmount: string;
+      collateralAssetId: string;
+      collateralAmount: string;
+      interestRateBasisPoints: string;
+      totalDebt: string;
+      expirationHeight: number;
+      collateralChange: string;
+    })
+  | (TxManifestApprovalReviewBaseDTO & {
+      kind: "acceptOffer";
+      /** Optional so pre-field durable checkpoints remain renderable. */
+      lenderNftAssetId?: string;
+      principalAssetId: string;
+      principalAmount: string;
+      collateralAssetId: string;
+      collateralAmount: string;
+      interestRateBasisPoints: string;
+      totalDebt: string;
+      expirationHeight: number;
+      principalChange: string;
+    })
+  | (TxManifestApprovalReviewBaseDTO & {
+      kind: "claimLenderVault";
+      principalAssetId: string;
+      principalAmount: string;
+      grossDebt: string;
+      interestAmount: string;
+      protocolFeeAmount: string;
+      lenderNftAssetId: string;
+    })
+  | (TxManifestApprovalReviewBaseDTO & {
+      kind: "claimPrincipal" | "cancelOffer" | "repayLoan" | "liquidateOffer";
+      principalAssetId: string;
+      principalAmount: string;
+      collateralAssetId: string;
+      collateralAmount: string;
+      borrowerNftAssetId: string;
+      lenderNftAssetId: string;
+      expirationHeight: number;
+      totalDebt?: string;
+      interestAmount?: string;
+      protocolFeeAmount?: string;
+      lenderVaultAmount?: string;
+      principalChange: string;
+    });
+
 export type ProviderPsetAnalysisFailureReason =
   | "analysis_failed"
   | "duplicate_input"
@@ -392,6 +585,7 @@ export interface WalletTxDTO {
   height: number | null;
   timestamp: number | null;
   assetDeltas: Record<string, number>;
+  txManifest?: TxManifestHistoryAnnotation;
 }
 
 // ---- side panel / prompt → service worker ----------------------------------
@@ -690,6 +884,17 @@ export type ApprovalRequest =
       signerKind: WalletSigner;
       /** True only when approval also authorizes irreversible network submission. */
       broadcast: boolean;
+    }
+  | {
+      kind: "executeTxManifest";
+      id: string;
+      origin: string;
+      review: TxManifestApprovalReviewDTO;
+      network: DappNetwork;
+      locked: boolean;
+      signerKind: WalletSigner;
+      /** The exact previously-approved transaction is being resumed. */
+      recovery?: boolean;
     };
 
 /** Uniform reply envelope for both channels. */
