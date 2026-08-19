@@ -45,7 +45,7 @@ import { KNOWN_ASSETS, policyAssetId } from "@/lib/asset-registry";
 import { type Denom, assetRows, heroSubtitle, portfolioTotal } from "@/lib/portfolio";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY } from "@/lib/debug";
 import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS, DEMO_UTXOS, useDemoFunds } from "@/lib/demo-funds";
-import { takeBalanceWarmup } from "@/sidepanel/balance-warmup";
+import { useBalanceStrike } from "@/sidepanel/balance-warmup";
 import { cn, shortenHex } from "@/lib/utils";
 import { browser } from "@/lib/ext";
 import {
@@ -594,9 +594,13 @@ export function Wallet({
   // ways, so the denominations cannot disagree.
   const sats = total.totalSats;
   const showStars = hidden || !sync;
-  // Claim the one-shot only when a real figure is about to render — stars or a
-  // spinner would otherwise consume it and the numerals would arrive already lit.
-  const warmup = !showStars && takeBalanceWarmup();
+  // A figure is only "ready" to strike once real numerals are on screen: stars, a
+  // spinner and the rate-failed dash would otherwise consume the arming and the
+  // balance would arrive already lit. `hasUnconfirmed` (not `pulse`) is the
+  // settling signal — `pulse` also covers syncing and a pending rate, and neither
+  // of those is a confirmation.
+  const figureReady = !showStars && (denom !== "fiat" || rate != null);
+  const warmup = useBalanceStrike(String(sats), hasUnconfirmed, figureReady);
   let amountNode: React.ReactNode;
   if (showStars) {
     amountNode = <HiddenValue count={5} size={16} gap={9} className="telemetry-stars" />;
