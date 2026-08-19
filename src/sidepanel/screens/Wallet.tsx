@@ -1313,7 +1313,13 @@ function Coins({
   // so consolidation needs the same password field the other signing surfaces
   // render — without it the background rejects with "Enter your password to
   // send." and this screen has nowhere to type it.
-  const [autoLock, setAutoLock] = useState(15);
+  //
+  // Starts `null` (unknown), not a guessed default: a guessed default of "15"
+  // made `needsPassword` briefly read `false` on a Never wallet, so a confirm
+  // click inside that window failed with the background's rejection and only
+  // then did the password field appear. `null` disables Confirm below until
+  // the real value lands — a local storage read, so in practice imperceptible.
+  const [autoLock, setAutoLock] = useState<number | null>(null);
   const [password, setPassword] = useState("");
   const needsPassword = !isJade && autoLock === 0;
   useEffect(() => {
@@ -1635,7 +1641,7 @@ function Coins({
                   <Button
                     size="sm"
                     className="flex-1"
-                    disabled={busyAsset !== null || (needsPassword && !password)}
+                    disabled={busyAsset !== null || autoLock === null || (needsPassword && !password)}
                     onClick={() => void confirmConsolidate()}
                   >
                     {busyAsset ? <Spinner className="size-3" /> : "Confirm"}
