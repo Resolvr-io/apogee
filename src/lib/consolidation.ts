@@ -51,3 +51,18 @@ export function exhaustedBroadcastIds(
     .filter(([, b]) => !b.stuck && b.polls >= CONSOLIDATION_SETTLE_POLLS)
     .map(([id]) => id);
 }
+
+/** Charge one poll attempt to every pending (not yet stuck) broadcast, after
+ *  a settle-poll attempt — successful or not, so a failed sync still costs
+ *  budget and a card can't be stranded on a live spinner forever. This is the
+ *  write-side counterpart to `exhaustedBroadcastIds`: the per-entry count that
+ *  function reads is produced here. */
+export function bumpPendingPolls(
+  broadcasts: Readonly<Record<string, ConsolidationBroadcast>>,
+): Record<string, ConsolidationBroadcast> {
+  const next = { ...broadcasts };
+  for (const [id, entry] of Object.entries(next)) {
+    if (!entry.stuck) next[id] = { ...entry, polls: entry.polls + 1 };
+  }
+  return next;
+}

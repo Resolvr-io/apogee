@@ -59,6 +59,7 @@ import {
   satsToFiat,
 } from "@/lib/format";
 import {
+  bumpPendingPolls,
   CONSOLIDATION_SETTLE_MS,
   exhaustedBroadcastIds,
   landedBroadcastIds,
@@ -1319,6 +1320,12 @@ function Coins({
   // click inside that window failed with the background's rejection and only
   // then did the password field appear. `null` disables Confirm below until
   // the real value lands — a local storage read, so in practice imperceptible.
+  //
+  // A REJECTED read falls back to 0 (needsPassword), not null: the service
+  // worker can be asleep or mid-restart when this fires, and null would leave
+  // Confirm disabled forever with nothing on screen to explain why. 0 renders
+  // the password field, which the background ignores when it doesn't actually
+  // need one (see Swap.tsx) — safe on any wallet, correct on a Never one.
   const [autoLock, setAutoLock] = useState<number | null>(null);
   const [password, setPassword] = useState("");
   const needsPassword = !isJade && autoLock === 0;
@@ -1326,7 +1333,7 @@ function Coins({
     void wallet
       .getAutoLock()
       .then(setAutoLock)
-      .catch(() => {});
+      .catch(() => setAutoLock(0));
   }, []);
 
   // A monotonic request id orders overlapping loads: the balance-changed
@@ -1395,7 +1402,11 @@ function Coins({
   // `utxos` still costs budget and the card always terminates.
   useEffect(() => {
     const entries = Object.entries(broadcasts);
-    if (!utxos || entries.length === 0) return;
+    // The demo dataset can't adjudicate a real broadcast: its outpoints are
+    // unrelated to the spend a pending consolidation snapshotted, so every one
+    // of them would read as "absent from this list" — landed — the moment demo
+    // funds is toggled on. Wait it out; the real utxos resume once it's off.
+    if (demo || !utxos || entries.length === 0) return;
 
     const present = new Set(utxos.map((u) => `${u.txid}:${u.vout}`));
     const landed = landedBroadcastIds(broadcasts, present);
@@ -1424,23 +1435,23 @@ function Coins({
       void wallet
         .sync(walletId)
         .then(loadUtxos, () => undefined)
-        .finally(() => {
-          setBroadcasts((b) => {
-            const next = { ...b };
-            for (const [id, entry] of Object.entries(next)) {
-              if (!entry.stuck) next[id] = { ...entry, polls: entry.polls + 1 };
-            }
-            return next;
-          });
-        });
+        .finally(() => setBroadcasts(bumpPendingPolls));
     }, CONSOLIDATION_SETTLE_MS);
     return () => window.clearTimeout(t);
-  }, [broadcasts, utxos, loadUtxos, walletId, setBroadcasts]);
+  }, [broadcasts, utxos, loadUtxos, walletId, setBroadcasts, demo]);
+
+  // `broadcasts` now lives in the parent and is keyed by asset id alone, which
+  // was fine while only one wallet could ever be mounted under it. Nothing
+  // switches `active.id` under a live Wallet today (no wallet-switcher UI, and
+  // keystore's setActiveWallet/removeWallet have no callers) — but the whole
+  // point of hoisting this record was to outlive things, so key it by wallet
+  // too rather than relying on that staying true.
+  const broadcastKey = useCallback((assetId: string) => `${walletId}:${assetId}`, [walletId]);
 
   function dismissBroadcast(assetId: string) {
     setBroadcasts((b) => {
       const next = { ...b };
-      delete next[assetId];
+      delete next[broadcastKey(assetId)];
       return next;
     });
   }
@@ -1520,7 +1531,7 @@ function Coins({
       // txid and the poll above clears it once the list reflects the spend.
       setBroadcasts((b) => ({
         ...b,
-        [p.assetId]: {
+        [broadcastKey(p.assetId)]: {
           txid: sent.txid,
           spent: (utxos ?? []).filter((u) => u.asset === p.assetId).map((u) => `${u.txid}:${u.vout}`),
           polls: 0,
@@ -1586,7 +1597,7 @@ function Coins({
         const precision = KNOWN_ASSETS[assetId]?.precision ?? info?.precision ?? null;
         const total = groupUtxos.reduce((sum, u) => sum + BigInt(u.amount), 0n);
         const isToken = assetId !== policyAsset;
-        const broadcast = broadcasts[assetId];
+        const broadcast = broadcasts[broadcastKey(assetId)];
         const broadcastUrl = broadcast ? explorerTxUrl(network, broadcast.txid) : null;
         return (
           <div key={assetId}>

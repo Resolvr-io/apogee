@@ -6,6 +6,7 @@
 // an "all inputs gone" reading would hold the card open forever.
 import { describe, expect, it } from "vitest";
 import {
+  bumpPendingPolls,
   CONSOLIDATION_SETTLE_POLLS,
   consolidationLanded,
   exhaustedBroadcastIds,
@@ -73,5 +74,32 @@ describe("landedBroadcastIds / exhaustedBroadcastIds", () => {
   it("is empty when no broadcast has reached its budget", () => {
     const broadcasts = { fresh: entry({ polls: CONSOLIDATION_SETTLE_POLLS - 1 }) };
     expect(exhaustedBroadcastIds(broadcasts)).toEqual([]);
+  });
+});
+
+// This is the write side of the same fix: exhaustedBroadcastIds reads `polls`
+// per entry, and this is what actually increments it per entry. Before #89,
+// this was a single ref shared by every pending broadcast.
+describe("bumpPendingPolls", () => {
+  function entry(overrides: Partial<ConsolidationBroadcast> = {}): ConsolidationBroadcast {
+    return { txid: "tx", spent: ["aa:0"], polls: 0, ...overrides };
+  }
+
+  it("increments every pending entry independently", () => {
+    const broadcasts = { a: entry({ polls: 0 }), b: entry({ polls: 3 }) };
+    const next = bumpPendingPolls(broadcasts);
+    expect(next.a.polls).toBe(1);
+    expect(next.b.polls).toBe(4);
+  });
+
+  it("leaves a stuck entry's count alone", () => {
+    const broadcasts = { a: entry({ polls: 5, stuck: true }) };
+    expect(bumpPendingPolls(broadcasts).a.polls).toBe(5);
+  });
+
+  it("does not mutate the input", () => {
+    const broadcasts = { a: entry({ polls: 0 }) };
+    bumpPendingPolls(broadcasts);
+    expect(broadcasts.a.polls).toBe(0);
   });
 });
