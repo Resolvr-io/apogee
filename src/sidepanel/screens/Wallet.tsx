@@ -1914,15 +1914,10 @@ function SettingsBody({
     setDebugEnterprise(on);
     void browser.storage.local.set({ [DEBUG_ENTERPRISE_KEY]: on });
   }
-  const [demoFundsOn, setDemoFundsOn] = useState(false);
-  useEffect(() => {
-    if (!DEBUG_ENTERPRISE_BUILD) return;
-    void browser.storage.local
-      .get(DEMO_FUNDS_KEY)
-      .then((o) => setDemoFundsOn(o[DEMO_FUNDS_KEY] === true));
-  }, []);
+  // Read through the same live hook the wallet screens use, so the switch and
+  // what's on screen can't disagree; this card only writes.
+  const demoFundsOn = useDemoFunds();
   function toggleDemoFunds(on: boolean) {
-    setDemoFundsOn(on);
     void browser.storage.local.set({ [DEMO_FUNDS_KEY]: on });
   }
   // Screenshot helper: hide the Debug card briefly. Plain component state, so
