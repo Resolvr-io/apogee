@@ -12,7 +12,7 @@ and signs; web apps connect to it as a dapp through an injected `window.liquid` 
 
 <img width="1280" height="800"
      alt="Five Apogee side-panel screens: the lock screen over an animated ocean; wallet creation; the balance showing a portfolio total above its price chart, an Assets list and recent activity; a receive address with QR; and settings"
-     src="https://github.com/user-attachments/assets/1659531e-e007-49d0-ba26-472ddbeb6c54" />
+     src="https://github.com/user-attachments/assets/0355c3ac-ec8a-455f-a1c4-faa20646c8c3" />
 
 ## Run / build
 
