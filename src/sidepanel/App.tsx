@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Compass, Lock, RotateCcw, Settings } from "lucide-react";
 import type { KeystoreState } from "@/keystore/keystore";
 import { DEBUG_ENTERPRISE_BUILD } from "@/lib/debug";
+import { useDemoFunds } from "@/lib/demo-funds";
 import { ErrorText, IconButton, LoadingPill } from "@/sidepanel/components/ui";
 import { ToastView, type ToastNotice } from "@/sidepanel/components/Toast";
 import { ConnectionBar } from "@/sidepanel/components/ConnectionBar";
@@ -256,6 +257,9 @@ export function App() {
   const [state, setState] = useState<KeystoreState | null>(null);
   const [error, setError] = useState("");
   const [view, setView] = useState<View>("home");
+  // Debug builds only: suppresses the network placard so a screenshot taken on
+  // a testnet wallet reads as mainnet, matching the demo dataset.
+  const demoFunds = useDemoFunds();
   const [animationsPref, , animationsLoaded] = useAnimations();
   // Forgot-password "Import wallet": show the restore form without wiping the
   // existing vault — the wipe happens only when a valid phrase is submitted.
@@ -447,8 +451,13 @@ export function App() {
             </button>
             {/* Layout utilities only: .console-placard lives in @layer base, so any
                 type/color utility added alongside would silently win over it. The
-                caps come from text-transform, leaving the DOM text readable. */}
-            {activeNetwork && activeNetwork !== "liquid" && (
+                caps come from text-transform, leaving the DOM text readable.
+
+                Demo funds presents a mainnet-shaped wallet for screenshots, so
+                the caution placard would contradict it — a capture taken on a
+                testnet wallet must not advertise testnet. Suppressed only in
+                debug builds with the toggle on; ordinary builds can't reach it. */}
+            {activeNetwork && activeNetwork !== "liquid" && !demoFunds && (
               <span className="console-placard -translate-x-1/2 -translate-y-1/2 absolute top-1/2 left-1/2">
                 {activeNetwork === "liquidtestnet" ? "Testnet" : "Regtest"}
               </span>

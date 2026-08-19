@@ -44,7 +44,7 @@ import type { UpdateCheck } from "@/lib/version-check";
 import { KNOWN_ASSETS, policyAssetId } from "@/lib/asset-registry";
 import { type Denom, assetRows, heroSubtitle, portfolioTotal } from "@/lib/portfolio";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY } from "@/lib/debug";
-import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS } from "@/lib/demo-funds";
+import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS, DEMO_UTXOS, useDemoFunds } from "@/lib/demo-funds";
 import { cn, shortenHex } from "@/lib/utils";
 import { browser } from "@/lib/ext";
 import {
@@ -110,9 +110,6 @@ function useHideBalance(): [boolean, () => void] {
   return [hidden, toggle];
 }
 
-/** Debug builds: the Settings > Debug "Demo funds" toggle. Live-updating so
- *  flipping it applies without leaving the wallet screen. Always false outside
- *  debug builds. */
 /**
  * A rate is only usable if it is a finite positive number.
  *
@@ -126,25 +123,6 @@ function useHideBalance(): [boolean, () => void] {
  */
 function usableRate(r: number | null): number | null {
   return typeof r === "number" && Number.isFinite(r) && r > 0 ? r : null;
-}
-
-function useDemoFunds(): boolean {
-  const [on, setOn] = useState(false);
-  useEffect(() => {
-    if (!DEBUG_ENTERPRISE_BUILD) return;
-    void browser.storage.local.get(DEMO_FUNDS_KEY).then((o) => setOn(o[DEMO_FUNDS_KEY] === true));
-    const onChanged = (
-      changes: { [key: string]: chrome.storage.StorageChange },
-      area: string,
-    ) => {
-      if (area === "local" && DEMO_FUNDS_KEY in changes) {
-        setOn(changes[DEMO_FUNDS_KEY].newValue === true);
-      }
-    };
-    browser.storage.onChanged.addListener(onChanged);
-    return () => browser.storage.onChanged.removeListener(onChanged);
-  }, []);
-  return on;
 }
 
 // Tap-to-cycle order — matches the Display settings dropdown (Sats > LBTC > Fiat).
@@ -585,10 +563,15 @@ export function Wallet({
             walletId={active.id}
             network={active.network}
             watchOnly={active.signer === "watch"}
-            assets={liveAssets}
-            policyAsset={liveSync?.policyAssetHex}
+            // Demo funds is mainnet-shaped, so the policy asset and the label
+            // source must come from the same dataset the list does — otherwise
+            // a testnet wallet's real policy id wouldn't match the demo
+            // outputs and every L-BTC row would render as an unknown token.
+            assets={demoFunds ? {} : liveAssets}
+            policyAsset={demoFunds ? DEMO_SYNC.policyAssetHex : liveSync?.policyAssetHex}
             hidden={hidden}
             isJade={active.signer === "jade"}
+            demo={demoFunds}
           />
         )}
       </SubView>
@@ -1290,6 +1273,7 @@ function Coins({
   policyAsset: policyAssetProp,
   hidden,
   isJade,
+  demo,
 }: {
   walletId: string;
   network: LiquidNetwork;
@@ -1298,8 +1282,14 @@ function Coins({
   policyAsset?: string;
   hidden: boolean;
   isJade?: boolean;
+  // Debug demo funds: present DEMO_UTXOS instead of the wallet's real outputs
+  // (display-only, like the Wallet screen's demo dataset). Consolidation is
+  // inert while it's on — the real outputs aren't the ones on screen, so
+  // signing against them from this list would spend what the user can't see.
+  demo?: boolean;
 }) {
-  const [utxos, setUtxos] = useState<WalletUtxoDTO[] | null>(null);
+  const [liveUtxos, setUtxos] = useState<WalletUtxoDTO[] | null>(null);
+  const utxos = demo ? DEMO_UTXOS : liveUtxos;
   const [error, setError] = useState("");
   const [busyAsset, setBusyAsset] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "info" | "error"; msg: string } | null>(null);
@@ -1334,6 +1324,9 @@ function Coins({
   // so the settle poll can sequence its next tick after the reload has actually
   // landed rather than after the sync alone.
   const loadUtxos = useCallback(() => {
+    // Demo funds owns the list; a real load would only race it and could
+    // surface a live-wallet error over a screenshot.
+    if (demo) return Promise.resolve();
     const seq = ++loadSeq.current;
     setError("");
     return wallet.getUtxos(walletId).then(
@@ -1350,7 +1343,7 @@ function Coins({
         else setNotice({ tone: "error", msg });
       },
     );
-  }, [walletId]);
+  }, [walletId, demo]);
 
   useEffect(() => {
     loadUtxos();
@@ -1445,6 +1438,14 @@ function Coins({
   } | null>(null);
 
   async function startConsolidate(assetId: string, isToken: boolean, count: number) {
+    // The list on screen is the demo dataset, so there is nothing here to
+    // consolidate — building against the wallet's real outputs would spend
+    // coins the screenshot never showed. The control stays enabled so it can
+    // be captured; it just says so instead of acting.
+    if (demo) {
+      setNotice({ tone: "info", msg: "Demo funds is on — consolidation is disabled." });
+      return;
+    }
     setBusyAsset(assetId);
     setNotice(null);
     try {
@@ -1913,15 +1914,10 @@ function SettingsBody({
     setDebugEnterprise(on);
     void browser.storage.local.set({ [DEBUG_ENTERPRISE_KEY]: on });
   }
-  const [demoFundsOn, setDemoFundsOn] = useState(false);
-  useEffect(() => {
-    if (!DEBUG_ENTERPRISE_BUILD) return;
-    void browser.storage.local
-      .get(DEMO_FUNDS_KEY)
-      .then((o) => setDemoFundsOn(o[DEMO_FUNDS_KEY] === true));
-  }, []);
+  // Read through the same live hook the wallet screens use, so the switch and
+  // what's on screen can't disagree; this card only writes.
+  const demoFundsOn = useDemoFunds();
   function toggleDemoFunds(on: boolean) {
-    setDemoFundsOn(on);
     void browser.storage.local.set({ [DEMO_FUNDS_KEY]: on });
   }
   // Screenshot helper: hide the Debug card briefly. Plain component state, so
