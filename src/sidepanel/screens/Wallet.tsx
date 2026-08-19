@@ -299,6 +299,20 @@ export function Wallet({
   // The whole portfolio as one LBTC-denominated figure — see lib/portfolio.ts.
   const total = portfolioTotal({ sync, btcUsd });
   const holdsPeggedToken = total.holdsPegged;
+  // Balance strike (the neon warm-up). MUST live up here with the other hooks:
+  // `view !== "home"` returns early below, so calling it beside the hero render
+  // made it conditional — React saw fewer hooks on Settings and blanked the panel.
+  //
+  // A figure is only "ready" to strike once real numerals are on screen; stars, a
+  // spinner or the rate-failed dash would otherwise consume the arming and the
+  // balance would arrive already lit. The settling signal is an unconfirmed tx,
+  // NOT `pulse` — that also covers syncing and a pending rate, and neither of
+  // those is a confirmation.
+  const warmup = useBalanceStrike(
+    String(total.totalSats),
+    txs.some((t) => t.height === null),
+    !(hidden || !sync) && (denom !== "fiat" || rate != null),
+  );
   useEffect(() => {
     if (fiat === "USD" || !holdsPeggedToken) {
       setRateUsd(null);
@@ -446,7 +460,29 @@ export function Wallet({
     setSync(null);
     setTxs([]);
     seenTxids.current = null;
-  }, [active?.id, demoFunds]);
+  }, [active?.id]);
+
+  // Toggling demo funds (debug builds) is a DISPLAY substitution — the canned
+  // dataset never enters liveSync — so there is nothing to clear, and clearing it
+  // was the bug: turning demo off nulled the real balance and left stars until
+  // the 20s poll or a manual refresh.
+  //
+  // The seen-set still has to re-seed, though: `txs` swaps wholesale, so without
+  // this, switching on would toast a fabricated "Received 250,000 sats" and
+  // switching off would toast real history as if it had just arrived. Re-poll too,
+  // so the live figure is current rather than however stale it was when demo
+  // funds took over the display.
+  // Keyed on the VALUE, not a "has run" flag: StrictMode re-invokes effects on
+  // mount, and a flag would read the second pass as a toggle and fire a refresh
+  // that never happens in production. Comparing values is idempotent — a re-run
+  // with demoFunds unchanged does nothing, on mount or otherwise.
+  const lastDemoFunds = useRef(demoFunds);
+  useEffect(() => {
+    if (lastDemoFunds.current === demoFunds) return;
+    lastDemoFunds.current = demoFunds;
+    seenTxids.current = null;
+    void refresh(true);
+  }, [demoFunds, refresh]);
 
   // Toast on transactions the user hasn't seen yet. The first synced load seeds
   // the "seen" set silently (so historical activity doesn't fire); every later
@@ -594,13 +630,6 @@ export function Wallet({
   // ways, so the denominations cannot disagree.
   const sats = total.totalSats;
   const showStars = hidden || !sync;
-  // A figure is only "ready" to strike once real numerals are on screen: stars, a
-  // spinner and the rate-failed dash would otherwise consume the arming and the
-  // balance would arrive already lit. `hasUnconfirmed` (not `pulse`) is the
-  // settling signal — `pulse` also covers syncing and a pending rate, and neither
-  // of those is a confirmation.
-  const figureReady = !showStars && (denom !== "fiat" || rate != null);
-  const warmup = useBalanceStrike(String(sats), hasUnconfirmed, figureReady);
   let amountNode: React.ReactNode;
   if (showStars) {
     amountNode = <HiddenValue count={5} size={16} gap={9} className="telemetry-stars" />;
