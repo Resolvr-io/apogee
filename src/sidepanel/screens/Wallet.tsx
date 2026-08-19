@@ -60,8 +60,9 @@ import {
 } from "@/lib/format";
 import {
   CONSOLIDATION_SETTLE_MS,
-  CONSOLIDATION_SETTLE_POLLS,
-  consolidationLanded,
+  exhaustedBroadcastIds,
+  landedBroadcastIds,
+  type ConsolidationBroadcast,
 } from "@/lib/consolidation";
 import {
   Button,
@@ -190,6 +191,11 @@ export function Wallet({
   const [sendAssetId, setSendAssetId] = useState<string | null>(null);
   // Asset preselected for the Swap screen (set when launching from a token row).
   const [swapAssetId, setSwapAssetId] = useState<string | null>(null);
+  // Pending Coins consolidations, keyed by asset id. Lives here rather than in
+  // Coins itself: Coins fully unmounts whenever `view` leaves "coins" (Settings,
+  // then back), and this has to survive that round trip — see the type's doc
+  // comment in lib/consolidation.ts for what broke when it didn't.
+  const [coinBroadcasts, setCoinBroadcasts] = useState<Record<string, ConsolidationBroadcast>>({});
   const [hidden, toggleHidden] = useHideBalance();
   const [denom, setDenom, cycleDenom] = useDenomination();
   const [fiat, setFiat] = useFiat();
@@ -572,6 +578,8 @@ export function Wallet({
             hidden={hidden}
             isJade={active.signer === "jade"}
             demo={demoFunds}
+            broadcasts={coinBroadcasts}
+            setBroadcasts={setCoinBroadcasts}
           />
         )}
       </SubView>
@@ -1274,6 +1282,8 @@ function Coins({
   hidden,
   isJade,
   demo,
+  broadcasts,
+  setBroadcasts,
 }: {
   walletId: string;
   network: LiquidNetwork;
@@ -1287,6 +1297,11 @@ function Coins({
   // inert while it's on — the real outputs aren't the ones on screen, so
   // signing against them from this list would spend what the user can't see.
   demo?: boolean;
+  // Owned by the parent (Wallet), not local state — this component unmounts on
+  // every trip through Settings and back, and the pending-broadcast record has
+  // to survive that. See the type's doc comment in lib/consolidation.ts.
+  broadcasts: Record<string, ConsolidationBroadcast>;
+  setBroadcasts: React.Dispatch<React.SetStateAction<Record<string, ConsolidationBroadcast>>>;
 }) {
   const [liveUtxos, setUtxos] = useState<WalletUtxoDTO[] | null>(null);
   const utxos = demo ? DEMO_UTXOS : liveUtxos;
@@ -1363,23 +1378,21 @@ function Coins({
   // the txid plus the outpoints the tx spends. getUtxos reads the wollet's
   // last sync, so poll sync + reload on the home view's settle cadence until
   // the spent outpoints drop out of the list — that's the moment the sync has
-  // caught the mempool tx, and the card clears. When the poll budget runs
-  // out, the card flips to a terminal "stuck" state (no spinner, dismissable)
-  // so a tx the network is slow to show can't wedge the screen.
-  const [broadcasts, setBroadcasts] = useState<
-    Record<string, { txid: string; spent: string[]; stuck?: boolean }>
-  >({});
-  const settlePolls = useRef(0);
-  // Bumped after every poll attempt, successful or not — see the timer below.
-  const [pollTick, setPollTick] = useState(0);
+  // caught the mempool tx, and the card clears. When an entry's OWN poll
+  // budget runs out, only that entry flips to a terminal "stuck" state (no
+  // spinner, dismissable), so one slow-to-confirm tx can't wedge another's
+  // card, and can't wedge the screen either.
+  //
+  // `broadcasts` itself (not a separate counter) is what re-arms this effect:
+  // bumping `polls` on every pending entry after each attempt changes its
+  // identity and re-triggers the effect, so a failed sync or an unchanged
+  // `utxos` still costs budget and the card always terminates.
   useEffect(() => {
     const entries = Object.entries(broadcasts);
-    if (!utxos || entries.length === 0) {
-      settlePolls.current = 0;
-      return;
-    }
+    if (!utxos || entries.length === 0) return;
+
     const present = new Set(utxos.map((u) => `${u.txid}:${u.vout}`));
-    const landed = entries.filter(([, b]) => consolidationLanded(b.spent, present)).map(([id]) => id);
+    const landed = landedBroadcastIds(broadcasts, present);
     if (landed.length > 0) {
       setBroadcasts((b) => {
         const next = { ...b };
@@ -1388,35 +1401,35 @@ function Coins({
       });
       return;
     }
-    if (settlePolls.current >= CONSOLIDATION_SETTLE_POLLS) {
+
+    const justExhausted = exhaustedBroadcastIds(broadcasts);
+    if (justExhausted.length > 0) {
       setBroadcasts((b) => {
-        let changed = false;
         const next = { ...b };
-        for (const id of Object.keys(next)) {
-          if (!next[id].stuck) {
-            next[id] = { ...next[id], stuck: true };
-            changed = true;
-          }
-        }
-        return changed ? next : b;
+        for (const id of justExhausted) next[id] = { ...next[id], stuck: true };
+        return next;
       });
       return;
     }
+
+    const pending = entries.filter(([, b]) => !b.stuck);
+    if (pending.length === 0) return;
     const t = window.setTimeout(() => {
-      settlePolls.current += 1;
-      // `pollTick` is what re-arms the loop. Re-running on a fresh `utxos`
-      // identity alone would stall the poll dead on any failure — a rejected
-      // sync touches no state, and a failed reload leaves `utxos` identical —
-      // stranding the card on a live spinner with its Dismiss button gated on
-      // `stuck`, which it could then never reach. Ticking unconditionally
-      // means a failed poll still costs budget, so the card always terminates.
       void wallet
         .sync(walletId)
         .then(loadUtxos, () => undefined)
-        .finally(() => setPollTick((n) => n + 1));
+        .finally(() => {
+          setBroadcasts((b) => {
+            const next = { ...b };
+            for (const [id, entry] of Object.entries(next)) {
+              if (!entry.stuck) next[id] = { ...entry, polls: entry.polls + 1 };
+            }
+            return next;
+          });
+        });
     }, CONSOLIDATION_SETTLE_MS);
     return () => window.clearTimeout(t);
-  }, [broadcasts, utxos, loadUtxos, walletId, pollTick]);
+  }, [broadcasts, utxos, loadUtxos, walletId, setBroadcasts]);
 
   function dismissBroadcast(assetId: string) {
     setBroadcasts((b) => {
@@ -1499,12 +1512,12 @@ function Coins({
       );
       // Track the tx instead of a one-line notice: the pending card shows the
       // txid and the poll above clears it once the list reflects the spend.
-      settlePolls.current = 0;
       setBroadcasts((b) => ({
         ...b,
         [p.assetId]: {
           txid: sent.txid,
           spent: (utxos ?? []).filter((u) => u.asset === p.assetId).map((u) => `${u.txid}:${u.vout}`),
+          polls: 0,
         },
       }));
       setPendingConsolidation(null);
