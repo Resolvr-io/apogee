@@ -1,10 +1,8 @@
 import { loadEnv } from "vite";
 
-// Manifest pieces shared by both targets, plus the Firefox manifest. This module
-// is deliberately crxjs-free (and imports no JSON) so scripts/build-firefox.ts
-// can import firefoxManifest() under Node's native TS runner without pulling in
-// the Chromium-only crxjs plugin. package.json is read by each caller and the
-// version/description are passed in.
+// Manifest pieces shared across the build. Kept crxjs-free (and importing no
+// JSON) so it can be read by plain Node tooling as well as the Chrome build.
+// package.json is read by the caller and the version/description passed in.
 
 export const APP_NAME = "Apogee";
 
@@ -58,65 +56,3 @@ export const ICONS = {
 export const CONTENT_SECURITY_POLICY = {
   extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
 };
-
-// Firefox MV3 manifest. Emitted (not fed to crxjs) by scripts/build-firefox.ts,
-// which bundles the three manifest-referenced scripts to fixed, self-contained
-// files (background.js / content.js / provider.js) — hence the flat js paths
-// rather than the source paths crxjs rewrites for Chrome.
-//
-// Diverges from Chrome: no offscreen API on Firefox, so the engine host moves to
-// the background event page (engine-host PR); the side panel becomes a
-// sidebar_action; and sidePanel + offscreen are dropped from permissions.
-export function firefoxManifest(mode: string, app: { version: string; description: string }) {
-  return {
-    manifest_version: 3,
-    name: APP_NAME,
-    version: app.version,
-    description: app.description,
-    // Add-on id (proposed default — change if a different AMO id is registered).
-    // Required for stable storage + signing; strict_min_version 128 is the floor
-    // for declarative content-script `world: "MAIN"`.
-    browser_specific_settings: {
-      // AMO requires new listings to declare data collection (since 2025-11-03).
-      // Apogee collects/transmits no user data — keys and wallet state stay
-      // local, and Liquid balances are confidential on-chain — so "none"
-      // (mutually exclusive; declares no collection).
-      gecko: {
-        id: "apogee@resolvr.io",
-        strict_min_version: "128.0",
-        data_collection_permissions: { required: ["none"] },
-      },
-    },
-    action: { default_title: "Open Apogee" },
-    // ES-module background (Firefox 128+): it hosts the lwk_wasm engine, which is
-    // loaded via dynamic import, so it can't be a classic script.
-    background: { scripts: ["background.js"], type: "module" },
-    // Firefox uses a sidebar in place of Chrome's side panel.
-    sidebar_action: {
-      default_panel: "src/sidepanel/index.html",
-      default_title: "Apogee",
-      default_icon: ICONS,
-    },
-    permissions: ["storage", "alarms"],
-    host_permissions: hostPermissions(mode),
-    content_scripts: [
-      // Bridge — ISOLATED world.
-      {
-        matches: ["<all_urls>"],
-        js: ["content.js"],
-        run_at: "document_start",
-        all_frames: false,
-      },
-      // Page provider — MAIN world (Firefox 128+ supports declarative world).
-      {
-        matches: ["<all_urls>"],
-        js: ["provider.js"],
-        run_at: "document_start",
-        all_frames: false,
-        world: "MAIN",
-      },
-    ],
-    content_security_policy: CONTENT_SECURITY_POLICY,
-    icons: ICONS,
-  };
-}

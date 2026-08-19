@@ -1,10 +1,8 @@
 name: Release
 
-# Pushing a v* tag builds both targets and publishes a GitHub Release with two
-# zips attached: apogee-<version>-chrome.zip (Chrome Web Store, from dist/) and
-# apogee-<version>-firefox.zip (AMO, from dist-firefox/). Each build already
-# emits its own manifest, so no per-store manifest editing is needed. Release
-# notes come from the tag's annotation (or can be edited on the Release after).
+# Pushing a v* tag builds the extension and publishes a GitHub Release with
+# apogee-<version>-chrome.zip attached (Chrome Web Store, from dist/). Release
+# notes are extracted from the README section for the version being tagged.
 
 on:
   push:
@@ -51,10 +49,7 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           pnpm build
           (cd dist && zip -rX "../apogee-${VERSION}-chrome.zip" . -x '*.DS_Store')
-          pnpm build:firefox
-          (cd dist-firefox && zip -rX "../apogee-${VERSION}-firefox.zip" . -x '*.DS_Store')
-          echo "Chrome zip:";  unzip -l "apogee-${VERSION}-chrome.zip" | tail -3
-          echo "Firefox zip:"; unzip -l "apogee-${VERSION}-firefox.zip" | tail -3
+          echo "Chrome zip:"; unzip -l "apogee-${VERSION}-chrome.zip" | tail -3
 
       # Release notes come from the README's section for this version, so the
       # changelog has ONE source: the GitHub Release, the landing site's
@@ -84,5 +79,4 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --title "Apogee ${VERSION}" \
             --notes-file RELEASE_NOTES.md \
-            "apogee-${VERSION}-chrome.zip" \
-            "apogee-${VERSION}-firefox.zip"
+            "apogee-${VERSION}-chrome.zip"

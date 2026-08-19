@@ -19,7 +19,6 @@
     "playwright.config.ts",
     "manifest.config.ts",
     "manifest.shared.ts",
-    "scripts/build-firefox.ts",
     "e2e/**/*.ts"
   ]
 }

@@ -100,8 +100,8 @@ import { finalizeAndBroadcastProviderPset } from "@/provider/liquid-provider-pse
 // only honored when they come from one of our own pages (side panel, approval
 // prompt, Jade tab) — see the onMessage router. A content script injected into a
 // web page carries the page's origin, so this cleanly excludes web pages.
-// chrome-extension://<id> on Chrome, moz-extension://<uuid> on Firefox — derived
-// from getURL so the scheme matches the running browser.
+// Derived from getURL rather than hardcoded, so it always matches the running
+// extension's own origin.
 const EXT_ORIGIN = new URL(browser.runtime.getURL("/")).origin;
 
 // Install/update teardown of the stale offscreen document. Tracked as a promise so
@@ -120,13 +120,10 @@ browser.runtime.onInstalled.addListener(() => {
   });
 });
 
-// Open the side panel when the toolbar icon is clicked (Chrome only; Firefox uses
-// sidebar_action). __FIREFOX__ is a build constant, so this drops from the FF bundle.
-if (!__FIREFOX__) {
-  chrome.sidePanel
-    .setPanelBehavior({ openPanelOnActionClick: true })
-    .catch((err) => console.error("[apogee] setPanelBehavior", err));
-}
+// Open the side panel when the toolbar icon is clicked.
+chrome.sidePanel
+  .setPanelBehavior({ openPanelOnActionClick: true })
+  .catch((err) => console.error("[apogee] setPanelBehavior", err));
 
 // ---- idle auto-lock -------------------------------------------------------
 
@@ -325,7 +322,6 @@ const ENGINE_READY_RETRIES = 8;
 const ENGINE_READY_RETRY_MS = 150;
 
 async function ensureOffscreen(): Promise<void> {
-  if (__FIREFOX__) return; // Firefox has no offscreen API; the engine runs in-process
   // Let an install/update teardown finish first, so we don't observe the doomed
   // document as "existing" and hand a message to something about to close.
   if (teardown) await teardown.catch(() => {});
@@ -351,7 +347,6 @@ async function ensureOffscreen(): Promise<void> {
 
 /** Drop the offscreen document if one exists, so it's rebuilt fresh next call. */
 async function closeOffscreen(): Promise<void> {
-  if (__FIREFOX__) return;
   const existing = await chrome.runtime.getContexts({
     contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
     documentUrls: [browser.runtime.getURL(OFFSCREEN_URL)],
@@ -438,17 +433,10 @@ function waitForEnginePort(ms: number): Promise<EngineConn | null> {
 // a chain ensures only one engine op runs at a time.
 let engineQueue: Promise<unknown> = Promise.resolve();
 
-// One engine round-trip. On Chrome the wasm engine lives in the offscreen document
-// (drive it over the engine port); on Firefox there's no offscreen API, so the
-// engine core runs in-process in this background page. __FIREFOX__ is a build
-// constant, so on Chrome the Firefox branch — and the engine-core import —
-// tree-shake away, and vice versa.
-let ffEngine: ((req: EngineRequest) => Promise<unknown>) | null = null;
+// One engine round-trip. The wasm engine lives in the offscreen document, driven
+// over the engine port — the MV3 service worker is ephemeral and CSP-restricted,
+// so it can't host wasm itself.
 async function runEngine<T>(req: EngineRequest): Promise<T> {
-  if (__FIREFOX__) {
-    if (!ffEngine) ffEngine = (await import("@/engine/engine-core")).handle;
-    return (await ffEngine(req)) as T;
-  }
   await ensureOffscreen();
   // The document exists before offscreen.ts has evaluated and connected its port —
   // and after an SW eviction the old port is gone until the document's reconnect
@@ -2555,17 +2543,14 @@ function rejectPendingApprovals(origin: string | undefined, reason: string): voi
 
 /** Show the approval in the side panel (overlay) when open, else a popup window. */
 async function routeApproval(request: ApprovalRequest): Promise<void> {
-  // Chrome: if the side panel is open, show the approval as an overlay there.
-  // Firefox has no side panel (sidebar_action) and no getContexts, so it always
-  // falls through to a popup window (__FIREFOX__ drops this block from that build).
-  if (!__FIREFOX__) {
-    const panels = await chrome.runtime.getContexts({
-      contextTypes: [chrome.runtime.ContextType.SIDE_PANEL],
-    });
-    if (panels.length > 0) {
-      browser.runtime.sendMessage({ type: "apogee/approval-request", request }).catch(() => {});
-      return;
-    }
+  // If the side panel is open, show the approval as an overlay there; otherwise
+  // fall through to a popup window.
+  const panels = await chrome.runtime.getContexts({
+    contextTypes: [chrome.runtime.ContextType.SIDE_PANEL],
+  });
+  if (panels.length > 0) {
+    browser.runtime.sendMessage({ type: "apogee/approval-request", request }).catch(() => {});
+    return;
   }
   const win = await browser.windows.create({
     url: browser.runtime.getURL(`src/prompt/prompt.html?id=${encodeURIComponent(request.id)}`),

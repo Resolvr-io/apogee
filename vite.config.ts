@@ -49,8 +49,6 @@ export default defineConfig(({ mode }) => {
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __GIT_COMMIT__: JSON.stringify(getCommitHash()),
-    // Chrome/crxjs build. The Firefox target (scripts/build-firefox.ts) sets true.
-    __FIREFOX__: JSON.stringify(false),
   },
   plugins: [
     react(),

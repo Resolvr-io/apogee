@@ -5,7 +5,7 @@
 import { Check, QrCode, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { LiquidNetwork } from "@/keystore/keystore";
-import { Button, Card, CopyButton, ErrorText, Field, Input, Modal, Spinner, Textarea, WelcomeShell } from "@/sidepanel/components/ui";
+import { Button, Card, CopyButton, ErrorText, Field, Input, Spinner, Textarea, WelcomeShell } from "@/sidepanel/components/ui";
 import { errMessage, wallet } from "@/sidepanel/wallet-client";
 import { openJadeWindow } from "@/sidepanel/jade-window";
 import { cn } from "@/lib/utils";
@@ -52,7 +52,6 @@ export function Onboarding({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [savedConfirmed, setSavedConfirmed] = useState(false); // seed backup gate
-  const [showHwModal, setShowHwModal] = useState(false); // Firefox HW-wallet limitation notice
 
   // Every step starts with clean form fields: a password typed in one flow must
   // not silently carry into another (e.g. seed-restore -> back -> watch-only
@@ -275,9 +274,8 @@ export function Onboarding({
             Restore from seed phrase
           </Button>
           {/* Secondary text links — de-emphasized alternatives to the primary
-              flows. Hardware wallets are a less common (cold-wallet) path;
-              Firefox can't do Web Serial, so it opens the not-supported modal
-              instead of pairing. Same links on both browsers. */}
+              flows. Hardware wallets are a less common (cold-wallet) path, and
+              pairing happens in the hardware-connect step over Web Serial. */}
           <div className="mt-3 flex flex-col items-center gap-2 text-sm">
             <button
               type="button"
@@ -288,32 +286,13 @@ export function Onboarding({
             </button>
             <button
               type="button"
-              onClick={() => (__FIREFOX__ ? setShowHwModal(true) : setStep("hardware-connect"))}
+              onClick={() => setStep("hardware-connect")}
               className="text-[color:var(--text-secondary)] underline-offset-4 transition-colors hover:text-[color:var(--text-strong)] hover:underline"
             >
               Use a hardware wallet
             </button>
           </div>
         </div>
-        {__FIREFOX__ && (
-          <Modal open={showHwModal} onClose={() => setShowHwModal(false)} label="Not supported in Firefox">
-            <img src="/icons/sad-jade.svg" alt="" className="mx-auto block h-28" />
-            <h2 className="console-title text-center text-lg">
-              Not supported<br />in Firefox
-            </h2>
-            <p>
-              Hardware wallet signing isn't available on Firefox yet. Firefox blocks the
-              Web Serial API in extension pages, which Jade needs to connect over USB.
-            </p>
-            <button
-              type="button"
-              onClick={() => void browser.tabs.create({ url: "https://apogee.resolvr.io" })}
-              className="font-medium text-[color:var(--accent)] hover:underline"
-            >
-              Get Apogee for Chrome →
-            </button>
-          </Modal>
-        )}
       </WelcomeShell>
     );
   }
