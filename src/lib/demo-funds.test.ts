@@ -59,18 +59,19 @@ describe("demo funds", () => {
     expect(BigInt(DEMO_SYNC.lbtcSats)).toBe(BigInt(DEMO_SYNC.balance[DEMO_SYNC.policyAssetHex]));
   });
 
-  it("uses mainnet-shaped addresses that read as real ones", () => {
+  it("uses mainnet-shaped confidential addresses that read as real ones", () => {
     for (const { address, confidential } of DEMO_UTXOS) {
       const sep = address.lastIndexOf("1");
       const data = address.slice(sep + 1);
       for (const ch of data) {
         expect(BECH32.includes(ch), `${address} contains non-bech32 "${ch}"`).toBe(true);
       }
-      // Mainnet prefixes only — a testnet-looking address would defeat the point.
-      expect(address.startsWith("lq1") || address.startsWith("ex1")).toBe(true);
-      // Confidential Liquid addresses carry a blinding key, so they're much
-      // longer than the unconfidential form.
-      expect(address.length).toBe(confidential ? 102 : 42);
+      // Mainnet prefix only — a testnet-looking address would defeat the point.
+      expect(address.startsWith("lq1")).toBe(true);
+      // All confidential, matching what the wallet actually produces, and the
+      // blinding key is what makes them this long.
+      expect(confidential).toBe(true);
+      expect(address.length).toBe(102);
     }
   });
 });

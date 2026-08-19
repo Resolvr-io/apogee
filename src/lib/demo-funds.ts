@@ -59,15 +59,13 @@ export const DEMO_SYNC: SyncResult = {
 // totals match DEMO_SYNC exactly:
 //   LBTC: 812 457 + 650 000 + 420 000 + 180 540 + 94 434 = 2 157 431 sats
 //   USDt: 90.42 + 60.00                                  = 150.42
-// One output is left unconfidential so the list's confidentiality column has
-// both states to render.
 //
 // The addresses are synthetic but SHAPED like the real thing: every character
-// after the prefix is in the bech32 charset (which excludes 1, b, i and o), the
-// confidential ones are 102 chars like a real blech32 Liquid address, and the
-// unconfidential one is 42. They carry no valid checksum and nothing parses
-// them — the expanded coin row renders the string verbatim, so it only has to
-// survive being read, not being decoded. Don't send anything to them.
+// after the prefix is in the bech32 charset (which excludes 1, b, i and o), and
+// each is 102 chars like a real blech32 Liquid address. All confidential, which
+// is also all this wallet ever produces. They carry no valid checksum and
+// nothing parses them — the expanded coin row renders the string verbatim, so it
+// only has to survive being read, not being decoded. Don't send anything there.
 export const DEMO_UTXOS: WalletUtxoDTO[] = [
   {
     txid: "e1b5d90c72f486a3e8d1c5b92f0a67d4c3e8f2a15b6d09e7c4a3f8b1d6e25c90",
@@ -104,11 +102,10 @@ export const DEMO_UTXOS: WalletUtxoDTO[] = [
   {
     txid: "0c7f3a94e6b25d18f0c4a7e93b5d61f8a2c60e4d97b3f15a8e0c62d4b9f37a15",
     vout: 1,
-    // Unconfidential, so the list shows both confidentiality states.
-    address: "ex1qs8p002fh9xng00p8erzrdjp7py58c9fjfwhzp0",
+    address: "lq1qq2fds7vgzuxc4r3lekylq3wylr3t9v8p20x482jmu2h0yc6rnvvxwqfhcgnt7l002u3eglgy86d6xujnn07qklnnm9awaclawh",
     asset: LBTC_MAINNET_ASSET_ID,
     amount: "94434",
-    confidential: false,
+    confidential: true,
   },
   {
     txid: "2f9c5e70b3d81a46c9e2f5b708d4a1c6e3f90b25d7a8c41e6b0d3f9a25c78e01",
