@@ -100,8 +100,8 @@ import { finalizeAndBroadcastProviderPset } from "@/provider/liquid-provider-pse
 // only honored when they come from one of our own pages (side panel, approval
 // prompt, Jade tab) — see the onMessage router. A content script injected into a
 // web page carries the page's origin, so this cleanly excludes web pages.
-// chrome-extension://<id> on Chrome, moz-extension://<uuid> on Firefox — derived
-// from getURL so the scheme matches the running browser.
+// Derived from getURL rather than hardcoded, so it always matches the running
+// extension's own origin.
 const EXT_ORIGIN = new URL(browser.runtime.getURL("/")).origin;
 
 // Install/update teardown of the stale offscreen document. Tracked as a promise so

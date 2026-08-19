@@ -1,9 +1,10 @@
-// QR detection, with a fallback for browsers that lack the native API.
+// QR detection, with a fallback for platforms that lack the native API.
 //
-// Chromium exposes `BarcodeDetector` (hardware-accelerated, decodes straight from a
-// video element). Firefox does not implement it at all, so the scanner previously
-// dead-ended there with "QR scanning isn't supported in this browser" — which broke
-// address scanning on Firefox from its first release, and seed-phrase import too.
+// `BarcodeDetector` (hardware-accelerated, decodes straight from a video element)
+// is NOT universally available on Chrome: it ships on Android, macOS and ChromeOS,
+// but desktop Windows and Linux have no implementation. Without a fallback the
+// scanner dead-ends there with "QR scanning isn't supported in this browser",
+// breaking address scanning and seed-phrase import for those users.
 //
 // So: use the native detector when present, otherwise decode with jsQR (pure JS, no
 // Worker and no wasm, so the extension CSP `script-src 'self' 'wasm-unsafe-eval'`
@@ -90,7 +91,7 @@ function jsqrDetect(maxEdge = 640): Detect {
 }
 
 /** Pick the best available detector. Native when the browser has it, jsQR otherwise,
- *  so QR scanning works on Chromium and Firefox alike. */
+ *  so QR scanning works whether or not the platform ships a native decoder. */
 export function createDetector(win: unknown = globalThis): Detect {
   const Ctor = (win as { BarcodeDetector?: BarcodeDetectorCtor })?.BarcodeDetector;
   return typeof Ctor === "function" ? nativeDetect(Ctor) : jsqrDetect();

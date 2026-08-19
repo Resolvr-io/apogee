@@ -7,9 +7,8 @@ import { APP_NAME, CONTENT_SECURITY_POLICY, ICONS, hostPermissions } from "./man
 // a side panel, and a page provider front the Liquid wallet engine, which runs
 // lwk_wasm in an offscreen document.
 //
-// The Firefox manifest lives in manifest.shared.ts (firefoxManifest) and is
-// emitted by scripts/build-firefox.ts — crxjs is Chromium-only. Fields common to
-// both targets come from manifest.shared.ts so there's a single source of truth.
+// Static pieces (name, CSP, host permissions) come from manifest.shared.ts, which
+// stays crxjs-free so plain tooling can read it.
 export default defineManifest((env) => ({
   manifest_version: 3,
   name: APP_NAME,

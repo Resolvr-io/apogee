@@ -1,9 +1,7 @@
 // Wallet engine core. lwk_wasm (Wollet / Signer / EsploraClient) lives here,
-// driven through the single `handle(req)` dispatcher. Two hosts import it:
-//   • Chrome  — the offscreen document (src/offscreen/offscreen.ts), since the
-//     MV3 service worker is ephemeral and CSP-restricted.
-//   • Firefox — the background event page (no offscreen API), which calls
-//     `handle` in-process.
+// driven through the single `handle(req)` dispatcher. Its one runtime host is the
+// offscreen document (src/offscreen/offscreen.ts) — the MV3 service worker is
+// ephemeral and CSP-restricted, so it can't hold wasm itself.
 // lwk_wasm is loaded lazily on first use, so a request can't be dropped while the
 // wasm initializes (a standard lazy-load pattern).
 //
