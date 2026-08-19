@@ -1,7 +1,6 @@
-// Chrome offscreen document — the engine host on Chrome. The MV3 service worker
-// is ephemeral and CSP-restricted, so the wasm wallet engine runs here in a
-// persistent offscreen page. (Firefox has no offscreen API — there the background
-// event page imports the same core and calls `handle` in-process.)
+// Offscreen document — the engine host. The MV3 service worker is ephemeral and
+// CSP-restricted, so the wasm wallet engine runs here in a persistent offscreen
+// page; this adapter relays requests to the shared engine core's `handle()`.
 //
 // The service worker drives the engine over a dedicated runtime.connect port,
 // NOT broadcast runtime.sendMessage: engine requests carry the unlocked mnemonic

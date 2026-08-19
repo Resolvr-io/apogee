@@ -504,7 +504,7 @@ export function CopyIconButton({ value, label }: { value: string; label: string 
 }
 
 // Centered dialog overlay. Closes on backdrop click or Esc. Used for one-off
-// notices (e.g. the Firefox hardware-wallet limitation) where a full step would
+// notices where a full step would
 // be heavier than needed.
 export function Modal({
   open,

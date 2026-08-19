@@ -82,7 +82,7 @@ async function start(): Promise<void> {
   status.textContent = SECRET
     ? "Point the camera at your seed-phrase QR"
     : "Point the camera at a QR code";
-  // Native BarcodeDetector on Chromium; jsQR fallback where it's missing (Firefox).
+  // Native BarcodeDetector where the platform has it; jsQR fallback where it doesn't.
   const detect = createDetector();
   const tick = async () => {
     try {
