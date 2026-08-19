@@ -91,7 +91,18 @@ export function Send({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [drain, setDrain] = useState(false); // "Max" — send all of the asset
-  const [autoLock, setAutoLock] = useState(15);
+  // Starts `null` (unknown), not a guessed default: a guessed default made
+  // `needsPassword` briefly read `false` on a Never wallet, so confirming
+  // inside that window failed with the background's rejection and only then
+  // did the password field appear. `null` disables Confirm below until the
+  // real value lands — a local storage read, so in practice imperceptible.
+  //
+  // A REJECTED read falls back to 0 (needsPassword), not null: the service
+  // worker can be asleep or mid-restart when this fires, and null would leave
+  // Confirm disabled forever with nothing on screen to explain why. 0 renders
+  // the password field, which the background ignores when it doesn't actually
+  // need one (see Swap.tsx) — safe on any wallet, correct on a Never one.
+  const [autoLock, setAutoLock] = useState<number | null>(null);
   const [password, setPassword] = useState("");
   // Auto-lock "never" steps up auth: a local send requires the password.
   const needsPassword = !isJade && autoLock === 0;
@@ -214,7 +225,7 @@ export function Send({
 
   // Auto-lock "never" means the wallet never idle-locks, so sends step up auth.
   useEffect(() => {
-    void wallet.getAutoLock().then(setAutoLock).catch(() => {});
+    void wallet.getAutoLock().then(setAutoLock).catch(() => setAutoLock(0));
   }, []);
 
   async function review() {
@@ -398,7 +409,7 @@ export function Send({
           </Field>
         )}
         <div className="mt-3 flex flex-col gap-2">
-          <Button onClick={confirm} disabled={busy || (needsPassword && !password)}>
+          <Button onClick={confirm} disabled={busy || autoLock === null || (needsPassword && !password)}>
             {busy ? <Spinner /> : "Confirm & send"}
           </Button>
           <Button variant="secondary" onClick={() => setStep("form")} disabled={busy}>
