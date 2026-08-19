@@ -1,0 +1,95 @@
+name: nightly-agent
+
+on:
+  schedule:
+    # 09:17 UTC = 04:17 America/Chicago. Offset from :00 — GitHub drops/delays
+    # cron jobs scheduled on the hour due to load. Stagger this across repos so
+    # concurrent runs don't pile into the same GLM 5-hour quota window.
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "One-off task prompt (overrides the default nightly task)"
+        required: false
+        type: string
+
+# Never let two agent runs mutate the repo concurrently.
+concurrency:
+  group: nightly-agent
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # branch + commit
+  pull-requests: write   # gh pr create
+  issues: read
+
+jobs:
+  agent:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the agent can use git log/blame for context.
+          fetch-depth: 0
+
+      # --- Nix via sticky disk -------------------------------------------
+      # Order matters: create the mountpoint, mount the sticky disk over it,
+      # THEN install Nix into it. First run is a cold install + full closure
+      # download; every run after that reopens a warm /nix store.
+
+      - name: Create Nix mountpoint
+        run: |
+          sudo mkdir -p /nix/store
+          sudo chmod -R 777 /nix
+
+      - name: Mount /nix on sticky disk
+        uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-store
+          path: /nix
+
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@v30
+
+      # --- Cargo build artifacts (not covered by /nix) --------------------
+      - uses: useblacksmith/rust-cache@v3
+        with:
+          prefix-key: nightly-agent
+
+      - name: Run Claude Code (GLM backend)
+        uses: anthropics/claude-code-action@v1
+        env:
+          ANTHROPIC_BASE_URL: https://api.z.ai/api/anthropic
+          # GLM through the compat layer can be slow on long generations;
+          # without this, requests time out mid-run.
+          API_TIMEOUT_MS: "3000000"
+        with:
+          anthropic_api_key: ${{ secrets.ZHIPU_API_KEY }}
+          # NOTE: PRs opened with the default GITHUB_TOKEN do NOT trigger other workflows — CI will not run on the agent's PR.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            ${{ inputs.task || 'You are running unattended on a schedule. Perform a nightly vulnerability scan on this repository.
+
+            Act as a Principal Application Security Architect and Expert Code Auditor.
+            Perform a rigorous security vulnerability scan on the provided code.
+            Focus heavily on identifying real, exploitable flaws rather than theoretical issues.
+            Evaluate the code against things including, but not limited to:
+              * OWASP Top 10 (Injection, Broken Access Control, Cryptographic Failures, Insecure Deserialization, SSRF, etc.)
+              * Hardcoded secrets, API keys, or weak tokens
+              * Improper input validation and sanitization flaws
+
+            If any findings are testable or verifiable in any way, take the time to verify them.
+            If any findings are in theory testable but you cannot test them due to a limitation in your harness or environment, try modifying the `flake.nix` file.
+            Failing that any anything else you have tried, open a GitHub issue.
+            If any vulnerabilities are found, open a GitHub issue for each one including:
+              * Severity Level (Critical / High / Medium / Low)
+              * Vulnerability Type & CWE ID
+              * Exact Location (File / Line Number link if applicable)
+              * Exploit Scenario (Briefly explain how an attacker could abuse this)
+              * Level of confidency
+              * How the issue was verified, if at all
+              * Secure Remediation (Provide the exact corrected code snippet if relevant and concise)
+
+            Hard rules: never push any code or make any PRs, never touch secrets or .env files.' }}
