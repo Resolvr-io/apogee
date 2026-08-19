@@ -102,8 +102,7 @@ export const DEMO_UTXOS: WalletUtxoDTO[] = [
   {
     txid: "0c7f3a94e6b25d18f0c4a7e93b5d61f8a2c60e4d97b3f15a8e0c62d4b9f37a15",
     vout: 1,
-    address:
-      "lq1qq2fds7vgzuxc4r3lekylq3wylr3t9v8p20x482jmu2h0yc6rnvvxwqfhcgnt7l002u3eglgy86d6xujnn07qklnnm9awaclawh",
+    address: "lq1qq2fds7vgzuxc4r3lekylq3wylr3t9v8p20x482jmu2h0yc6rnvvxwqfhcgnt7l002u3eglgy86d6xujnn07qklnnm9awaclawh",
     asset: LBTC_MAINNET_ASSET_ID,
     amount: "94434",
     confidential: true,

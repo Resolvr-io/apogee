@@ -59,7 +59,7 @@ describe("demo funds", () => {
     expect(BigInt(DEMO_SYNC.lbtcSats)).toBe(BigInt(DEMO_SYNC.balance[DEMO_SYNC.policyAssetHex]));
   });
 
-  it("uses mainnet-shaped addresses that read as real ones", () => {
+  it("uses mainnet-shaped confidential addresses that read as real ones", () => {
     for (const { address, confidential } of DEMO_UTXOS) {
       const sep = address.lastIndexOf("1");
       const data = address.slice(sep + 1);
