@@ -691,6 +691,84 @@
       0 0 0.9em color-mix(in srgb, var(--telemetry-halo) 28%, transparent);
   }
 
+  /* Balance warm-up: the numerals striking like a neon tube the first time a
+     balance is shown (armed in balance-warmup.ts, per-digit timing set inline by
+     TelemetryNumber).
+
+     Neon doesn't fade up — it stutters. So the keyframes are deliberately
+     discontinuous: dark, a couple of failed strikes at partial brightness, a
+     bright overshoot, then settle. `steps(1)` on the whole animation would flatten
+     the overshoot's falloff, so the abruptness lives in the keyframe positions
+     instead, which also lets each digit hold a different beat.
+
+     Only opacity and text-shadow animate — both compositor-friendly, and the
+     glyphs never move, so a stuttering digit can't reflow the figure beside it. */
+  @keyframes telemetry-strike {
+    0%,
+    14% {
+      opacity: 0.06;
+      text-shadow: none;
+    }
+    18% {
+      opacity: 0.85;
+      text-shadow:
+        0 0 0.14em color-mix(in srgb, currentColor 55%, transparent),
+        0 0 0.4em color-mix(in srgb, var(--telemetry-halo) 50%, transparent);
+    }
+    22%,
+    34% {
+      opacity: 0.1;
+      text-shadow: none;
+    }
+    40% {
+      opacity: 0.7;
+      text-shadow: 0 0 0.3em color-mix(in srgb, var(--telemetry-halo) 40%, transparent);
+    }
+    46% {
+      opacity: 0.14;
+      text-shadow: none;
+    }
+    58% {
+      /* the strike catches — brighter than rest, with a wider halo */
+      opacity: 1;
+      text-shadow:
+        0 0 0.18em color-mix(in srgb, currentColor 80%, transparent),
+        0 0 0.55em color-mix(in srgb, var(--telemetry-halo) 75%, transparent),
+        0 0 1.3em color-mix(in srgb, var(--telemetry-halo) 45%, transparent);
+    }
+    68% {
+      opacity: 0.72;
+    }
+    78% {
+      opacity: 1;
+    }
+    88% {
+      opacity: 0.9;
+    }
+    100% {
+      opacity: 1;
+      text-shadow:
+        0 0 0.14em color-mix(in srgb, currentColor 55%, transparent),
+        0 0 0.4em color-mix(in srgb, var(--telemetry-halo) 50%, transparent),
+        0 0 0.9em color-mix(in srgb, var(--telemetry-halo) 28%, transparent);
+    }
+  }
+
+  .telemetry-digit {
+    /* inline-block so a per-digit animation can't disturb line layout; the
+       duration and delay come from TelemetryNumber as custom properties. */
+    display: inline-block;
+    animation: telemetry-strike var(--digit-dur, 900ms) var(--digit-delay, 0ms) both;
+  }
+
+  /* The effect is decorative and it flashes — honor the OS setting by landing
+     the numerals straight on their final state. */
+  @media (prefers-reduced-motion: reduce) {
+    .telemetry-digit {
+      animation: none;
+    }
+  }
+
   /* Same phosphor treatment for the hidden-balance stars (HiddenValue in the
      hero): the glyphs are SVG, so text-shadow can't bloom them — a matching
      drop-shadow stack does, and the color tints the currentColor fills to the

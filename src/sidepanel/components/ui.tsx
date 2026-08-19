@@ -10,6 +10,7 @@ import type {
 } from "react";
 import { AlertTriangle, Check, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { digitCycle } from "@/sidepanel/digit-cycle";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 
@@ -319,11 +320,16 @@ export function TelemetryNumber({
   value,
   wide = false,
   glow = true,
+  warmup = false,
   className,
 }: {
   value: string;
   wide?: boolean;
   glow?: boolean;
+  // Play the neon strike once as these numerals appear (see .telemetry-digit).
+  // Callers decide this via useBalanceStrike() (balance-warmup.ts); passing it
+  // on every render would replay the flicker on every balance poll.
+  warmup?: boolean;
   className?: string;
 }) {
   // Letter runs before the digits — currency prefixes (the A in A$, CHF) —
@@ -331,6 +337,10 @@ export function TelemetryNumber({
   // figures; sign glyphs ($, £, ¥, €) keep full size (the face's ¥ and € come
   // from our font patch, see tools/patch-telemetry-font.py).
   const { figure: figureText, ticker } = splitFigureAndTicker(value);
+
+  // Counts glyphs across segments so the beat sequence runs the whole figure
+  // rather than restarting at each separator.
+  let warmupIndex = 0;
 
   // `glow` covers the figure only: a ticker is a label, and the phosphor halo
   // belongs to the numerals. Nothing inlines a unit into a glow'd value today
@@ -353,15 +363,39 @@ export function TelemetryNumber({
             {seg.text}
           </span>
         ) : (
-          Array.from(seg.text).map((ch, i) =>
-            ch === "1" ? (
-              <span key={`${si}-${i}`} className="inline-block w-[0.7ch] text-center">
-                1
+          Array.from(seg.text).map((ch, i) => {
+            // The "1" cell (see the doc comment) is a span either way; warm-up
+            // needs one around EVERY glyph so each can carry its own beat, and
+            // separators come along so the whole figure strikes as one sign.
+            const narrow = ch === "1";
+            if (!warmup) {
+              return narrow ? (
+                <span key={`${si}-${i}`} className="inline-block w-[0.7ch] text-center">
+                  1
+                </span>
+              ) : (
+                ch
+              );
+            }
+            const { delay, duration } = digitCycle(warmupIndex++);
+            return (
+              <span
+                key={`${si}-${i}`}
+                className={cn(
+                  "telemetry-digit",
+                  narrow && "w-[0.7ch] text-center",
+                )}
+                style={
+                  {
+                    "--digit-delay": `${delay}ms`,
+                    "--digit-dur": `${duration}ms`,
+                  } as React.CSSProperties
+                }
+              >
+                {ch}
               </span>
-            ) : (
-              ch
-            ),
-          )
+            );
+          })
         ),
       )}
     </span>
