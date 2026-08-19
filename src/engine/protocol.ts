@@ -358,6 +358,8 @@ export interface TxManifestAssetMeta {
   label: string;
   ticker: string | null;
   precision: number | null;
+  /** Provenance of presentation-only metadata; never an asset identity proof. */
+  source?: "builtin" | "registry" | "fallback";
 }
 
 interface TxManifestApprovalReviewBaseDTO {
@@ -399,6 +401,8 @@ export type TxManifestApprovalReviewDTO =
     })
   | (TxManifestApprovalReviewBaseDTO & {
       kind: "acceptOffer";
+      /** Optional so pre-field durable checkpoints remain renderable. */
+      lenderNftAssetId?: string;
       principalAssetId: string;
       principalAmount: string;
       collateralAssetId: string;

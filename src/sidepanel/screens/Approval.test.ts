@@ -18,6 +18,7 @@ import { ApprovalOverlay } from "./Approval";
 const POLICY_ASSET = "11".repeat(32);
 const PRINCIPAL_ASSET = "55".repeat(32);
 const COLLATERAL_ASSET = "66".repeat(32);
+const LENDER_NFT_ASSET = "77".repeat(32);
 
 describe("ApprovalOverlay", () => {
   it("keeps a long PSET review in a vertically scrollable side-panel overlay", () => {
@@ -232,6 +233,7 @@ describe("ApprovalOverlay", () => {
         accountIdentifier: `bip122:${"22".repeat(16)}:${"33".repeat(16)}`,
         bundleHash: `sha256:${"44".repeat(32)}`,
         action: "lending_contract.AcceptOffer",
+        lenderNftAssetId: LENDER_NFT_ASSET,
         principalAssetId: PRINCIPAL_ASSET,
         principalAmount: "100000000",
         collateralAssetId: COLLATERAL_ASSET,
@@ -244,9 +246,10 @@ describe("ApprovalOverlay", () => {
         principalChange: "2500",
         feeChange: "9000",
         assets: {
-          [POLICY_ASSET]: { label: "LBTC", ticker: "LBTC", precision: 8 },
-          [PRINCIPAL_ASSET]: { label: "TEST-USDT", ticker: "TEST-USDT", precision: 8 },
-          [COLLATERAL_ASSET]: { label: "Collateral", ticker: "COL", precision: 8 },
+          [POLICY_ASSET]: { label: "LBTC", ticker: "LBTC", precision: 8, source: "builtin" },
+          [PRINCIPAL_ASSET]: { label: "TEST-USDT", ticker: "TEST-USDT", precision: 8, source: "registry" },
+          [COLLATERAL_ASSET]: { label: "Collateral", ticker: "COL", precision: 8, source: "registry" },
+          [LENDER_NFT_ASSET]: { label: "Lender NFT", ticker: null, precision: null, source: "fallback" },
         },
       },
     };
@@ -261,7 +264,15 @@ describe("ApprovalOverlay", () => {
     expect(markup).toContain("Approve &amp; execute");
     expect(markup).toContain("Network fee");
     expect(markup).toContain("Principal");
-    expect(markup).toContain("TEST-USDT");
+    expect(markup).toContain("registry · TEST-USDT");
+    expect(markup).toContain("registry · Collateral");
+    expect(markup).not.toContain("registry · LBTC");
+    expect(text).toContain(PRINCIPAL_ASSET);
+    expect(text).toContain(COLLATERAL_ASSET);
+    expect(text).toContain(LENDER_NFT_ASSET);
+    expect(text).toContain("Lender NFT received");
+    expect(markup).toContain("100,000,000 base units");
+    expect(markup).toContain("1,000 sats");
     expect(text).toContain("1.00");
     expect(text).toContain("2.50");
   });

@@ -64,7 +64,7 @@ event-discovered provider.
   reconnects and reloads the dapp. The successful retry is asserted in mempool,
   on-chain, in wallet history, and after seed recovery.
 - Regtest execution remains build-gated test infrastructure; ordinary Chrome,
-  Firefox, unit-test, and release builds do not trust the regtest chain.
+  unit-test, and release builds do not trust the regtest chain.
 
 ## Contract lifecycle
 

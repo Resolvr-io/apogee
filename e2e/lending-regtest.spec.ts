@@ -1098,6 +1098,18 @@ async function seedRegtestWallet(
               value?: unknown;
               error?: string;
             }>;
+            connect(connectInfo: { name: string }): {
+              postMessage(message: unknown): void;
+              disconnect(): void;
+              onMessage: {
+                addListener(listener: (message: unknown) => void): void;
+                removeListener(listener: (message: unknown) => void): void;
+              };
+              onDisconnect: {
+                addListener(listener: () => void): void;
+                removeListener(listener: () => void): void;
+              };
+            };
           };
         };
       };
@@ -1106,7 +1118,30 @@ async function seedRegtestWallet(
         if (!reply.ok) throw new Error(reply.error ?? "Apogee request failed");
         return reply.value;
       };
-      await send({
+      const restore = async (message: unknown) => {
+        const port = extension.chrome.runtime.connect({ name: "apogee-secret" });
+        const reply = await new Promise<{
+          ok: boolean;
+          value?: unknown;
+          error?: string;
+        } | null>((resolve) => {
+          const done = (result: { ok: boolean; value?: unknown; error?: string } | null) => {
+            port.onMessage.removeListener(onMessage);
+            port.onDisconnect.removeListener(onDisconnect);
+            resolve(result);
+          };
+          const onMessage = (result: unknown) =>
+            done(result as { ok: boolean; value?: unknown; error?: string });
+          const onDisconnect = () => done(null);
+          port.onMessage.addListener(onMessage);
+          port.onDisconnect.addListener(onDisconnect);
+          port.postMessage(message);
+        });
+        port.disconnect();
+        if (!reply?.ok) throw new Error(reply?.error ?? "Apogee restore failed");
+        return reply.value;
+      };
+      await restore({
         type: "wallet/restore",
         password: "lending-regtest-password",
         mnemonic,
@@ -1170,6 +1205,18 @@ async function restoreAndReadTransactions(
               value?: unknown;
               error?: string;
             }>;
+            connect(connectInfo: { name: string }): {
+              postMessage(message: unknown): void;
+              disconnect(): void;
+              onMessage: {
+                addListener(listener: (message: unknown) => void): void;
+                removeListener(listener: (message: unknown) => void): void;
+              };
+              onDisconnect: {
+                addListener(listener: () => void): void;
+                removeListener(listener: () => void): void;
+              };
+            };
           };
         };
       };
@@ -1178,7 +1225,30 @@ async function restoreAndReadTransactions(
         if (!reply.ok) throw new Error(reply.error ?? "Apogee request failed");
         return reply.value;
       };
-      await send({
+      const restore = async (message: unknown) => {
+        const port = extension.chrome.runtime.connect({ name: "apogee-secret" });
+        const reply = await new Promise<{
+          ok: boolean;
+          value?: unknown;
+          error?: string;
+        } | null>((resolve) => {
+          const done = (result: { ok: boolean; value?: unknown; error?: string } | null) => {
+            port.onMessage.removeListener(onMessage);
+            port.onDisconnect.removeListener(onDisconnect);
+            resolve(result);
+          };
+          const onMessage = (result: unknown) =>
+            done(result as { ok: boolean; value?: unknown; error?: string });
+          const onDisconnect = () => done(null);
+          port.onMessage.addListener(onMessage);
+          port.onDisconnect.addListener(onDisconnect);
+          port.postMessage(message);
+        });
+        port.disconnect();
+        if (!reply?.ok) throw new Error(reply?.error ?? "Apogee restore failed");
+        return reply.value;
+      };
+      await restore({
         type: "wallet/restore",
         password: "lending-regtest-password",
         mnemonic,

@@ -87,6 +87,6 @@ failure retains a Playwright trace under `test-results/`.
 
 Regtest manifest execution is compiled in only when
 `APOGEE_TX_MANIFEST_REGTEST=1` is present during the extension build. Normal
-development, release, Firefox, and unit-test builds set the flag to false, and the
+development, release, and unit-test builds set the flag to false, and the
 trusted lending manifest remains Liquid-testnet-only in those builds. Regtest is
 therefore test infrastructure, not a selectable application network.

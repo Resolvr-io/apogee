@@ -45,7 +45,15 @@ export interface TxManifestExecutionStore {
 
 type InFlight = {
   invocationDigest: `sha256:${string}`;
+  generation: TxManifestExecutionGeneration;
   promise: Promise<LiquidExecuteTxManifestResult>;
+};
+
+declare const txManifestExecutionGenerationBrand: unique symbol;
+
+/** Opaque lifetime token tying durable writes to one active wallet generation. */
+export type TxManifestExecutionGeneration = number & {
+  readonly [txManifestExecutionGenerationBrand]: true;
 };
 
 const RETENTION_MS = 7 * 24 * 60 * 60_000;
@@ -55,6 +63,8 @@ const MAX_RECORDS = 100;
 export class TxManifestIdempotency {
   private readonly inFlight = new Map<string, InFlight>();
   private writeQueue: Promise<void> = Promise.resolve();
+  private generation = 0;
+  private storageResetPending = false;
 
   constructor(
     private readonly store: TxManifestExecutionStore,
@@ -64,10 +74,16 @@ export class TxManifestIdempotency {
   async execute(
     key: string,
     invocationDigest: `sha256:${string}`,
-    operation: () => Promise<LiquidExecuteTxManifestResult>,
-    resume?: (checkpoint: TxManifestCheckpointRecord) => Promise<LiquidExecuteTxManifestResult>,
+    operation: (
+      generation: TxManifestExecutionGeneration,
+    ) => Promise<LiquidExecuteTxManifestResult>,
+    resume?: (
+      checkpoint: TxManifestCheckpointRecord,
+      generation: TxManifestExecutionGeneration,
+    ) => Promise<LiquidExecuteTxManifestResult>,
   ): Promise<LiquidExecuteTxManifestResult> {
-    const existing = await this.find(key);
+    const generation = this.currentGeneration();
+    const existing = await this.find(key, generation);
     if (existing) {
       this.requireSameInvocation(existing.invocationDigest, invocationDigest);
       if (isFailed(existing)) throw new Error(existing.message);
@@ -76,16 +92,26 @@ export class TxManifestIdempotency {
     }
     const running = this.inFlight.get(key);
     if (running) {
+      this.assertActive(running.generation);
       this.requireSameInvocation(running.invocationDigest, invocationDigest);
       return running.promise;
     }
-    const promise = (existing && isCheckpoint(existing) ? resume!(existing) : operation()).then(
-      async (result) => {
-        await this.persistTerminal({ key, invocationDigest, completedAt: this.now(), result });
-        return result;
-      },
-    );
-    this.inFlight.set(key, { invocationDigest, promise });
+    // Defer invocation until after the in-flight entry is installed. Besides
+    // preserving retry coalescing, this lets checkpoint writes carry the exact
+    // generation captured here rather than looking up a mutable key later.
+    const promise = Promise.resolve().then(async () => {
+      this.assertActive(generation);
+      const result = existing && isCheckpoint(existing)
+        ? await resume!(existing, generation)
+        : await operation(generation);
+      this.assertActive(generation);
+      await this.persistTerminal(
+        { key, invocationDigest, completedAt: this.now(), result },
+        generation,
+      );
+      return result;
+    });
+    this.inFlight.set(key, { invocationDigest, generation, promise });
     try {
       return await promise;
     } finally {
@@ -96,14 +122,17 @@ export class TxManifestIdempotency {
   /** Save-before-broadcast transition. Unresolved checkpoints are never aged out. */
   async checkpoint(
     record: Omit<TxManifestCheckpointRecord, "state" | "checkpointedAt">,
+    generation: TxManifestExecutionGeneration,
   ): Promise<void> {
+    this.assertActive(generation);
     const checkpoint: TxManifestCheckpointRecord = {
       ...record,
       state: "checkpointed",
       checkpointedAt: this.now(),
     };
-    const write = this.writeQueue.then(async () => {
+    return this.queueGenerationWrite(generation, async () => {
       const records = await this.store.load();
+      this.assertActive(generation);
       const cutoff = this.now() - RETENTION_MS;
       const existing = records.find(
         (candidate) => candidate.key === checkpoint.key && isCurrent(candidate, cutoff),
@@ -123,8 +152,6 @@ export class TxManifestIdempotency {
           .concat(checkpoint),
       );
     });
-    this.writeQueue = write.catch(() => {});
-    return write;
   }
 
   /** Permanently-invalid exact bytes require a fresh dapp request id and plan. */
@@ -132,7 +159,9 @@ export class TxManifestIdempotency {
     key: string,
     invocationDigest: `sha256:${string}`,
     details: string,
+    generation: TxManifestExecutionGeneration,
   ): Promise<void> {
+    this.assertActive(generation);
     const failure: TxManifestFailedRecord = {
       state: "failed",
       key,
@@ -140,8 +169,9 @@ export class TxManifestIdempotency {
       failedAt: this.now(),
       message: `This saved TX Manifest transaction is no longer valid. Submit the action again with a new requestId. ${details}`,
     };
-    const write = this.writeQueue.then(async () => {
+    return this.queueGenerationWrite(generation, async () => {
       const records = await this.store.load();
+      this.assertActive(generation);
       const existing = records.find((candidate) => candidate.key === key);
       if (!existing || !isCheckpoint(existing)) {
         throw new Error("No unresolved TX Manifest checkpoint exists for this request.");
@@ -151,19 +181,60 @@ export class TxManifestIdempotency {
         records.filter((candidate) => candidate.key !== key).concat(failure),
       );
     });
-    this.writeQueue = write.catch(() => {});
-    return write;
   }
 
   async clear(): Promise<void> {
+    this.invalidate();
+    this.storageResetPending = true;
     const write = this.writeQueue.then(() => this.store.save([]));
-    this.writeQueue = write.catch(() => {});
-    return write;
+    const tracked = write.then(
+      () => {
+        this.storageResetPending = false;
+      },
+      (error: unknown) => {
+        // Fail closed: stale records must not become visible in the new wallet
+        // generation just because storage was temporarily unavailable.
+        this.storageResetPending = true;
+        throw error;
+      },
+    );
+    this.writeQueue = tracked.catch(() => {});
+    return tracked;
   }
 
-  private async find(key: string): Promise<TxManifestExecutionRecord | undefined> {
+  /** Immediately invalidate work without deleting still-valid persisted state. */
+  invalidate(): void {
+    this.generation += 1;
+    this.inFlight.clear();
+  }
+
+  /** Fail a pending irreversible step after the wallet lifetime was reset. */
+  assertActive(generation: TxManifestExecutionGeneration): void {
+    if (generation !== this.currentGeneration()) {
+      throw new Error("This TX Manifest execution was invalidated because the wallet was reset.");
+    }
+  }
+
+  private currentGeneration(): TxManifestExecutionGeneration {
+    return this.generation as TxManifestExecutionGeneration;
+  }
+
+  private async find(
+    key: string,
+    generation: TxManifestExecutionGeneration,
+  ): Promise<TxManifestExecutionRecord | undefined> {
+    // A post-reset execution must not read records before clear() reaches its
+    // queued save. Conversely, an execution that began before reset must stop
+    // after either side of an asynchronous load.
+    const writeBarrier = this.writeQueue;
+    await writeBarrier;
+    this.assertActive(generation);
+    this.assertStorageReady();
     const cutoff = this.now() - RETENTION_MS;
-    return (await this.store.load()).find(
+    const records = await this.store.load();
+    this.assertActive(generation);
+    this.assertStorageReady();
+    return records.find(
       (record) =>
         record.key === key &&
         (isCheckpoint(record) ||
@@ -171,10 +242,14 @@ export class TxManifestIdempotency {
     );
   }
 
-  private async persistTerminal(record: TxManifestTerminalRecord): Promise<void> {
-    const write = this.writeQueue.then(async () => {
+  private async persistTerminal(
+    record: TxManifestTerminalRecord,
+    generation: TxManifestExecutionGeneration,
+  ): Promise<void> {
+    return this.queueGenerationWrite(generation, async () => {
       const cutoff = this.now() - RETENTION_MS;
       const current = await this.store.load();
+      this.assertActive(generation);
       const checkpoints = current.filter(
         (candidate) => isCheckpoint(candidate) && candidate.key !== record.key,
       );
@@ -192,8 +267,32 @@ export class TxManifestIdempotency {
         .slice(0, MAX_RECORDS);
       await this.store.save([...checkpoints, ...terminals]);
     });
+  }
+
+  private queueGenerationWrite(
+    generation: TxManifestExecutionGeneration,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    this.assertActive(generation);
+    const write = this.writeQueue.then(async () => {
+      this.assertActive(generation);
+      this.assertStorageReady();
+      await operation();
+      // If clear() began while storage.save was pending, do not let the caller
+      // proceed to broadcast. clear's queued empty save will run immediately
+      // after this rejected write and leave storage empty.
+      this.assertActive(generation);
+    });
     this.writeQueue = write.catch(() => {});
     return write;
+  }
+
+  private assertStorageReady(): void {
+    if (this.storageResetPending) {
+      throw new Error(
+        "TX Manifest checkpoint storage could not be cleared after the wallet reset.",
+      );
+    }
   }
 
   private requireSameInvocation(

@@ -8,6 +8,7 @@ import { Check, Eye, Send, PenLine, FileCode2, Coins, KeyRound, Bell } from "luc
 import type { ApprovalRequest, TxManifestAssetMeta } from "@/engine/protocol";
 import { formatAssetAmountExact, formatBaseUnits } from "@/lib/format";
 import { shortenHex } from "@/lib/utils";
+import { KNOWN_ASSETS } from "@/lib/asset-registry";
 import type { LiquidNetwork } from "@/keystore/keystore";
 import { AssetIcon } from "@/sidepanel/components/AssetIcon";
 import {
@@ -101,7 +102,7 @@ const METHOD_LABELS: Record<string, { label: string; description: string; icon: 
   signPset: {
     label: "Sign transactions",
     description:
-      "Ask for transaction signatures. Every request separately shows its exact inputs, recipients, asset changes, and fees.",
+      "Ask for transaction signatures. Each transaction needs your approval and separately shows its exact inputs, recipients, asset changes, and fees.",
     icon: PenLine,
   },
   experimental_getTxManifestSupport: {
@@ -117,7 +118,7 @@ const METHOD_LABELS: Record<string, { label: string; description: string; icon: 
   getUTXOs: {
     label: "View coin history",
     description:
-      "Reveals individual coins, addresses, amounts, and transaction links for this account. Does not reveal blinding keys or other wallet secrets.",
+      "Reveals individual coins, amounts, and transaction links for this account, including associated addresses. Does not reveal blinding keys or other wallet secrets.",
     icon: Coins,
     sensitive: true,
   },
@@ -542,7 +543,21 @@ function metaFor(review: TxManifestReviewDTO, assetId: string): TxManifestAssetM
     label: shortenHex(assetId, 6, 6),
     ticker: null,
     precision: null,
+    source: "fallback",
   };
+}
+
+/** Older checkpoints predate `source`, so recover built-in provenance by ID. */
+function manifestAssetSource(
+  meta: TxManifestAssetMeta,
+  assetId: string,
+): NonNullable<TxManifestAssetMeta["source"]> {
+  if (meta.source) return meta.source;
+  if (KNOWN_ASSETS[assetId]) return "builtin";
+  const fallback = shortenHex(assetId, 6, 6);
+  return meta.ticker == null && meta.precision == null && meta.label === fallback
+    ? "fallback"
+    : "registry";
 }
 
 /** Map the Approval screen's DappNetwork to the LiquidNetwork AssetIcon expects. */
@@ -567,6 +582,9 @@ function ManifestAssetRow({
   strong?: boolean;
 }) {
   const meta = metaFor(review, assetId);
+  const source = manifestAssetSource(meta, assetId);
+  const displayLabel =
+    source === "registry" ? `registry · ${meta.label.slice(0, 24)}` : meta.label;
   return (
     <div className="flex items-center gap-2.5 py-1">
       <AssetIcon assetId={assetId} label={meta.label} network={specNetwork} size="size-8" textSize="text-xs" />
@@ -574,14 +592,58 @@ function ManifestAssetRow({
         <div className={`text-sm ${strong ? "text-[color:var(--text-strong)]" : "text-[color:var(--text-primary)]"}`}>
           {roleLabel}
         </div>
-        <div className="text-[10px] text-[color:var(--text-subtle)]" title={assetId}>
-          {meta.label}
+        <div
+          className="text-[10px] text-[color:var(--text-subtle)]"
+          title={
+            source === "registry"
+              ? `"${meta.label}" comes from the public asset registry and is not verified. Identify the asset by its exact ID in Asset identities.`
+              : assetId
+          }
+        >
+          {displayLabel}
+        </div>
+        <div className="font-mono text-[9px] text-[color:var(--text-subtle)]" title={assetId}>
+          {shortenHex(assetId, 12, 10)}
         </div>
       </div>
-      {/* Amount only — the asset name is already the subtitle on the left, so
-          including it here would steal horizontal space and truncate the labels. */}
-      <TelemetryNumber value={formatAssetAmountExact(amount, meta.precision)} glow={false} />
+      <div className="shrink-0 text-right">
+        <TelemetryNumber value={formatAssetAmountExact(amount, meta.precision)} glow={false} />
+        <div className="font-mono text-[9px] text-[color:var(--text-subtle)]">
+          {formatBaseUnits(amount)} {assetId === review.feeAssetId ? "sats" : "base units"}
+        </div>
+      </div>
     </div>
+  );
+}
+
+function manifestTechnicalAssets(
+  review: TxManifestReviewDTO,
+): Array<{ label: string; value: string }> {
+  const assets: Array<{ label: string; value: string | undefined }> = [
+    { label: "Fee asset", value: review.feeAssetId },
+    {
+      label: "Factory asset",
+      value: "factoryAssetId" in review ? review.factoryAssetId : undefined,
+    },
+    {
+      label: "Principal asset",
+      value: "principalAssetId" in review ? review.principalAssetId : undefined,
+    },
+    {
+      label: "Collateral asset",
+      value: "collateralAssetId" in review ? review.collateralAssetId : undefined,
+    },
+    {
+      label: "Borrower NFT",
+      value: "borrowerNftAssetId" in review ? review.borrowerNftAssetId : undefined,
+    },
+    {
+      label: "Lender NFT",
+      value: "lenderNftAssetId" in review ? review.lenderNftAssetId : undefined,
+    },
+  ];
+  return assets.filter(
+    (asset): asset is { label: string; value: string } => asset.value !== undefined,
   );
 }
 
@@ -632,6 +694,9 @@ function TxManifestReview({
           <ReviewItem>
             <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.principalAmount} specNetwork={specNetwork} roleLabel="Principal" strong />
             <ManifestAssetRow review={review} assetId={review.collateralAssetId} amount={review.collateralAmount} specNetwork={specNetwork} roleLabel="Collateral" />
+            {review.kind === "acceptOffer" && review.lenderNftAssetId && (
+              <ManifestAssetRow review={review} assetId={review.lenderNftAssetId} amount="1" specNetwork={specNetwork} roleLabel="Lender NFT received" />
+            )}
             <Row label="Interest" value={`${formatBaseUnits(review.interestRateBasisPoints)} bps`} />
             <ManifestAssetRow review={review} assetId={review.principalAssetId} amount={review.totalDebt} specNetwork={specNetwork} roleLabel="Total debt" />
             <Row label="Expires at height" value={String(review.expirationHeight)} />
@@ -678,6 +743,14 @@ function TxManifestReview({
         </ReviewItem>
       </ReviewSection>
 
+      <ReviewSection title="Asset identities">
+        <ReviewItem>
+          {manifestTechnicalAssets(review).map(({ label, value }) => (
+            <Row key={label} label={label} value={value} mono wrap />
+          ))}
+        </ReviewItem>
+      </ReviewSection>
+
       <details className="rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-xs">
         <summary className="cursor-pointer text-[color:var(--text-secondary)]">Technical details</summary>
         <div className="mt-2 flex flex-col gap-2">
@@ -686,7 +759,6 @@ function TxManifestReview({
             { label: "Request", value: review.requestId },
             { label: "Bundle", value: review.bundleHash },
             { label: "Manifest action", value: review.action },
-            { label: "Fee asset", value: review.feeAssetId },
           ].map(({ label, value }) => (
             <div key={label}>
               <div className="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-subtle)]">

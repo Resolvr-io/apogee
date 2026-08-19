@@ -134,6 +134,7 @@ import {
   TxManifestIdempotency,
   txManifestIdempotencyKey,
   type TxManifestCheckpointRecord,
+  type TxManifestExecutionGeneration,
   type TxManifestExecutionRecord,
 } from "@/tx-manifest/idempotency";
 import {
@@ -631,6 +632,9 @@ async function handleUi(msg: UiRequest): Promise<unknown> {
       return keystore.lock();
 
     case "wallet/reset": {
+      // Stop old-wallet checkpoints and broadcasts before the first async gap.
+      // Persisted records are deleted after the vault wipe below.
+      txManifestIdempotency.invalidate();
       clearQrSecret();
       // The step-up record guards the vault being destroyed — don't let it
       // (or a pending prompt) survive into the next one.
@@ -712,6 +716,10 @@ async function handleUi(msg: UiRequest): Promise<unknown> {
       // forgot-password recovery path) and re-create it under the new password.
       // Snapshot the vault first so a failure mid-recreate rolls back the wipe.
       const backup = msg.replace ? await keystore.snapshotLocal() : null;
+      // A validated replacement is now entering its destructive phase. Stop
+      // old-wallet work immediately, while retaining its durable records until
+      // replacement succeeds (the catch below may still restore the old vault).
+      if (msg.replace) txManifestIdempotency.invalidate();
       try {
         if (msg.replace) {
           // Same session cleanup as wallet/reset: the restored vault is a new
@@ -2137,7 +2145,7 @@ async function executeProviderTxManifest(
         return txManifestIdempotency.execute(
           key,
           invocationDigest,
-          async () => {
+          async (idempotencyGeneration) => {
             const plan = await engine<TxManifestRequirementPlan>({
               kind: "resolveTxManifestRequirements",
               invocation,
@@ -2178,6 +2186,7 @@ async function executeProviderTxManifest(
                 },
                 executionKey: key,
                 invocationDigest,
+                idempotencyGeneration,
                 permissionMethod: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST,
                 revision,
                 generation,
@@ -2187,7 +2196,7 @@ async function executeProviderTxManifest(
               void routeApproval(approval);
             });
           },
-          (checkpoint) =>
+          (checkpoint, idempotencyGeneration) =>
             resumeProviderTxManifest(
               origin,
               invocation,
@@ -2195,6 +2204,7 @@ async function executeProviderTxManifest(
               revision,
               generation,
               checkpoint,
+              idempotencyGeneration,
             ),
         );
       },
@@ -2212,6 +2222,7 @@ async function resumeProviderTxManifest(
   revision: number,
   generation: number,
   checkpoint: TxManifestCheckpointRecord,
+  idempotencyGeneration: TxManifestExecutionGeneration,
 ): Promise<LiquidExecuteTxManifestResult> {
   if (checkpoint.walletId !== info.id || checkpoint.network !== info.network) {
     throw new Error("The TX Manifest checkpoint does not belong to the connected wallet.");
@@ -2275,6 +2286,7 @@ async function resumeProviderTxManifest(
       invocation,
       executionKey: checkpoint.key,
       invocationDigest: checkpoint.invocationDigest,
+      idempotencyGeneration,
       recovery: payload,
       permissionMethod: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST,
       revision,
@@ -2483,6 +2495,9 @@ function manifestAssetIds(context: PreparedProviderTxManifest): string[] {
     if (id) ids.add(id);
   };
   push(context.prepared.review.feeAssetId);
+  if (context.kind === "acceptOffer") {
+    push(context.plan.instance.LENDER_NFT_ASSET_ID);
+  }
   const intent = context.plan.intent as unknown as Record<string, unknown>;
   for (const key of [
     "principalAssetId",
@@ -2518,6 +2533,7 @@ async function resolveManifestAssets(
           label: known.label,
           ticker: known.label,
           precision: known.precision,
+          source: "builtin",
         };
         return;
       }
@@ -2527,12 +2543,14 @@ async function resolveManifestAssets(
           label: info.ticker ?? info.name ?? shortenHex(assetId, 6, 6),
           ticker: info.ticker,
           precision: info.precision,
+          source: "registry",
         };
       } catch {
         assets[assetId] = {
           label: shortenHex(assetId, 6, 6),
           ticker: null,
           precision: null,
+          source: "fallback",
         };
       }
     }),
@@ -2561,6 +2579,7 @@ async function txManifestApprovalReview(
     return {
       ...common,
       kind: "acceptOffer",
+      lenderNftAssetId: context.plan.instance.LENDER_NFT_ASSET_ID,
       principalAssetId: context.plan.intent.principalAssetId,
       principalAmount: context.plan.intent.principalAmount,
       collateralAssetId: context.plan.intent.collateralAssetId,
@@ -3063,6 +3082,7 @@ type PendingApproval =
       invocation: LiquidExecuteTxManifestParams;
       executionKey: string;
       invocationDigest: `sha256:${string}`;
+      idempotencyGeneration: TxManifestExecutionGeneration;
       permissionMethod: string;
       revision: number;
       generation: number;
@@ -3471,12 +3491,14 @@ async function handleApprovalDecision(
                 transactionHex: pending.recovery.transactionHex,
                 esploraUrl,
               },
-              () =>
-                requireProviderPsetAuthorization(
+              async () => {
+                await requireProviderPsetAuthorization(
                   pending,
                   "This site was disconnected before Apogee could resume the manifest transaction.",
                   true,
-                ),
+                );
+                txManifestIdempotency.assertActive(pending.idempotencyGeneration);
+              },
             );
           } catch (error) {
             if (
@@ -3495,6 +3517,7 @@ async function handleApprovalDecision(
                   pending.executionKey,
                   pending.invocationDigest,
                   details,
+                  pending.idempotencyGeneration,
                 );
                 throw new Error(
                   `This saved TX Manifest transaction is no longer valid. Submit the action again with a new requestId. ${details}`,
@@ -3612,7 +3635,10 @@ async function handleApprovalDecision(
       );
       // The durable boundary: no chain-server submission is attempted unless
       // these exact signed bytes can be recovered after service-worker loss.
-      await txManifestIdempotency.checkpoint({ ...checkpointMetadata, sealedPayload });
+      await txManifestIdempotency.checkpoint(
+        { ...checkpointMetadata, sealedPayload },
+        pending.idempotencyGeneration,
+      );
       let sent: SendResult;
       try {
         sent = await engineAfterGate<SendResult>(
@@ -3622,12 +3648,14 @@ async function handleApprovalDecision(
             transactionHex: extracted.transactionHex,
             esploraUrl,
           },
-          () =>
-            requireProviderPsetAuthorization(
+          async () => {
+            await requireProviderPsetAuthorization(
               pending,
               "This site was disconnected before Apogee could broadcast the manifest transaction.",
               true,
-            ),
+            );
+            txManifestIdempotency.assertActive(pending.idempotencyGeneration);
+          },
         );
       } catch (error) {
         if (
@@ -3646,6 +3674,7 @@ async function handleApprovalDecision(
               pending.executionKey,
               pending.invocationDigest,
               details,
+              pending.idempotencyGeneration,
             );
             throw new Error(
               `This saved TX Manifest transaction is no longer valid. Submit the action again with a new requestId. ${details}`,
