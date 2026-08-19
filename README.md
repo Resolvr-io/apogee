@@ -10,9 +10,7 @@ and signs; web apps connect to it as a dapp through an injected `window.liquid` 
      issue on this repo, so it is public — verified by an unauthenticated fetch.
      Re-upload the same way if it is ever replaced. -->
 
-<img width="1280" height="800"
-     alt="Five Apogee side-panel screens: the lock screen over an animated ocean; wallet creation; the balance showing a portfolio total above its price chart, an Assets list and recent activity; a receive address with QR; and settings"
-     src="https://github.com/user-attachments/assets/0355c3ac-ec8a-455f-a1c4-faa20646c8c3" />
+<img width="1280" height="800" alt="Five Apogee side-panel screens: the lock screen over an animated ocean; wallet creation; the balance showing a portfolio total above its price chart, an Assets list and recent activity; the Coins view listing each unspent output with a control to combine them; and settings" src="https://github.com/user-attachments/assets/0355c3ac-ec8a-455f-a1c4-faa20646c8c3" />
 
 ## Run / build
 
