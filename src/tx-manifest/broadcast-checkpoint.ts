@@ -37,9 +37,13 @@ export function txManifestCheckpointContext(
 }
 
 /**
- * Check whether a prior submission is visible without treating a provider
- * outage as proof that it is absent. A configured server remains pinned; in
- * automatic mode every built-in provider must return 404 before `missing`.
+ * Check whether a prior submission is retrievable without treating a provider
+ * outage as proof that it is absent. Reading the transaction bytes matters:
+ * some Esplora-compatible regtest servers answer an unknown transaction's
+ * `/status` request with `200 {"confirmed":false}`. Treating that response as
+ * proof of acceptance can acknowledge a rejected broadcast. A configured
+ * server remains pinned; in automatic mode every built-in provider must return
+ * 404 before `missing`.
  */
 export async function lookupTxManifestTransaction(
   network: LiquidNetwork,
@@ -51,11 +55,17 @@ export async function lookupTxManifestTransaction(
   let missing = 0;
   for (const root of roots) {
     try {
-      const response = await fetcher(`${root.replace(/\/$/, "")}/tx/${txid}/status`, {
+      const response = await fetcher(`${root.replace(/\/$/, "")}/tx/${txid}/hex`, {
         method: "GET",
         cache: "no-store",
       });
-      if (response.ok) return "found";
+      if (response.ok) {
+        const transactionHex = (await response.text()).trim();
+        if (transactionHex.length > 0 && transactionHex.length % 2 === 0 && /^[0-9a-f]+$/i.test(transactionHex)) {
+          return "found";
+        }
+        continue;
+      }
       if (response.status === 404) missing += 1;
     } catch {
       // An outage is ambiguous. Try the alternate, then report `unknown`.

@@ -1,0 +1,47 @@
+{
+  "$comment_schema": "ELIP-205 draft txmanifest.schema.json at pinned revision 1a8d0b759853a00fef5f74351b64a602e2ba7a6f",
+  "$comment": "roulette_v1 is the universal OPEN/ACTIVE state covenant. Apogee strips only the leading simc 0.7.0 pragma because its pinned in-memory frontend rejects file pragmas; the vendored body compiles to the canonical CMR 190ac19a69f2e8dc2cc24824e54c895c1d989ba75b7a01fe2a0f04ecb68fde91.",
+  "manifest_version": "0.1.0",
+  "protocol": "simplicity-roulette",
+  "simplicity_hl": { "debug_symbols": false },
+  "description": "Verifiably random, single-bet European roulette using a player-first commitment, taker nonce, exact collateral, bounded reveal windows, and covenant-enforced payouts.",
+  "apogee_extensions": {
+    "roulette_metadata_v1": {
+      "placement": "one-to-four consecutive RLT1 outputs immediately before TXMF; fee output last",
+      "chunk_header": "magic:RLT1/u8 version=1/u8 action/u8 index/u8 count/u32 round-prefix/u32 sha256(version||action||body)-prefix",
+      "max_payload_bytes": 80,
+      "max_chunks": 4,
+      "integer_endian": "big except linked txid uses consensus byte order and linked vout uses little endian",
+      "actions": {
+        "open": "round_id:32 asset_id_display:32 player_p2wpkh_script:22 secret_commitment:32 bet_kind:u8 bet_selection:u8 stake:u64 bond:u64 open_expiry:u16 min_reveal_age:u16 reveal_expiry:u16 covenant_vout:u32",
+        "take": "round_id:32 previous_outpoint:36 house_p2wpkh_script:22 house_nonce:32 house_collateral:u64 covenant_vout:u32",
+        "settle": "round_id:32 previous_outpoint:36 player_secret:32 pocket:u8",
+        "cancel": "round_id:32 previous_outpoint:36",
+        "forfeit": "round_id:32 previous_outpoint:36",
+        "claimPayout": "round_id:32 previous_outpoint:36"
+      }
+    }
+  },
+  "utxo_types": {
+    "roulette_open": {
+      "description": "Player-funded OPEN state. HOUSE_SCRIPT_HASH, HOUSE_NONCE, and HOUSE_COLLATERAL are zero.",
+      "script": { "type": "simplicity", "source": "./roulette_v1.simf", "compile_params": {}, "extra_leaves": [{ "type": "tapdata", "payload": ["instance.STATE_WORD"] }] },
+      "asset": "ASSET_ID",
+      "confidential": false
+    },
+    "roulette_active": {
+      "description": "Taken ACTIVE state, bound to the selected house P2WPKH script, nonce, and collateral.",
+      "script": { "type": "simplicity", "source": "./roulette_v1.simf", "compile_params": {}, "extra_leaves": [{ "type": "tapdata", "payload": ["instance.STATE_WORD"] }] },
+      "asset": "ASSET_ID",
+      "confidential": false
+    }
+  },
+  "actions": {
+    "roulette_vault.Open": { "description": "Fund output 0 as OPEN and publish canonical RLT1 discovery metadata." },
+    "roulette_vault.Take": { "description": "Spend OPEN at input 0, add ordinary P2WPKH house collateral, and create ACTIVE at output 0." },
+    "roulette_vault.Settle": { "description": "Reveal the player secret after MIN_REVEAL_AGE and enforce the exact roulette payout." },
+    "roulette_vault.Cancel": { "description": "Return an untaken OPEN amount to the player after OPEN_EXPIRY." },
+    "roulette_vault.Forfeit": { "description": "Pay an unrevealed ACTIVE amount to the house after REVEAL_EXPIRY." },
+    "roulette_vault.ClaimPayout": { "description": "Reblind one explicit wallet-owned terminal roulette payout using ordinary P2WPKH signing; not a covenant transition." }
+  }
+}

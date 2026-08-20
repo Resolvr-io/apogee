@@ -13,6 +13,22 @@ import {
   resolveTrustedTxManifest,
   type TxManifestBundleHash,
 } from "./registry";
+import {
+  isRouletteAction,
+  resolveRouletteRequirements,
+  type RouletteRequirementPlan,
+} from "./roulette-requirements";
+
+export type {
+  RouletteCancelRequirementPlan,
+  RouletteClaimPayoutRequirementPlan,
+  RouletteForfeitRequirementPlan,
+  RouletteOpenRequirementPlan,
+  RouletteRequirementPlan,
+  RouletteSettleRequirementPlan,
+  RouletteTakeRequirementPlan,
+  RouletteTerms,
+} from "./roulette-requirements";
 
 export type TxManifestOutpoint = { txid: string; vout: number };
 
@@ -295,7 +311,8 @@ export type TxManifestRequirementPlan =
   | RepayLoanRequirementPlan
   | CancelOfferRequirementPlan
   | LiquidateOfferRequirementPlan
-  | ClaimLenderVaultRequirementPlan;
+  | ClaimLenderVaultRequirementPlan
+  | RouletteRequirementPlan;
 
 const REQUIRED_INSTANCE_FIELDS = [
   "COLLATERAL_ASSET_ID",
@@ -332,9 +349,6 @@ export async function resolveTxManifestRequirements(
   if (!trusted.actions.includes(invocation.action)) {
     throw new Error("This TX Manifest action is not enabled by Apogee.");
   }
-  const actionName = ACTION_NAMES[invocation.action];
-  if (!actionName) throw new Error("Unsupported TX Manifest action.");
-
   const common = {
     planVersion: "apogee-tx-manifest-requirements/v1" as const,
     requestId: nonEmpty(invocation.requestId, "requestId"),
@@ -343,6 +357,13 @@ export async function resolveTxManifestRequirements(
     bundleHash: invocation.manifest.bundleHash,
     constraints: validateConstraints(invocation.constraints),
   };
+
+  if (isRouletteAction(invocation.action)) {
+    return resolveRouletteRequirements(invocation, common);
+  }
+
+  const actionName = ACTION_NAMES[invocation.action];
+  if (!actionName) throw new Error("Unsupported TX Manifest action.");
 
   if (invocation.action === SIMPLICITY_LENDING_V3_CREATE_FACTORY) {
     exactArguments(invocation.arguments, [], actionName);

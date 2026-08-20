@@ -1,0 +1,657 @@
+/*
+ * LIQUID ROULETTE V1
+ *
+ * One stateful Simplicity program implements this lifecycle:
+ *
+ *   OPEN --Take--> ACTIVE --Settle--> exact player/house payouts
+ *     |                 |
+ *     +--Cancel         +--Forfeit
+ *
+ * OPEN is funded by the player with stake + bond. It commits to the player's
+ * secret before the house chooses a nonce. Take is authorized by a normal
+ * house P2WPKH input: the covenant requires one non-covenant input whose
+ * script hash is the house hash published by Take. OPEN commits a zero house
+ * hash because the taker is not known yet. Take adds the declared house
+ * collateral and binds that house hash into ACTIVE.
+ *
+ * Settle reveals the player secret, verifies its tagged commitment, derives an
+ * unbiased European roulette pocket from the secret and the house nonce, and
+ * enforces the exact single-bet payout. Honest settlement returns the bond to
+ * the player. Cancel returns an untaken OPEN UTXO to the player after its
+ * relative expiry. Forfeit pays an unrevealed ACTIVE UTXO to the house after
+ * its relative expiry.
+ *
+ * Amounts and assets are explicit. Transaction fees must be paid by other
+ * inputs; none of the covenant value may be shaved for fees.
+ *
+ * STATE ENCODING
+ *
+ * The named state fields below are hashed in fixed-width, big-endian order to
+ * one state word. That word is stored as a TapData sibling of this program's
+ * tapleaf under a NUMS internal key. Each spend supplies the fields and the
+ * program reconstructs the current P2TR script hash before dispatching PATH.
+ *
+ * PHASE: 0 = OPEN, 1 = ACTIVE.
+ * BET_KIND: 0 straight, 1 red, 2 black, 3 odd, 4 even, 5 low,
+ *           6 high, 7 dozen, 8 column.
+ * BET_SELECTION: straight 0..36; dozen/column 1..3; zero otherwise.
+ *
+ * PATH:
+ *   Left(Left((house_nonce, house_script_hash,
+ *              house_collateral, house_input_index))) = Take
+ *   Left(Right(()))                                   = Cancel
+ *   Right(Left(player_secret))                        = Settle
+ *   Right(Right(()))                                  = Forfeit
+ */
+
+type OpenAction = Either<(u256, u256, u64, u32), ()>;
+type ActiveAction = Either<u256, ()>;
+type Path = Either<OpenAction, ActiveAction>;
+
+// -------------------------------------------------------------------------
+// Boolean and checked arithmetic helpers
+// -------------------------------------------------------------------------
+
+fn not(bit: bool) -> bool {
+    <u1>::into(jet::complement_1(<bool>::into(bit)))
+}
+
+fn or(left: bool, right: bool) -> bool {
+    <u1>::into(jet::or_1(<bool>::into(left), <bool>::into(right)))
+}
+
+fn and(left: bool, right: bool) -> bool {
+    <u1>::into(jet::and_1(<bool>::into(left), <bool>::into(right)))
+}
+
+fn checked_add_u64(left: u64, right: u64) -> u64 {
+    let (carry, sum): (bool, u64) = jet::add_64(left, right);
+    assert!(not(carry));
+    sum
+}
+
+fn checked_sub_u64(left: u64, right: u64) -> u64 {
+    let (borrow, difference): (bool, u64) = jet::subtract_64(left, right);
+    assert!(not(borrow));
+    difference
+}
+
+fn checked_multiply_u64(left: u64, right: u64) -> u64 {
+    let product: u128 = jet::multiply_64(left, right);
+    let (high, low): (u64, u64) = <u128>::into(product);
+    assert!(jet::is_zero_64(high));
+    low
+}
+
+fn ensure_nonzero_u64(value: u64) {
+    assert!(not(jet::is_zero_64(value)));
+}
+
+// -------------------------------------------------------------------------
+// Tagged hashes and state commitment
+// -------------------------------------------------------------------------
+
+// SHA256("liquid-roulette/state/v1")
+fn state_tag() -> u256 {
+    0x8a8292fd9c81ece6190ef425fc745f161f70cdd1733033b34b61ee25e9b90506
+}
+
+// SHA256("liquid-roulette/terms/v1")
+fn terms_tag() -> u256 {
+    0x7ed114edf4d1ea453f94a864fb8783a5ee3d95ba81e8482a323088de0a8f4d5d
+}
+
+// SHA256("liquid-roulette/secret/v1")
+fn secret_tag() -> u256 {
+    0x3133afa8be56c1678fb58d64cbd95f209a4783a6383f3dfaf486560f1666a040
+}
+
+// SHA256("liquid-roulette/outcome/v1")
+fn outcome_tag() -> u256 {
+    0x3770f72d22053d3c14aeddbb489b735f6b3f7222a683931c718df6154b178266
+}
+
+fn covenant_nums_key() -> u256 {
+    0x50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0
+}
+
+fn compute_p2tr_script_hash(output_key: u256) -> u256 {
+    let ctx: Ctx8 = jet::sha_256_ctx_8_init();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_2(ctx, 0x5120);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, output_key);
+    jet::sha_256_ctx_8_finalize(ctx)
+}
+
+fn terms_hash(
+    round_id: u256,
+    asset_id: u256,
+    bet_kind: u32,
+    bet_selection: u32,
+    stake: u64,
+    bond: u64,
+    open_expiry: u16,
+    min_reveal_age: u16,
+    reveal_expiry: u16,
+) -> u256 {
+    let tag: u256 = terms_tag();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_init();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, tag);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, tag);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, round_id);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, asset_id);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_4(ctx, bet_kind);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_4(ctx, bet_selection);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_8(ctx, stake);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_8(ctx, bond);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_2(ctx, open_expiry);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_2(ctx, min_reveal_age);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_2(ctx, reveal_expiry);
+    jet::sha_256_ctx_8_finalize(ctx)
+}
+
+fn state_word(
+    phase: u32,
+    round_id: u256,
+    asset_id: u256,
+    player_script_hash: u256,
+    house_script_hash: u256,
+    secret_commitment: u256,
+    bet_kind: u32,
+    bet_selection: u32,
+    stake: u64,
+    bond: u64,
+    open_expiry: u16,
+    min_reveal_age: u16,
+    reveal_expiry: u16,
+    house_nonce: u256,
+    house_collateral: u64,
+) -> u256 {
+    let tag: u256 = state_tag();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_init();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, tag);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, tag);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_4(ctx, phase);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, round_id);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, asset_id);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, player_script_hash);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, house_script_hash);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, secret_commitment);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_4(ctx, bet_kind);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_4(ctx, bet_selection);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_8(ctx, stake);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_8(ctx, bond);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_2(ctx, open_expiry);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_2(ctx, min_reveal_age);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_2(ctx, reveal_expiry);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, house_nonce);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_8(ctx, house_collateral);
+    jet::sha_256_ctx_8_finalize(ctx)
+}
+
+fn script_for_state(
+    phase: u32,
+    round_id: u256,
+    asset_id: u256,
+    player_script_hash: u256,
+    house_script_hash: u256,
+    secret_commitment: u256,
+    bet_kind: u32,
+    bet_selection: u32,
+    stake: u64,
+    bond: u64,
+    open_expiry: u16,
+    min_reveal_age: u16,
+    reveal_expiry: u16,
+    house_nonce: u256,
+    house_collateral: u64,
+) -> u256 {
+    let word: u256 = state_word(
+        phase,
+        round_id,
+        asset_id,
+        player_script_hash,
+        house_script_hash,
+        secret_commitment,
+        bet_kind,
+        bet_selection,
+        stake,
+        bond,
+        open_expiry,
+        min_reveal_age,
+        reveal_expiry,
+        house_nonce,
+        house_collateral,
+    );
+    let storage: Ctx8 = jet::tapdata_init();
+    let storage: Ctx8 = jet::sha_256_ctx_8_add_32(storage, word);
+    let storage_leaf: u256 = jet::sha_256_ctx_8_finalize(storage);
+    let merkle_root: u256 = jet::build_tapbranch(jet::tapleaf_hash(), storage_leaf);
+    let output_key: u256 = jet::build_taptweak(covenant_nums_key(), merkle_root);
+    compute_p2tr_script_hash(output_key)
+}
+
+fn player_secret_commitment(round_id: u256, terms: u256, secret: u256) -> u256 {
+    let tag: u256 = secret_tag();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_init();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, tag);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, tag);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, round_id);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, terms);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, secret);
+    jet::sha_256_ctx_8_finalize(ctx)
+}
+
+// -------------------------------------------------------------------------
+// Explicit transaction introspection and relative locks
+// -------------------------------------------------------------------------
+
+fn explicit_asset_amount(pair: (Asset1, Amount1)) -> (u256, u64) {
+    let (asset, amount): (Asset1, Amount1) = pair;
+    let asset: u256 = unwrap_right::<(u1, u256)>(asset);
+    let amount: u64 = unwrap_right::<(u1, u256)>(amount);
+    (asset, amount)
+}
+
+fn current_explicit_amount(expected_asset: u256) -> u64 {
+    let (asset, amount): (u256, u64) = explicit_asset_amount(jet::current_amount());
+    assert!(jet::eq_256(asset, expected_asset));
+    amount
+}
+
+fn ensure_output(index: u32, expected_asset: u256, expected_amount: u64, expected_script_hash: u256) {
+    let pair: (Asset1, Amount1) = unwrap(jet::output_amount(index));
+    let (asset, amount): (u256, u64) = explicit_asset_amount(pair);
+    assert!(jet::eq_256(asset, expected_asset));
+    assert!(jet::eq_64(amount, expected_amount));
+    assert!(jet::eq_256(unwrap(jet::output_script_hash(index)), expected_script_hash));
+}
+
+// Require a BIP68 block-distance sequence. This explicitly checks tx version
+// and rejects time-based sequences rather than merely parsing nSequence.
+fn require_relative_block_lock(min_blocks: u16) {
+    assert!(jet::le_32(2, jet::version()));
+    match jet::parse_sequence(jet::current_sequence()) {
+        None => panic!(),
+        Some(lock: Either<u16, u16>) => match lock {
+            Left(distance: u16) => assert!(jet::le_16(min_blocks, distance)),
+            Right(duration: u16) => panic!(),
+        },
+    }
+}
+
+// -------------------------------------------------------------------------
+// European single-zero roulette
+// -------------------------------------------------------------------------
+
+fn validate_bet(bet_kind: u32, selection: u32, stake: u64) {
+    ensure_nonzero_u64(stake);
+    assert!(jet::le_32(bet_kind, 8));
+
+    match jet::eq_32(bet_kind, 0) {
+        true => assert!(jet::le_32(selection, 36)),
+        false => match or(jet::eq_32(bet_kind, 7), jet::eq_32(bet_kind, 8)) {
+            true => {
+                assert!(jet::le_32(1, selection));
+                assert!(jet::le_32(selection, 3));
+            },
+            false => assert!(jet::eq_32(selection, 0)),
+        },
+    }
+}
+
+fn payout_odds(bet_kind: u32) -> u64 {
+    match jet::eq_32(bet_kind, 0) {
+        true => 35,
+        false => match or(jet::eq_32(bet_kind, 7), jet::eq_32(bet_kind, 8)) {
+            true => 2,
+            false => 1,
+        },
+    }
+}
+
+fn in_range(value: u32, low: u32, high: u32) -> bool {
+    and(jet::le_32(low, value), jet::le_32(value, high))
+}
+
+fn is_red(pocket: u32) -> bool {
+    // Bits 0..36 encode the canonical European red pockets.
+    let red_mask: u64 = 0x000000154aad52aa;
+    let (_high16, low16): (u16, u16) = <u32>::into(pocket);
+    let (_high8, shift): (u8, u8) = <u16>::into(low16);
+    let shifted: u64 = jet::right_shift_64(shift, red_mask);
+    let bit: u1 = jet::rightmost_64_1(shifted);
+    <u1>::into(bit)
+}
+
+fn bet_wins(bet_kind: u32, selection: u32, pocket: u32) -> bool {
+    match jet::eq_32(bet_kind, 0) {
+        // Straight-up, including straight zero.
+        true => jet::eq_32(pocket, selection),
+        false => match jet::eq_32(pocket, 0) {
+            // Zero loses every outside bet.
+            true => false,
+            false => match jet::eq_32(bet_kind, 1) {
+                true => is_red(pocket),
+                false => match jet::eq_32(bet_kind, 2) {
+                    true => not(is_red(pocket)),
+                    false => match jet::eq_32(bet_kind, 3) {
+                        true => jet::eq_32(jet::modulo_32(pocket, 2), 1),
+                        false => match jet::eq_32(bet_kind, 4) {
+                            true => jet::eq_32(jet::modulo_32(pocket, 2), 0),
+                            false => match jet::eq_32(bet_kind, 5) {
+                                true => in_range(pocket, 1, 18),
+                                false => match jet::eq_32(bet_kind, 6) {
+                                    true => in_range(pocket, 19, 36),
+                                    false => match jet::eq_32(bet_kind, 7) {
+                                        true => match jet::eq_32(selection, 1) {
+                                            true => in_range(pocket, 1, 12),
+                                            false => match jet::eq_32(selection, 2) {
+                                                true => in_range(pocket, 13, 24),
+                                                false => in_range(pocket, 25, 36),
+                                            },
+                                        },
+                                        false => {
+                                            let (borrow, zero_based): (bool, u32) = jet::subtract_32(pocket, 1);
+                                            assert!(not(borrow));
+                                            let column: u32 = jet::modulo_32(zero_based, 3);
+                                            let (carry, column): (bool, u32) = jet::add_32(column, 1);
+                                            assert!(not(carry));
+                                            jet::eq_32(column, selection)
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+}
+
+fn roulette_return(bet_kind: u32, selection: u32, stake: u64, pocket: u32) -> u64 {
+    match bet_wins(bet_kind, selection, pocket) {
+        true => checked_multiply_u64(stake, checked_add_u64(payout_odds(bet_kind), 1)),
+        false => 0,
+    }
+}
+
+// -------------------------------------------------------------------------
+// Unbiased outcome derivation
+// -------------------------------------------------------------------------
+
+fn outcome_block(round_id: u256, terms: u256, secret: u256, nonce: u256, counter: u32) -> u256 {
+    let tag: u256 = outcome_tag();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_init();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, tag);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, tag);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, round_id);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, terms);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, secret);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, nonce);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_4(ctx, counter);
+    jet::sha_256_ctx_8_finalize(ctx)
+}
+
+fn choose_cursor(cursor: u32, chosen: Option<u32>) -> Option<u32> {
+    match chosen {
+        Some(value: u32) => Some(value),
+        None => match jet::lt_32(cursor, 4294967289) {
+            true => Some(cursor),
+            false => None,
+        },
+    }
+}
+
+fn sample_block(block: u256) -> Option<u32> {
+    let (high128, low128): (u128, u128) = <u256>::into(block);
+    let (word01, word23): (u64, u64) = <u128>::into(high128);
+    let (word45, word67): (u64, u64) = <u128>::into(low128);
+    let (word0, word1): (u32, u32) = <u64>::into(word01);
+    let (word2, word3): (u32, u32) = <u64>::into(word23);
+    let (word4, word5): (u32, u32) = <u64>::into(word45);
+    let (word6, word7): (u32, u32) = <u64>::into(word67);
+    let words: [u32; 8] = [word0, word1, word2, word3, word4, word5, word6, word7];
+    array_fold::<choose_cursor, 8>(words, None)
+}
+
+fn lucky_number(round_id: u256, terms: u256, secret: u256, nonce: u256) -> u32 {
+    let first: Option<u32> = sample_block(outcome_block(round_id, terms, secret, nonce, 0));
+    let cursor: u32 = match first {
+        Some(value: u32) => value,
+        // Exhausting eight windows is already below 4e-71 probability. A
+        // second independently tagged block makes failure negligible while
+        // keeping the Simplicity program statically bounded.
+        None => unwrap(sample_block(outcome_block(round_id, terms, secret, nonce, 1))),
+    };
+    jet::modulo_32(cursor, 37)
+}
+
+// -------------------------------------------------------------------------
+// Lifecycle paths
+// -------------------------------------------------------------------------
+
+fn take_path(
+    round_id: u256,
+    asset_id: u256,
+    player_script_hash: u256,
+    house_script_hash: u256,
+    secret_commitment: u256,
+    bet_kind: u32,
+    bet_selection: u32,
+    stake: u64,
+    bond: u64,
+    open_expiry: u16,
+    min_reveal_age: u16,
+    reveal_expiry: u16,
+    house_nonce: u256,
+    house_collateral: u64,
+    house_input_index: u32,
+) {
+    // The ordinary house input is authenticated by its own P2WPKH witness at
+    // consensus. Pinning its prevout script here turns that wallet signature
+    // into Take authorization without a custom Simplicity signature witness.
+    assert!(not(jet::eq_32(house_input_index, jet::current_index())));
+    assert!(jet::eq_256(
+        unwrap(jet::input_script_hash(house_input_index)),
+        house_script_hash
+    ));
+
+    let required_collateral: u64 = checked_multiply_u64(stake, payout_odds(bet_kind));
+    assert!(jet::le_64(required_collateral, house_collateral));
+
+    let open_amount: u64 = checked_add_u64(stake, bond);
+    let active_amount: u64 = checked_add_u64(open_amount, house_collateral);
+    ensure_output(0, asset_id, active_amount, script_for_state(
+        1,
+        round_id,
+        asset_id,
+        player_script_hash,
+        house_script_hash,
+        secret_commitment,
+        bet_kind,
+        bet_selection,
+        stake,
+        bond,
+        open_expiry,
+        min_reveal_age,
+        reveal_expiry,
+        house_nonce,
+        house_collateral,
+    ));
+}
+
+fn cancel_path(asset_id: u256, player_script_hash: u256, open_amount: u64, open_expiry: u16) {
+    require_relative_block_lock(open_expiry);
+    ensure_output(0, asset_id, open_amount, player_script_hash);
+}
+
+fn settle_path(
+    round_id: u256,
+    asset_id: u256,
+    player_script_hash: u256,
+    house_script_hash: u256,
+    secret_commitment: u256,
+    bet_kind: u32,
+    bet_selection: u32,
+    stake: u64,
+    bond: u64,
+    min_reveal_age: u16,
+    house_nonce: u256,
+    active_amount: u64,
+    terms: u256,
+    secret: u256,
+) {
+    require_relative_block_lock(min_reveal_age);
+    assert!(jet::eq_256(
+        player_secret_commitment(round_id, terms, secret),
+        secret_commitment
+    ));
+
+    let pocket: u32 = lucky_number(round_id, terms, secret, house_nonce);
+    let player_return: u64 = roulette_return(bet_kind, bet_selection, stake, pocket);
+    let player_amount: u64 = checked_add_u64(bond, player_return);
+    let house_amount: u64 = checked_sub_u64(active_amount, player_amount);
+
+    match jet::is_zero_64(player_amount) {
+        true => ensure_output(0, asset_id, house_amount, house_script_hash),
+        false => match jet::is_zero_64(house_amount) {
+            true => ensure_output(0, asset_id, player_amount, player_script_hash),
+            false => {
+                ensure_output(0, asset_id, player_amount, player_script_hash);
+                ensure_output(1, asset_id, house_amount, house_script_hash);
+            },
+        },
+    }
+}
+
+fn forfeit_path(asset_id: u256, house_script_hash: u256, active_amount: u64, reveal_expiry: u16) {
+    require_relative_block_lock(reveal_expiry);
+    ensure_output(0, asset_id, active_amount, house_script_hash);
+}
+
+// -------------------------------------------------------------------------
+// Entry point
+// -------------------------------------------------------------------------
+
+fn main() {
+    // Named witnesses are read unconditionally so they remain recoverable from
+    // finalized spends and can be indexed as protocol state.
+    let phase: u32 = witness::PHASE;
+    let round_id: u256 = witness::ROUND_ID;
+    let asset_id: u256 = witness::ASSET_ID;
+    let player_script_hash: u256 = witness::PLAYER_SCRIPT_HASH;
+    let house_script_hash: u256 = witness::HOUSE_SCRIPT_HASH;
+    let secret_commitment: u256 = witness::SECRET_COMMITMENT;
+    let bet_kind: u32 = witness::BET_KIND;
+    let bet_selection: u32 = witness::BET_SELECTION;
+    let stake: u64 = witness::STAKE;
+    let bond: u64 = witness::BOND;
+    let open_expiry: u16 = witness::OPEN_EXPIRY;
+    let min_reveal_age: u16 = witness::MIN_REVEAL_AGE;
+    let reveal_expiry: u16 = witness::REVEAL_EXPIRY;
+    let house_nonce: u256 = witness::HOUSE_NONCE;
+    let house_collateral: u64 = witness::HOUSE_COLLATERAL;
+
+    validate_bet(bet_kind, bet_selection, stake);
+    assert!(jet::le_16(1, min_reveal_age));
+    assert!(jet::lt_16(min_reveal_age, reveal_expiry));
+
+    let terms: u256 = terms_hash(
+        round_id,
+        asset_id,
+        bet_kind,
+        bet_selection,
+        stake,
+        bond,
+        open_expiry,
+        min_reveal_age,
+        reveal_expiry,
+    );
+
+    assert!(jet::eq_256(
+        jet::current_script_hash(),
+        script_for_state(
+            phase,
+            round_id,
+            asset_id,
+            player_script_hash,
+            house_script_hash,
+            secret_commitment,
+            bet_kind,
+            bet_selection,
+            stake,
+            bond,
+            open_expiry,
+            min_reveal_age,
+            reveal_expiry,
+            house_nonce,
+            house_collateral,
+        )
+    ));
+
+    let current_amount: u64 = current_explicit_amount(asset_id);
+    let open_amount: u64 = checked_add_u64(stake, bond);
+
+    match witness::PATH {
+        Left(open_action: OpenAction) => {
+            assert!(jet::eq_32(phase, 0));
+            assert!(jet::eq_256(house_nonce, 0));
+            assert!(jet::eq_256(house_script_hash, 0));
+            assert!(jet::is_zero_64(house_collateral));
+            assert!(jet::eq_64(current_amount, open_amount));
+
+            match open_action {
+                Left(take: (u256, u256, u64, u32)) => {
+                    let (new_nonce, new_house_script_hash, new_collateral, house_input_index):
+                        (u256, u256, u64, u32) = take;
+                    take_path(
+                        round_id,
+                        asset_id,
+                        player_script_hash,
+                        new_house_script_hash,
+                        secret_commitment,
+                        bet_kind,
+                        bet_selection,
+                        stake,
+                        bond,
+                        open_expiry,
+                        min_reveal_age,
+                        reveal_expiry,
+                        new_nonce,
+                        new_collateral,
+                        house_input_index,
+                    )
+                },
+                Right(unit: ()) => cancel_path(asset_id, player_script_hash, open_amount, open_expiry),
+            }
+        },
+        Right(active_action: ActiveAction) => {
+            assert!(jet::eq_32(phase, 1));
+            let required_collateral: u64 = checked_multiply_u64(stake, payout_odds(bet_kind));
+            assert!(jet::le_64(required_collateral, house_collateral));
+            let active_amount: u64 = checked_add_u64(open_amount, house_collateral);
+            assert!(jet::eq_64(current_amount, active_amount));
+
+            match active_action {
+                Left(secret: u256) => settle_path(
+                    round_id,
+                    asset_id,
+                    player_script_hash,
+                    house_script_hash,
+                    secret_commitment,
+                    bet_kind,
+                    bet_selection,
+                    stake,
+                    bond,
+                    min_reveal_age,
+                    house_nonce,
+                    active_amount,
+                    terms,
+                    secret,
+                ),
+                Right(unit: ()) => forfeit_path(asset_id, house_script_hash, active_amount, reveal_expiry),
+            }
+        },
+    }
+}

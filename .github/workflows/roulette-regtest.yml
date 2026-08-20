@@ -1,0 +1,88 @@
+name: Roulette regtest lifecycle
+
+on:
+  # Kept manual until the coordinated liquid-dapps work has an immutable
+  # public commit. Once merged, pin that SHA below and add pull_request/push.
+  workflow_dispatch:
+    inputs:
+      roulette_ref:
+        description: "Public Resolvr-io/liquid-dapps ref containing simplicity-roulette v1"
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: roulette-regtest-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SIMPLEX_COMMIT: 1945d11b47fff8838c3e99c210133519a9522324
+
+jobs:
+  chromium:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apogee
+    steps:
+      - name: Checkout Apogee
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: apogee
+
+      - name: Checkout the coordinated roulette integration
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: Resolvr-io/liquid-dapps
+          ref: ${{ inputs.roulette_ref }}
+          path: liquid-dapps
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apogee/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          npm --prefix ../liquid-dapps/simplicity-roulette ci
+
+      - name: Install pinned Simplex CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 https://smplx.simplicity-lang.org | bash
+          BASE_DIR="${XDG_CONFIG_HOME:-$HOME}"
+          SIMPLEX_DIR="${SIMPLEX_DIR:-$BASE_DIR/.simplex}"
+          SIMPLEX_BIN_DIR="$SIMPLEX_DIR/bin"
+          "$SIMPLEX_BIN_DIR/simplexup" --commit "$SIMPLEX_COMMIT"
+          echo "$SIMPLEX_BIN_DIR" >> "$GITHUB_PATH"
+          "$SIMPLEX_BIN_DIR/simplex" --version
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run every funded roulette path
+        env:
+          SIMPLICITY_ROULETTE_DIR: ${{ github.workspace }}/liquid-dapps/simplicity-roulette
+        run: pnpm test:roulette:regtest
+
+      - name: Upload browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: roulette-regtest-results
+          path: |
+            apogee/test-results/
+            apogee/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7

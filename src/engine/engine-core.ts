@@ -53,6 +53,7 @@ import {
   prepareLendingV3CreateOffer,
 } from "@/tx-manifest/prepare-create";
 import { prepareLendingV3BorrowerAction } from "@/tx-manifest/prepare-lending-action";
+import { prepareRouletteV1Action } from "@/tx-manifest/prepare-roulette";
 import {
   SIMPLICITY_LENDING_V3_CANCEL_OFFER,
   SIMPLICITY_LENDING_V3_CLAIM_PRINCIPAL,
@@ -72,6 +73,18 @@ import {
   type HostedPreparedClaimLenderVaultExecution,
   type HostedPreparedNewLendingExecution,
 } from "@/tx-manifest/wallet-host";
+import {
+  selectUnspentRouletteWalletInputs,
+  type HostedPreparedRouletteExecution,
+} from "@/tx-manifest/roulette-wallet-host";
+import {
+  SIMPLICITY_ROULETTE_V1_CANCEL,
+  SIMPLICITY_ROULETTE_V1_CLAIM_PAYOUT,
+  SIMPLICITY_ROULETTE_V1_FORFEIT,
+  SIMPLICITY_ROULETTE_V1_OPEN,
+  SIMPLICITY_ROULETTE_V1_SETTLE,
+  SIMPLICITY_ROULETTE_V1_TAKE,
+} from "@/tx-manifest/builtins/simplicity-roulette-v1";
 import {
   compileTxManifestCovenant,
   buildTxManifestPset,
@@ -1642,6 +1655,234 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       }
 
       throw new Error("Unsupported Simplicity Lending TX Manifest action.");
+        },
+        estimateTxManifestFee,
+      );
+    }
+
+    case "prepareRouletteV1ActionWithWallet": {
+      if (!isTxManifestExecutionNetwork(req.network)) {
+        throw new Error("The roulette TX Manifest adapter is not enabled on this network.");
+      }
+      const manifestNetwork = txManifestRuntimeNetwork(req.network);
+      const entry = await ensureWollet(lwk, req.descriptor, req.network);
+      if (entry.policyAssetHex !== req.chainSnapshot.policyAssetId) {
+        throw new Error("The wallet policy asset does not match the roulette chain snapshot.");
+      }
+      const walletTransactions = entry.wollet.transactions();
+      const transactions = new Map(walletTransactions.map((walletTx) => {
+        const transaction = walletTx.tx();
+        return [walletTx.txid().toString(), transaction.toBytes()] as const;
+      }));
+      let candidates = entry.wollet.utxos().map((utxo): AcceptOfferWalletCandidate => {
+        const walletOutpoint = utxo.outpoint();
+        const txid = walletOutpoint.txid().toString();
+        const transaction = transactions.get(txid);
+        if (!transaction) throw new Error(`wallet transaction unavailable for UTXO ${txid}`);
+        const secrets = utxo.unblinded();
+        return {
+          txid,
+          vout: walletOutpoint.vout(),
+          txOut: bytesToHex(extractElementsTxOut(transaction, walletOutpoint.vout())),
+          scriptPubKey: bytesToHex(utxo.scriptPubkey().bytes()),
+          assetId: secrets.asset().toString(),
+          amount: secrets.value().toString(),
+          assetBlindingFactor: secrets.assetBlindingFactor().toString(),
+          valueBlindingFactor: secrets.valueBlindingFactor().toString(),
+          address: utxo.address().toString(),
+          parentTransaction: bytesToHex(transaction),
+        };
+      });
+      const address = entry.wollet.address(null).address().toString();
+      const inspectedDestination = await inspectTxManifestAddress(address, manifestNetwork);
+      const explicitDestination = { scriptPubKey: inspectedDestination.script_pub_key };
+      const confidentialDestination = {
+        scriptPubKey: inspectedDestination.script_pub_key,
+        blindingPublicKey: inspectedDestination.blinding_public_key,
+      };
+      const chainInput = (name: string) => {
+        const input = req.chainSnapshot.inputs[name];
+        if (!input) throw new Error(`Verified roulette chain snapshot is missing ${name}.`);
+        return input;
+      };
+      if (req.plan.action === SIMPLICITY_ROULETTE_V1_CLAIM_PAYOUT) {
+        const payout = chainInput("payout_in");
+        // Chain resolution has already authenticated this exact parent and its
+        // unspent payout. Do not require the wallet scan to have indexed the
+        // just-confirmed terminal transaction before ClaimPayout can proceed.
+        const parentTransaction = req.chainSnapshot.parentTransactions[0];
+        // The direct explicit payout intentionally is not reported by LWK as a
+        // normal confidential-descriptor UTXO. Its script was selected earlier
+        // in the round (OPEN for the player, a funding input for the house), so
+        // prove ownership against every output LWK has already recognized for
+        // this wallet instead of only the terminal transaction's fee change.
+        const destinations = walletTransactions.flatMap((walletTx) =>
+          walletTx.outputs().flatMap((output) => {
+            const owned = output.get();
+            return owned ? [{ address: owned.address().toString(), scriptPubKey: bytesToHex(owned.scriptPubkey().bytes()) }] : [];
+          })
+        );
+        candidates = [...recoverExplicitWalletInputCandidate(
+          candidates,
+          req.plan.payoutOutpoint,
+          payout,
+          [...destinations, { address, scriptPubKey: inspectedDestination.script_pub_key }],
+          parentTransaction,
+        )];
+      }
+      const parents = (...walletInputs: AcceptOfferWalletCandidate[]) => [...new Set([
+        ...req.chainSnapshot.parentTransactions,
+        ...walletInputs.map((input) => input.parentTransaction),
+      ])];
+
+      return convergeTxManifestFee(
+        req.chainSnapshot.feePolicy,
+        async (fee): Promise<HostedPreparedRouletteExecution> => {
+          if (req.plan.action === SIMPLICITY_ROULETTE_V1_OPEN) {
+            const roundAmount = (BigInt(req.plan.terms.stake) + BigInt(req.plan.terms.bond)).toString();
+            const combined = req.plan.terms.assetId === req.chainSnapshot.policyAssetId;
+            const fundingInputs = await selectUnspentRouletteWalletInputs(
+              candidates,
+              req.esploraUrl,
+              req.plan.terms.assetId,
+              (BigInt(roundAmount) + (combined ? BigInt(fee) : 0n)).toString(),
+              [],
+              "roulette round funding inputs",
+              combined ? TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE : "0",
+            );
+            const feeInputs = combined ? [] : await selectUnspentRouletteWalletInputs(
+              candidates,
+              req.esploraUrl,
+              req.chainSnapshot.policyAssetId,
+              fee,
+              fundingInputs,
+              "distinct L-BTC fee inputs",
+              TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
+            );
+            const decision = txManifestLbtcChangeDecision(combined ? fundingInputs : feeInputs, combined ? roundAmount : "0", fee);
+            const prepared = await prepareRouletteV1Action(req.plan, {
+              kind: "rouletteOpen",
+              network: manifestNetwork,
+              genesisHash: req.chainSnapshot.genesisHash,
+              tipHeight: req.chainSnapshot.tipHeight,
+              policyAssetId: req.chainSnapshot.policyAssetId,
+              fundingInputs,
+              feeInputs,
+              playerDestination: explicitDestination,
+              confidentialDestination,
+              fee: decision.actualFee,
+            });
+            return { ...prepared, feeSelectionTarget: decision.selectionFee, parentTransactions: parents(...fundingInputs, ...feeInputs) };
+          }
+
+          if (req.plan.action === SIMPLICITY_ROULETTE_V1_TAKE) {
+            const combined = req.plan.terms.assetId === req.chainSnapshot.policyAssetId;
+            const collateralInputs = await selectUnspentRouletteWalletInputs(
+              candidates,
+              req.esploraUrl,
+              req.plan.terms.assetId,
+              (BigInt(req.plan.houseCollateral) + (combined ? BigInt(fee) : 0n)).toString(),
+              [],
+              "roulette house collateral inputs",
+              combined ? TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE : "0",
+            );
+            const feeInputs = combined ? [] : await selectUnspentRouletteWalletInputs(
+              candidates,
+              req.esploraUrl,
+              req.chainSnapshot.policyAssetId,
+              fee,
+              collateralInputs,
+              "distinct L-BTC fee inputs",
+              TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
+            );
+            const decision = txManifestLbtcChangeDecision(combined ? collateralInputs : feeInputs, combined ? req.plan.houseCollateral : "0", fee);
+            const open = chainInput("open_in");
+            const prepared = await prepareRouletteV1Action(req.plan, {
+              kind: "rouletteTake",
+              network: manifestNetwork,
+              genesisHash: req.chainSnapshot.genesisHash,
+              tipHeight: req.chainSnapshot.tipHeight,
+              policyAssetId: req.chainSnapshot.policyAssetId,
+              roundInput: open,
+              roundInputConfirmedHeight: open.confirmedHeight,
+              collateralInputs,
+              feeInputs,
+              confidentialDestination,
+              fee: decision.actualFee,
+            });
+            return { ...prepared, feeSelectionTarget: decision.selectionFee, parentTransactions: parents(...collateralInputs, ...feeInputs) };
+          }
+
+          if (req.plan.action === SIMPLICITY_ROULETTE_V1_CLAIM_PAYOUT) {
+            const payout = chainInput("payout_in");
+            const payoutInput = selectManifestWalletInputByOutpoint(
+              candidates,
+              req.plan.payoutOutpoint,
+              payout.assetId,
+              payout.amount,
+              "roulette payout",
+            );
+            const feeInputs = await selectUnspentRouletteWalletInputs(
+              candidates,
+              req.esploraUrl,
+              req.chainSnapshot.policyAssetId,
+              fee,
+              [payoutInput],
+              "distinct L-BTC fee inputs",
+              TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
+            );
+            const decision = txManifestLbtcChangeDecision(feeInputs, "0", fee);
+            const marker = req.chainSnapshot.parentMetadata?.metadata.action;
+            const terminalAction = marker === "settle" ? SIMPLICITY_ROULETTE_V1_SETTLE
+              : marker === "cancel" ? SIMPLICITY_ROULETTE_V1_CANCEL
+                : marker === "forfeit" ? SIMPLICITY_ROULETTE_V1_FORFEIT
+                  : undefined;
+            if (!terminalAction) throw new Error("ClaimPayout is missing a verified terminal parent action.");
+            const prepared = await prepareRouletteV1Action(req.plan, {
+              kind: "rouletteClaimPayout",
+              network: manifestNetwork,
+              genesisHash: req.chainSnapshot.genesisHash,
+              tipHeight: req.chainSnapshot.tipHeight,
+              policyAssetId: req.chainSnapshot.policyAssetId,
+              payoutInput,
+              terminalAction,
+              feeInputs,
+              confidentialDestination,
+              fee: decision.actualFee,
+            });
+            return { ...prepared, feeSelectionTarget: decision.selectionFee, parentTransactions: parents(payoutInput, ...feeInputs) };
+          }
+
+          const feeInputs = await selectUnspentRouletteWalletInputs(
+            candidates,
+            req.esploraUrl,
+            req.chainSnapshot.policyAssetId,
+            fee,
+            [],
+            "distinct L-BTC fee inputs",
+            TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
+          );
+          const decision = txManifestLbtcChangeDecision(feeInputs, "0", fee);
+          const name = req.plan.action === SIMPLICITY_ROULETTE_V1_CANCEL ? "open_in" : "active_in";
+          const roundInput = chainInput(name);
+          const kind = req.plan.action === SIMPLICITY_ROULETTE_V1_SETTLE ? "rouletteSettle"
+            : req.plan.action === SIMPLICITY_ROULETTE_V1_CANCEL ? "rouletteCancel"
+              : req.plan.action === SIMPLICITY_ROULETTE_V1_FORFEIT ? "rouletteForfeit"
+                : undefined;
+          if (!kind) throw new Error("Unsupported roulette terminal action.");
+          const prepared = await prepareRouletteV1Action(req.plan, {
+            kind,
+            network: manifestNetwork,
+            genesisHash: req.chainSnapshot.genesisHash,
+            tipHeight: req.chainSnapshot.tipHeight,
+            policyAssetId: req.chainSnapshot.policyAssetId,
+            roundInput,
+            roundInputConfirmedHeight: roundInput.confirmedHeight,
+            feeInputs,
+            confidentialDestination,
+            fee: decision.actualFee,
+          });
+          return { ...prepared, feeSelectionTarget: decision.selectionFee, parentTransactions: parents(...feeInputs) };
         },
         estimateTxManifestFee,
       );

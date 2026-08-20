@@ -537,6 +537,15 @@ type TxManifestReviewDTO = Extract<
   { kind: "executeTxManifest" }
 >["review"];
 
+type RouletteTxManifestReviewDTO = Extract<
+  TxManifestReviewDTO,
+  { kind: "rouletteOpen" | "rouletteTake" | "rouletteSettle" | "rouletteCancel" | "rouletteForfeit" | "rouletteClaimPayout" }
+>;
+
+function isRouletteReview(review: TxManifestReviewDTO): review is RouletteTxManifestReviewDTO {
+  return review.kind.startsWith("roulette");
+}
+
 /** Look up resolved metadata with a shortened-hex fallback for unregistered assets. */
 function metaFor(review: TxManifestReviewDTO, assetId: string): TxManifestAssetMeta {
   return review.assets?.[assetId] ?? {
@@ -622,6 +631,10 @@ function manifestTechnicalAssets(
   const assets: Array<{ label: string; value: string | undefined }> = [
     { label: "Fee asset", value: review.feeAssetId },
     {
+      label: "Roulette asset",
+      value: "assetId" in review ? review.assetId : undefined,
+    },
+    {
       label: "Factory asset",
       value: "factoryAssetId" in review ? review.factoryAssetId : undefined,
     },
@@ -681,7 +694,42 @@ function TxManifestReview({
         </p>
       )}
 
-      {review.kind === "createFactory" ? (
+      {isRouletteReview(review) ? (
+        <ReviewSection title={
+          review.kind === "rouletteOpen" ? "Bet opened"
+            : review.kind === "rouletteTake" ? "Bet taken"
+              : review.kind === "rouletteSettle" ? "Spin settled"
+                : review.kind === "rouletteCancel" ? "Untaken bet cancelled"
+                  : review.kind === "rouletteForfeit" ? "Unrevealed bet forfeited"
+                    : "Payout secured"
+        }>
+          <ReviewItem>
+            {review.kind !== "rouletteClaimPayout" && (
+              <>
+                <ManifestAssetRow review={review} assetId={review.assetId} amount={review.stake} specNetwork={specNetwork} roleLabel="Player stake" strong />
+                <ManifestAssetRow review={review} assetId={review.assetId} amount={review.bond} specNetwork={specNetwork} roleLabel="Player reveal bond" />
+              </>
+            )}
+            {BigInt(review.houseCollateral) !== 0n && (
+              <ManifestAssetRow review={review} assetId={review.assetId} amount={review.houseCollateral} specNetwork={specNetwork} roleLabel="House collateral" />
+            )}
+            {review.pocket !== undefined && <Row label="Verified pocket" value={String(review.pocket)} strong />}
+            {review.playerAmount !== undefined && BigInt(review.playerAmount) !== 0n && (
+              <ManifestAssetRow review={review} assetId={review.assetId} amount={review.playerAmount} specNetwork={specNetwork} roleLabel="Paid to player" strong />
+            )}
+            {review.houseAmount !== undefined && BigInt(review.houseAmount) !== 0n && (
+              <ManifestAssetRow review={review} assetId={review.assetId} amount={review.houseAmount} specNetwork={specNetwork} roleLabel="Paid to house" strong />
+            )}
+            {review.payoutAmount !== undefined && (
+              <ManifestAssetRow review={review} assetId={review.assetId} amount={review.payoutAmount} specNetwork={specNetwork} roleLabel="Payout moved into wallet" strong />
+            )}
+            {review.openExpiry !== undefined && <Row label="Untaken timeout" value={`${review.openExpiry} blocks`} />}
+            {review.minRevealAge !== undefined && <Row label="Earliest reveal" value={`${review.minRevealAge} blocks after take`} />}
+            {review.revealExpiry !== undefined && <Row label="Reveal deadline" value={`${review.revealExpiry} blocks after take`} />}
+            <Row label="Round" value={shortenHex(review.roundId, 10, 10)} mono />
+          </ReviewItem>
+        </ReviewSection>
+      ) : review.kind === "createFactory" ? (
         <ReviewSection title="Borrower setup">
           <ReviewItem>
             <ManifestAssetRow review={review} assetId={review.factoryAssetId} amount="1" specNetwork={specNetwork} roleLabel="Factory asset" strong />
@@ -736,6 +784,9 @@ function TxManifestReview({
           )}
           {review.kind === "createOffer" && BigInt(review.collateralChange) !== 0n && (
             <ManifestAssetRow review={review} assetId={review.collateralAssetId} amount={review.collateralChange} specNetwork={specNetwork} roleLabel="Collateral change" />
+          )}
+          {isRouletteReview(review) && BigInt(review.assetChange) !== 0n && (
+            <ManifestAssetRow review={review} assetId={review.assetId} amount={review.assetChange} specNetwork={specNetwork} roleLabel="Roulette asset change" />
           )}
           {BigInt(review.feeChange) !== 0n && (
             <ManifestAssetRow review={review} assetId={review.feeAssetId} amount={review.feeChange} specNetwork={specNetwork} roleLabel={`${feeMeta.label} change`} />

@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-lending-regtest/
+dist-roulette-regtest/
 *.zip
 .DS_Store
 *.log

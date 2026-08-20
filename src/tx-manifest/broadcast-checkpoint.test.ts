@@ -13,7 +13,7 @@ describe("lookupTxManifestTransaction", () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(null, { status: 404 }))
-      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+      .mockResolvedValueOnce(new Response("02000000", { status: 200 }));
 
     await expect(
       lookupTxManifestTransaction("liquidtestnet", TXID, undefined, fetcher),
@@ -34,10 +34,20 @@ describe("lookupTxManifestTransaction", () => {
       lookupTxManifestTransaction("regtest", TXID, "http://127.0.0.1:1234/api/", fetcher),
     ).resolves.toBe("unknown");
     expect(fetcher).toHaveBeenCalledWith(
-      `http://127.0.0.1:1234/api/tx/${TXID}/status`,
+      `http://127.0.0.1:1234/api/tx/${TXID}/hex`,
       expect.objectContaining({ method: "GET" }),
     );
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not mistake an unknown transaction's false status body for retrievable bytes", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response('{"confirmed":false}', { status: 200 }));
+
+    await expect(
+      lookupTxManifestTransaction("regtest", TXID, "http://127.0.0.1:1234/api", fetcher),
+    ).resolves.toBe("unknown");
   });
 });
 

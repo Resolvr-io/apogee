@@ -107,6 +107,7 @@ import {
   SIMPLICITY_LENDING_V3_ACCEPT_OFFER,
   SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT,
 } from "@/tx-manifest/builtins/simplicity-lending-v3";
+import { isSimplicityRouletteV1Action } from "@/tx-manifest/builtins/simplicity-roulette-v1";
 import { taggedCanonicalJsonHash } from "@/tx-manifest/bundle";
 import type {
   AcceptOfferRequirementPlan,
@@ -117,6 +118,7 @@ import type {
   ClaimPrincipalRequirementPlan,
   LiquidateOfferRequirementPlan,
   RepayLoanRequirementPlan,
+  RouletteRequirementPlan,
   TxManifestRequirementPlan,
 } from "@/tx-manifest/requirements";
 import type {
@@ -124,12 +126,14 @@ import type {
   HostedPreparedClaimLenderVaultExecution,
   HostedPreparedNewLendingExecution,
 } from "@/tx-manifest/wallet-host";
+import type { HostedPreparedRouletteExecution } from "@/tx-manifest/roulette-wallet-host";
 import type { TxManifestTransactionOutputInspection } from "@/tx-manifest/runtime";
 import {
   resolveAcceptOfferChainSnapshot,
   resolveClaimLenderVaultChainSnapshot,
   resolveNewLendingActionChainSnapshot,
 } from "@/tx-manifest/esplora";
+import { resolveRouletteChainSnapshot } from "@/tx-manifest/roulette-esplora";
 import {
   TxManifestIdempotency,
   txManifestIdempotencyKey,
@@ -2089,6 +2093,12 @@ async function handleStandardProvider(requestValue: unknown, origin: string | un
 
 type PreparedProviderTxManifest =
   | {
+      kind: "roulette";
+      plan: RouletteRequirementPlan;
+      prepared: HostedPreparedRouletteExecution;
+      genesisHash: string;
+    }
+  | {
       kind: "acceptOffer";
       plan: AcceptOfferRequirementPlan;
       prepared: HostedPreparedAcceptOfferExecution;
@@ -2351,6 +2361,16 @@ async function prepareProviderTxManifest(
           configuredServer,
           reviewedFee,
         )
+      : isRouletteRequirementPlan(plan)
+        ? await prepareProviderRoulette(
+            plan,
+            info.descriptor,
+            info.network,
+            policyAssetId,
+            inspectOutput,
+            configuredServer,
+            reviewedFee,
+          )
       : await prepareProviderNewLendingAction(
           origin,
           plan,
@@ -2375,6 +2395,38 @@ async function prepareProviderTxManifest(
     false,
   );
   return execution;
+}
+
+function isRouletteRequirementPlan(plan: TxManifestRequirementPlan): plan is RouletteRequirementPlan {
+  return isSimplicityRouletteV1Action(plan.action);
+}
+
+async function prepareProviderRoulette(
+  plan: RouletteRequirementPlan,
+  descriptor: string,
+  network: LiquidNetwork,
+  policyAssetId: string,
+  inspectOutput: (transactionHex: string, vout: number) => Promise<TxManifestTransactionOutputInspection>,
+  configuredServer: string | undefined,
+  reviewedFee?: ReviewedTxManifestFee,
+): Promise<Extract<PreparedProviderTxManifest, { kind: "roulette" }>> {
+  const resolved = await resolveRouletteChainSnapshot(
+    plan,
+    policyAssetId,
+    inspectOutput,
+    configuredServer,
+    txManifestExpectedGenesisHash(network),
+  );
+  const snapshot = withReviewedTxManifestFee(resolved.snapshot, reviewedFee);
+  const prepared = await engine<HostedPreparedRouletteExecution>({
+    kind: "prepareRouletteV1ActionWithWallet",
+    descriptor,
+    network,
+    esploraUrl: resolved.esploraUrl,
+    plan,
+    chainSnapshot: snapshot,
+  });
+  return { kind: "roulette", plan, prepared, genesisHash: resolved.snapshot.genesisHash };
 }
 
 async function prepareProviderAcceptOffer(
@@ -2495,11 +2547,13 @@ function manifestAssetIds(context: PreparedProviderTxManifest): string[] {
     if (id) ids.add(id);
   };
   push(context.prepared.review.feeAssetId);
+  if (context.kind === "roulette") push(context.prepared.review.assetId);
   if (context.kind === "acceptOffer") {
     push(context.plan.instance.LENDER_NFT_ASSET_ID);
   }
   const intent = context.plan.intent as unknown as Record<string, unknown>;
   for (const key of [
+    "assetId",
     "principalAssetId",
     "collateralAssetId",
     "factoryAssetId",
@@ -2509,7 +2563,7 @@ function manifestAssetIds(context: PreparedProviderTxManifest): string[] {
     if (typeof intent[key] === "string") push(intent[key]);
   }
   const review = context.prepared.review as unknown as Record<string, unknown>;
-  for (const key of ["factoryAssetId", "borrowerNftAssetId", "lenderNftAssetId"]) {
+  for (const key of ["assetId", "factoryAssetId", "borrowerNftAssetId", "lenderNftAssetId"]) {
     if (typeof review[key] === "string") push(review[key]);
   }
   return [...ids];
@@ -2575,6 +2629,31 @@ async function txManifestApprovalReview(
     feeChange: context.prepared.review.feeChange,
     assets,
   };
+  if (context.kind === "roulette") {
+    const terms = "terms" in context.plan ? context.plan.terms : undefined;
+    return {
+      ...common,
+      kind: context.prepared.kind,
+      roundId: context.prepared.review.roundId,
+      assetId: context.prepared.review.assetId,
+      stake: context.prepared.review.stake,
+      bond: context.prepared.review.bond,
+      houseCollateral: context.prepared.review.houseCollateral,
+      assetChange: context.prepared.review.assetChange,
+      ...(terms === undefined ? {} : {
+        betKind: terms.betKind,
+        betSelection: terms.betSelection,
+        openExpiry: terms.openExpiry,
+        minRevealAge: terms.minRevealAge,
+        revealExpiry: terms.revealExpiry,
+      }),
+      ...(context.prepared.review.pocket === undefined ? {} : { pocket: context.prepared.review.pocket }),
+      ...(context.prepared.review.playerAmount === undefined ? {} : { playerAmount: context.prepared.review.playerAmount }),
+      ...(context.prepared.review.houseAmount === undefined ? {} : { houseAmount: context.prepared.review.houseAmount }),
+      ...(context.prepared.review.payoutAmount === undefined ? {} : { payoutAmount: context.prepared.review.payoutAmount }),
+      ...(context.prepared.review.terminalAction === undefined ? {} : { terminalAction: context.prepared.review.terminalAction }),
+    };
+  }
   if (context.kind === "acceptOffer") {
     return {
       ...common,

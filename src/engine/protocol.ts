@@ -19,6 +19,7 @@ import type {
   ClaimPrincipalRequirementPlan,
   LiquidateOfferRequirementPlan,
   RepayLoanRequirementPlan,
+  RouletteRequirementPlan,
   TxManifestInvocation,
 } from "@/tx-manifest/requirements";
 import type { AcceptOfferChainWalletSnapshot } from "@/tx-manifest/prepare-accept-offer";
@@ -30,6 +31,7 @@ import type {
   HostedPreparedClaimLenderVaultExecution,
   NewLendingVerifiedChainSnapshot,
 } from "@/tx-manifest/wallet-host";
+import type { RouletteVerifiedChainSnapshot } from "@/tx-manifest/roulette-esplora";
 import type {
   TxManifestCovenantCompileSpec,
   TxManifestCovenantDryRunSpec,
@@ -109,6 +111,14 @@ export type EngineRequest =
         | RepayLoanRequirementPlan
         | LiquidateOfferRequirementPlan;
       chainSnapshot: NewLendingVerifiedChainSnapshot;
+    }
+  | {
+      kind: "prepareRouletteV1ActionWithWallet";
+      descriptor: string;
+      network: LiquidNetwork;
+      esploraUrl: string;
+      plan: RouletteRequirementPlan;
+      chainSnapshot: RouletteVerifiedChainSnapshot;
     }
   | { kind: "generateMnemonic"; words?: 12 | 24 }
   | { kind: "deriveWallet"; mnemonic: string; network: LiquidNetwork }
@@ -380,6 +390,31 @@ interface TxManifestApprovalReviewBaseDTO {
 }
 
 export type TxManifestApprovalReviewDTO =
+  | (TxManifestApprovalReviewBaseDTO & {
+      kind:
+        | "rouletteOpen"
+        | "rouletteTake"
+        | "rouletteSettle"
+        | "rouletteCancel"
+        | "rouletteForfeit"
+        | "rouletteClaimPayout";
+      roundId: string;
+      assetId: string;
+      stake: string;
+      bond: string;
+      houseCollateral: string;
+      assetChange: string;
+      betKind?: number;
+      betSelection?: number;
+      openExpiry?: number;
+      minRevealAge?: number;
+      revealExpiry?: number;
+      pocket?: number;
+      playerAmount?: string;
+      houseAmount?: string;
+      payoutAmount?: string;
+      terminalAction?: string;
+    })
   | (TxManifestApprovalReviewBaseDTO & {
       kind: "createFactory";
       factoryAssetId: string;

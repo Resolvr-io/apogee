@@ -11,6 +11,16 @@ import {
   SIMPLICITY_LENDING_V3_TESTNET_CHAIN,
 } from "./builtins/simplicity-lending-v3";
 import {
+  SIMPLICITY_ROULETTE_V1_ACTIONS,
+  SIMPLICITY_ROULETTE_V1_BUNDLE,
+  SIMPLICITY_ROULETTE_V1_CANCEL,
+  SIMPLICITY_ROULETTE_V1_CLAIM_PAYOUT,
+  SIMPLICITY_ROULETTE_V1_FORFEIT,
+  SIMPLICITY_ROULETTE_V1_OPEN,
+  SIMPLICITY_ROULETTE_V1_SETTLE,
+  SIMPLICITY_ROULETTE_V1_TAKE,
+} from "./builtins/simplicity-roulette-v1";
+import {
   TX_MANIFEST_PINNED_REVISIONS,
   normalizeTxManifestBundle,
   txManifestBundleHash,
@@ -27,6 +37,9 @@ export type TxManifestBundleHash = `sha256:${string}`;
 export const SIMPLICITY_LENDING_V3_BUNDLE_HASH =
   "sha256:debdae89777fdd21fec2d763efe028876f267ff214aca9ddf9b3735d7657be15" as const;
 
+export const SIMPLICITY_ROULETTE_V1_BUNDLE_HASH =
+  "sha256:26f77f6f984ebcdccfb96a626285858fb7bdcb0bfa290ba59f6cee57573c4830" as const;
+
 export type TrustedTxManifest = {
   bundleHash: TxManifestBundleHash;
   protocol: string;
@@ -39,7 +52,7 @@ export type TrustedTxManifest = {
     actionHint: {
       codec: typeof TX_MANIFEST_ACTION_HINT_V1;
       placement: "dedicated-before-fee";
-      postconditionVerifier: "simplicity-lending-v3";
+      postconditionVerifier: "simplicity-lending-v3" | "simplicity-roulette-v1";
     } | null;
   };
   review: {
@@ -50,6 +63,36 @@ export type TrustedTxManifest = {
 };
 
 export const TRUSTED_TX_MANIFESTS: readonly TrustedTxManifest[] = Object.freeze([
+  {
+    bundleHash: SIMPLICITY_ROULETTE_V1_BUNDLE_HASH,
+    protocol: "simplicity-roulette",
+    version: "v1",
+    chainIds: __TX_MANIFEST_REGTEST__
+      ? [SIMPLICITY_LENDING_V3_TESTNET_CHAIN, SIMPLICITY_LENDING_V3_REGTEST_CHAIN]
+      : [SIMPLICITY_LENDING_V3_TESTNET_CHAIN],
+    actions: SIMPLICITY_ROULETTE_V1_ACTIONS,
+    compilerRevision: TX_MANIFEST_PINNED_REVISIONS.simplicityHl,
+    extensions: ["apogee/roulette-metadata-v1"],
+    history: {
+      actionHint: {
+        codec: TX_MANIFEST_ACTION_HINT_V1,
+        placement: "dedicated-before-fee",
+        postconditionVerifier: "simplicity-roulette-v1",
+      },
+    },
+    review: {
+      protocolLabel: "Simplicity Roulette",
+      actionLabels: {
+        [SIMPLICITY_ROULETTE_V1_OPEN]: "Open roulette bet",
+        [SIMPLICITY_ROULETTE_V1_TAKE]: "Take roulette bet",
+        [SIMPLICITY_ROULETTE_V1_SETTLE]: "Settle roulette spin",
+        [SIMPLICITY_ROULETTE_V1_CANCEL]: "Cancel untaken bet",
+        [SIMPLICITY_ROULETTE_V1_FORFEIT]: "Forfeit unrevealed bet",
+        [SIMPLICITY_ROULETTE_V1_CLAIM_PAYOUT]: "Secure roulette payout",
+      } as Readonly<Record<string, string>>,
+    },
+    bundle: SIMPLICITY_ROULETTE_V1_BUNDLE,
+  },
   {
     bundleHash: SIMPLICITY_LENDING_V3_BUNDLE_HASH,
     protocol: "simplicity-lending",
@@ -87,11 +130,11 @@ export const TRUSTED_TX_MANIFESTS: readonly TrustedTxManifest[] = Object.freeze(
         [SIMPLICITY_LENDING_V3_CANCEL_OFFER]: "Cancel borrow offer",
         [SIMPLICITY_LENDING_V3_LIQUIDATE_OFFER]: "Liquidate expired loan",
         [SIMPLICITY_LENDING_V3_CLAIM_LENDER_VAULT]: "Collect loan repayment",
-      },
+      } as Readonly<Record<string, string>>,
     },
     bundle: SIMPLICITY_LENDING_V3_BUNDLE,
   },
-]);
+] satisfies TrustedTxManifest[]);
 
 export type TxManifestSupportResult = {
   supported: boolean;
