@@ -11,6 +11,16 @@ export const TX_MANIFEST_MAX_FEE = "100000";
 
 export const TX_MANIFEST_MAX_FEE_ITERATIONS = 16;
 
+/**
+ * Liquid's fee market sits near the relay floor almost always, so a required
+ * fee implying a materially higher rate than this reads as implausible chain
+ * server data rather than a real market signal. Bounding the rate this way
+ * (rather than only the flat `TX_MANIFEST_MAX_FEE` ceiling) keeps a hostile
+ * chain server from inflating the fee a user is asked to approve for a small
+ * transaction all the way up toward that ceiling.
+ */
+const PLAUSIBLE_MAX_FEE_RATE_SAT_PER_VB = 10n;
+
 export type TxManifestFeePolicy = {
   feeRateSatPerKvb: string;
   maxFee: string;
@@ -148,7 +158,12 @@ async function requiredFee(
     pset: candidate.pset,
     feeRateSatPerKvb: feeRateSatPerKvb.toString(),
   });
-  return positiveInteger(result.requiredFee, "estimated fee");
+  const required = positiveInteger(result.requiredFee, "estimated fee");
+  const plausibleCeiling = BigInt(result.discountVsize) * PLAUSIBLE_MAX_FEE_RATE_SAT_PER_VB;
+  if (required > plausibleCeiling) {
+    throw new Error("The estimated network fee rate is implausibly high for this transaction.");
+  }
+  return required;
 }
 
 function requireSelectionFee(candidate: TxManifestFeeCandidate, expected: bigint): void {
