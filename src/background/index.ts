@@ -131,6 +131,7 @@ import {
   resolveNewLendingActionChainSnapshot,
 } from "@/tx-manifest/esplora";
 import {
+  migrateStoredTxManifestRecords,
   TxManifestIdempotency,
   txManifestIdempotencyKey,
   type TxManifestCheckpointRecord,
@@ -1177,12 +1178,13 @@ const PROVIDER_CAPABILITIES = Object.freeze({
 });
 
 const TX_MANIFEST_RESULTS_KEY = "apogee_tx_manifest_results_v1";
+
 const txManifestIdempotency = new TxManifestIdempotency({
   async load(): Promise<TxManifestExecutionRecord[]> {
     const value = (await browser.storage.local.get(TX_MANIFEST_RESULTS_KEY))[
       TX_MANIFEST_RESULTS_KEY
     ];
-    return Array.isArray(value) ? (value as TxManifestExecutionRecord[]) : [];
+    return migrateStoredTxManifestRecords(value);
   },
   async save(records: TxManifestExecutionRecord[]): Promise<void> {
     await browser.storage.local.set({ [TX_MANIFEST_RESULTS_KEY]: records });

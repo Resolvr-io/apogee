@@ -98,7 +98,14 @@ export class TxManifestIdempotency {
     if (existing) {
       this.requireSameInvocation(existing.invocationDigest, invocationDigest);
       if (isFailed(existing)) throw new Error(existing.message);
-      if (!isCheckpoint(existing)) return reconstruct(existing.txid);
+      if (!isCheckpoint(existing)) {
+        // Fail closed: a truncated or corrupted record must not be able to
+        // synthesize a "broadcast" result with no usable txid.
+        if (typeof existing.txid !== "string" || existing.txid === "") {
+          throw new Error("This TX Manifest result is unreadable. Submit the action again with a new requestId.");
+        }
+        return reconstruct(existing.txid);
+      }
       if (!resume) throw new Error("This TX Manifest execution must be resumed from its checkpoint.");
     }
     const running = this.inFlight.get(key);
@@ -314,6 +321,43 @@ export class TxManifestIdempotency {
       throw new Error("This TX Manifest requestId was already used for different request data.");
     }
   }
+}
+
+/**
+ * Normalize records loaded from durable storage.
+ *
+ * Terminal records written before this store trimmed itself down held the whole
+ * `LiquidExecuteTxManifestResult` under `result`. They still match in `find()`,
+ * so without this a dapp retrying a requestId inside the retention window gets
+ * a result whose `txid` is `undefined` — dropped outright by JSON
+ * serialization, i.e. "broadcast" with nothing to track.
+ *
+ * Migrating on read rather than bumping the storage key is deliberate: dedup
+ * has to survive the upgrade, because losing it means a second approval prompt
+ * and a second broadcast of the same manifest. The next write persists the
+ * trimmed shape. Extracted here (rather than living in the background's store
+ * adapter) so it is testable — that module registers listeners at import and
+ * can't be loaded under Node.
+ */
+export function migrateStoredTxManifestRecords(value: unknown): TxManifestExecutionRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((record) => {
+    if (!record || typeof record !== "object") return record as TxManifestExecutionRecord;
+    const candidate = record as Record<string, unknown>;
+    if ("txid" in candidate || !("result" in candidate)) {
+      return record as TxManifestExecutionRecord;
+    }
+    const result = candidate.result as Record<string, unknown> | null;
+    if (!result || typeof result !== "object" || typeof result.txid !== "string") {
+      return record as TxManifestExecutionRecord;
+    }
+    return {
+      key: candidate.key,
+      invocationDigest: candidate.invocationDigest,
+      completedAt: candidate.completedAt,
+      txid: result.txid,
+    } as TxManifestExecutionRecord;
+  });
 }
 
 export function isCheckpoint(

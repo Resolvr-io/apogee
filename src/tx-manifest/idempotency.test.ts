@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LiquidExecuteTxManifestResult } from "@/provider/liquid-rpc";
 import {
+  migrateStoredTxManifestRecords,
   TxManifestIdempotency,
   txManifestIdempotencyKey,
   type TxManifestCheckpointRecord,
@@ -473,6 +474,21 @@ describe("TxManifestIdempotency", () => {
     expect(store.records).toContainEqual(checkpointRecord({ checkpointedAt: 1 }));
   });
 
+  it("refuses to reconstruct a result from an unusable txid", async () => {
+    // A record that survived an upgrade without its txid (or was truncated)
+    // must not be able to hand a dapp back "broadcast" with nothing to track.
+    const store = memoryStore();
+    store.records = [
+      { key: "scope", invocationDigest: DIGEST, completedAt: 1_000 } as never,
+    ];
+    const coordinator = new TxManifestIdempotency(store, () => 1_000);
+    const operation = vi.fn(async () => RESULT);
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct)).rejects.toThrow(
+      "unreadable",
+    );
+    expect(operation).not.toHaveBeenCalled();
+  });
+
   it("expires stale terminal results and retries the operation", async () => {
     const store = memoryStore();
     store.records = [{ key: "scope", invocationDigest: DIGEST, completedAt: 1_000, txid: RESULT.txid }];
@@ -505,6 +521,51 @@ describe("TxManifestIdempotency", () => {
     expect(store.records).toHaveLength(100);
     expect(store.records[0]?.key).toBe("scope-100");
     expect(store.records.at(-1)?.key).toBe("scope-1");
+  });
+});
+
+describe("migrateStoredTxManifestRecords", () => {
+  const legacy = {
+    key: "scope",
+    invocationDigest: DIGEST,
+    completedAt: 1_000,
+    result: RESULT,
+  };
+
+  it("trims a pre-upgrade record down to its txid", () => {
+    // The upgrade path that mattered: without this, execute() reconstructs from
+    // an undefined txid and tells the dapp "broadcast" with nothing to track.
+    expect(migrateStoredTxManifestRecords([legacy])).toEqual([
+      { key: "scope", invocationDigest: DIGEST, completedAt: 1_000, txid: RESULT.txid },
+    ]);
+  });
+
+  it("keeps dedup working across the upgrade", async () => {
+    // Losing the record instead of migrating it would mean a second approval
+    // prompt and a second broadcast of the same manifest.
+    const store = memoryStore();
+    store.records = migrateStoredTxManifestRecords([legacy]);
+    const coordinator = new TxManifestIdempotency(store, () => 1_000);
+    const operation = vi.fn(async () => RESULT);
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct)).resolves.toEqual(
+      RESULT,
+    );
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it("passes through already-trimmed, checkpoint and failed records", () => {
+    const trimmed = { key: "a", invocationDigest: DIGEST, completedAt: 1, txid: "ff" };
+    const failed = { state: "failed", key: "b", invocationDigest: DIGEST, failedAt: 1, message: "x" };
+    const records = [trimmed, checkpointRecord(), failed];
+    expect(migrateStoredTxManifestRecords(records)).toEqual(records);
+  });
+
+  it("leaves a malformed record alone rather than inventing a txid", () => {
+    // execute() fails closed on these; silently synthesizing one would be worse.
+    const noTxid = { key: "a", invocationDigest: DIGEST, completedAt: 1, result: {} };
+    expect(migrateStoredTxManifestRecords([noTxid])).toEqual([noTxid]);
+    expect(migrateStoredTxManifestRecords("not an array")).toEqual([]);
+    expect(migrateStoredTxManifestRecords(undefined)).toEqual([]);
   });
 });
 
