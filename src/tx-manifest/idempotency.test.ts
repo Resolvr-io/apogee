@@ -474,6 +474,21 @@ describe("TxManifestIdempotency", () => {
     expect(store.records).toContainEqual(checkpointRecord({ checkpointedAt: 1 }));
   });
 
+  it("refuses to reconstruct a result from a malformed txid", async () => {
+    // Not just missing — a truncated one must fail too, since this is the last
+    // check before the value reaches the dapp as status "broadcast".
+    const store = memoryStore();
+    store.records = [
+      { key: "scope", invocationDigest: DIGEST, completedAt: 1_000, txid: "deadbeef" },
+    ];
+    const coordinator = new TxManifestIdempotency(store, () => 1_000);
+    const operation = vi.fn(async () => RESULT);
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct)).rejects.toThrow(
+      "unreadable",
+    );
+    expect(operation).not.toHaveBeenCalled();
+  });
+
   it("refuses to reconstruct a result from an unusable txid", async () => {
     // A record that survived an upgrade without its txid (or was truncated)
     // must not be able to hand a dapp back "broadcast" with nothing to track.
@@ -566,6 +581,32 @@ describe("migrateStoredTxManifestRecords", () => {
     expect(migrateStoredTxManifestRecords([noTxid])).toEqual([noTxid]);
     expect(migrateStoredTxManifestRecords("not an array")).toEqual([]);
     expect(migrateStoredTxManifestRecords(undefined)).toEqual([]);
+  });
+
+  it("drops non-objects instead of poisoning every later execution", () => {
+    expect(migrateStoredTxManifestRecords([null, "x", 7, undefined])).toEqual([]);
+    const valid = { key: "a", invocationDigest: DIGEST, completedAt: 1, txid: RESULT.txid };
+    expect(migrateStoredTxManifestRecords([null, valid, "junk"])).toEqual([valid]);
+  });
+
+  it("removes the cleartext metadata from disk on the next write", async () => {
+    // The point of the issue: trimming the type isn't enough if the old
+    // cleartext is still sitting in storage. A fresh execution under a new key
+    // rewrites the whole array, so the legacy record must come back trimmed.
+    const store = memoryStore();
+    store.records = migrateStoredTxManifestRecords([
+      { key: "legacy", invocationDigest: DIGEST, completedAt: 1_000, result: RESULT },
+    ]);
+    const coordinator = new TxManifestIdempotency(store, () => 1_000);
+    await coordinator.execute("fresh", DIGEST, async () => RESULT, reconstruct);
+
+    const serialized = JSON.stringify(store.records);
+    expect(serialized).not.toContain("accountIdentifier");
+    expect(serialized).not.toContain("AcceptOffer");
+    expect(serialized).not.toContain("offer-3");
+    for (const record of store.records) {
+      expect(record).not.toHaveProperty("result");
+    }
   });
 });
 

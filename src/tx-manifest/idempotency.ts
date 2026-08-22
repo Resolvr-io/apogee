@@ -63,6 +63,8 @@ export type TxManifestExecutionGeneration = number & {
 
 const RETENTION_MS = 7 * 24 * 60 * 60_000;
 const MAX_RECORDS = 100;
+/** Same shape the provider validates inbound txids against. */
+const TXID = /^[0-9a-f]{64}$/;
 
 /** Origin/account/chain-scoped terminal-result deduplication for manifest broadcasts. */
 export class TxManifestIdempotency {
@@ -99,9 +101,12 @@ export class TxManifestIdempotency {
       this.requireSameInvocation(existing.invocationDigest, invocationDigest);
       if (isFailed(existing)) throw new Error(existing.message);
       if (!isCheckpoint(existing)) {
-        // Fail closed: a truncated or corrupted record must not be able to
-        // synthesize a "broadcast" result with no usable txid.
-        if (typeof existing.txid !== "string" || existing.txid === "") {
+        // Fail closed. This is the LAST check before a reconstructed result
+        // reaches the dapp: liquid-rpc-validation only validates txids on the
+        // way in, so nothing downstream re-checks this one. A merely non-empty
+        // string isn't enough — a truncated record would still surface as
+        // status "broadcast" with an unusable id.
+        if (!TXID.test(existing.txid ?? "")) {
           throw new Error("This TX Manifest result is unreadable. Submit the action again with a new requestId.");
         }
         return reconstruct(existing.txid);
@@ -341,8 +346,13 @@ export class TxManifestIdempotency {
  */
 export function migrateStoredTxManifestRecords(value: unknown): TxManifestExecutionRecord[] {
   if (!Array.isArray(value)) return [];
-  return value.map((record) => {
-    if (!record || typeof record !== "object") return record as TxManifestExecutionRecord;
+  return value.flatMap((record) => {
+    // Drop non-objects outright. Every later read assumes a record shape, so
+    // passing one through poisons every future execution until storage is
+    // cleared. Safe to drop in a way that dropping a terminal record is not: a
+    // non-object was never a dedup entry, so nothing is lost, and the next
+    // write removes it from disk.
+    if (!record || typeof record !== "object") return [];
     const candidate = record as Record<string, unknown>;
     if ("txid" in candidate || !("result" in candidate)) {
       return record as TxManifestExecutionRecord;
