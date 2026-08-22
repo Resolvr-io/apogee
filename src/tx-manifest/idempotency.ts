@@ -6,7 +6,12 @@ export type TxManifestTerminalRecord = {
   key: string;
   invocationDigest: `sha256:${string}`;
   completedAt: number;
-  result: LiquidExecuteTxManifestResult;
+  /**
+   * Only the txid is durable. Every other `LiquidExecuteTxManifestResult`
+   * field is an echo of the caller's own request, so a retry reconstructs
+   * them instead of Apogee holding counterparty/account metadata at rest.
+   */
+  txid: string;
 };
 
 /**
@@ -58,6 +63,8 @@ export type TxManifestExecutionGeneration = number & {
 
 const RETENTION_MS = 7 * 24 * 60 * 60_000;
 const MAX_RECORDS = 100;
+/** Same shape the provider validates inbound txids against. */
+const TXID = /^[0-9a-f]{64}$/;
 
 /** Origin/account/chain-scoped terminal-result deduplication for manifest broadcasts. */
 export class TxManifestIdempotency {
@@ -77,6 +84,12 @@ export class TxManifestIdempotency {
     operation: (
       generation: TxManifestExecutionGeneration,
     ) => Promise<LiquidExecuteTxManifestResult>,
+    /**
+     * Rebuilds the full result from a cached txid. Every other result field
+     * is an echo of the caller's own (invocation-digest-matched) request, so
+     * only the txid needs to be read back from durable storage.
+     */
+    reconstruct: (txid: string) => LiquidExecuteTxManifestResult,
     resume?: (
       checkpoint: TxManifestCheckpointRecord,
       generation: TxManifestExecutionGeneration,
@@ -87,7 +100,17 @@ export class TxManifestIdempotency {
     if (existing) {
       this.requireSameInvocation(existing.invocationDigest, invocationDigest);
       if (isFailed(existing)) throw new Error(existing.message);
-      if (!isCheckpoint(existing)) return existing.result;
+      if (!isCheckpoint(existing)) {
+        // Fail closed. This is the LAST check before a reconstructed result
+        // reaches the dapp: liquid-rpc-validation only validates txids on the
+        // way in, so nothing downstream re-checks this one. A merely non-empty
+        // string isn't enough — a truncated record would still surface as
+        // status "broadcast" with an unusable id.
+        if (!TXID.test(existing.txid ?? "")) {
+          throw new Error("This TX Manifest result is unreadable. Submit the action again with a new requestId.");
+        }
+        return reconstruct(existing.txid);
+      }
       if (!resume) throw new Error("This TX Manifest execution must be resumed from its checkpoint.");
     }
     const running = this.inFlight.get(key);
@@ -106,7 +129,7 @@ export class TxManifestIdempotency {
         : await operation(generation);
       this.assertActive(generation);
       await this.persistTerminal(
-        { key, invocationDigest, completedAt: this.now(), result },
+        { key, invocationDigest, completedAt: this.now(), txid: result.txid },
         generation,
       );
       return result;
@@ -303,6 +326,48 @@ export class TxManifestIdempotency {
       throw new Error("This TX Manifest requestId was already used for different request data.");
     }
   }
+}
+
+/**
+ * Normalize records loaded from durable storage.
+ *
+ * Terminal records written before this store trimmed itself down held the whole
+ * `LiquidExecuteTxManifestResult` under `result`. They still match in `find()`,
+ * so without this a dapp retrying a requestId inside the retention window gets
+ * a result whose `txid` is `undefined` — dropped outright by JSON
+ * serialization, i.e. "broadcast" with nothing to track.
+ *
+ * Migrating on read rather than bumping the storage key is deliberate: dedup
+ * has to survive the upgrade, because losing it means a second approval prompt
+ * and a second broadcast of the same manifest. The next write persists the
+ * trimmed shape. Extracted here (rather than living in the background's store
+ * adapter) so it is testable — that module registers listeners at import and
+ * can't be loaded under Node.
+ */
+export function migrateStoredTxManifestRecords(value: unknown): TxManifestExecutionRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((record) => {
+    // Drop non-objects outright. Every later read assumes a record shape, so
+    // passing one through poisons every future execution until storage is
+    // cleared. Safe to drop in a way that dropping a terminal record is not: a
+    // non-object was never a dedup entry, so nothing is lost, and the next
+    // write removes it from disk.
+    if (!record || typeof record !== "object") return [];
+    const candidate = record as Record<string, unknown>;
+    if ("txid" in candidate || !("result" in candidate)) {
+      return record as TxManifestExecutionRecord;
+    }
+    const result = candidate.result as Record<string, unknown> | null;
+    if (!result || typeof result !== "object" || typeof result.txid !== "string") {
+      return record as TxManifestExecutionRecord;
+    }
+    return {
+      key: candidate.key,
+      invocationDigest: candidate.invocationDigest,
+      completedAt: candidate.completedAt,
+      txid: result.txid,
+    } as TxManifestExecutionRecord;
+  });
 }
 
 export function isCheckpoint(
