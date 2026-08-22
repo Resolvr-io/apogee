@@ -10,6 +10,7 @@ import { errMessage, wallet } from "@/sidepanel/wallet-client";
 import { openJadeWindow } from "@/sidepanel/jade-window";
 import { cn } from "@/lib/utils";
 import { browser } from "@/lib/ext";
+import { decodeScannedSeedPhrase } from "@/lib/seed-qr";
 
 type Step = "choose" | "create" | "backup" | "restore" | "hardware-connect" | "hardware" | "watch";
 
@@ -174,11 +175,21 @@ export function Onboarding({
       }
       if (scanned == null) return;
       stopSeedPoll();
+      // A scanned QR may be a plain-word mnemonic (what Apogee itself exports)
+      // or a Standard SeedQR digit string (what Jade and other SeedQR-aware
+      // wallets/tools produce); either decodes to the same word form here.
+      let decoded: string;
+      try {
+        decoded = decodeScannedSeedPhrase(scanned);
+      } catch (e) {
+        setError(errMessage(e));
+        return;
+      }
       // Normalize whitespace/case the way a BIP-39 phrase is written. The real
       // validation is still the engine's `deriveWallet`, which runs on submit
       // before the keystore is touched — a scanned string gets no more trust than
       // a typed one.
-      const normalized = scanned.trim().toLowerCase().replace(/\s+/g, " ");
+      const normalized = decoded.trim().toLowerCase().replace(/\s+/g, " ");
       const words = normalized.split(" ").filter(Boolean).length;
       if (words !== 12 && words !== 24) {
         setError(

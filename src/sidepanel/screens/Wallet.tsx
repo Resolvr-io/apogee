@@ -49,6 +49,7 @@ import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS, DEMO_UTXOS, useDemoFunds } from "@
 import { useBalanceStrike } from "@/sidepanel/balance-warmup";
 import { cn, shortenHex } from "@/lib/utils";
 import { browser } from "@/lib/ext";
+import { encodeStandardSeedQr } from "@/lib/seed-qr";
 import {
   formatAssetAmount,
   formatAssetAmountExact,
@@ -2314,8 +2315,13 @@ function SettingsBody({
               {seed ? (
                 <div className="flex flex-col gap-2">
                   {showQr ? (
-                    <div className="flex justify-center rounded-lg bg-white p-3">
-                      <QRCodeSVG value={seed} size={180} level="M" />
+                    <div className="flex flex-col items-center gap-1.5">
+                      <div className="flex justify-center rounded-lg bg-white p-3">
+                        <QRCodeSVG value={encodeStandardSeedQr(seed)} size={180} level="M" />
+                      </div>
+                      <p className="text-center text-[11px] text-[color:var(--text-secondary)]">
+                        Standard SeedQR — scannable by a Blockstream Jade
+                      </p>
                     </div>
                   ) : (
                     <p className="selectable break-words rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 font-mono text-xs text-[color:var(--text-strong)]">
