@@ -2113,6 +2113,8 @@ function SettingsBody({
 
   // Once revealed, count down and auto-hide the seed (phrase + QR) so it isn't
   // left exposed. Cleared on unmount and whenever `seed` is reset (drawer close).
+  // Also restarts on a text/QR toggle: scanning a QR takes longer than reading
+  // text, so requesting it shouldn't inherit whatever time was left over.
   useEffect(() => {
     if (!seed) return;
     setRevealSecs(SEED_REVEAL_TIMEOUT_S);
@@ -2125,7 +2127,7 @@ function SettingsBody({
       window.clearInterval(tick);
       window.clearTimeout(hide);
     };
-  }, [seed]);
+  }, [seed, showQr]);
 
   function changeAutoLock(minutes: number) {
     setAutoLockState(minutes);
