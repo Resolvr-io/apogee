@@ -182,4 +182,14 @@ describe("convergeTxManifestFee", () => {
       ),
     ).rejects.toThrow("fee cap");
   });
+
+  it("rejects a required fee implying an implausible rate for the transaction size", async () => {
+    await expect(
+      convergeTxManifestFee(
+        { feeRateSatPerKvb: "100", maxFee: "100000" },
+        async (fee) => candidate(fee),
+        async () => ({ discountVsize: 500, requiredFee: "50000", unsignedWalletInputs: 1 }),
+      ),
+    ).rejects.toThrow("implausibly high");
+  });
 });
