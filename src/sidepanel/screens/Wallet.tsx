@@ -2115,8 +2115,10 @@ function SettingsBody({
 
   // Once revealed, count down and auto-hide the seed (phrase + QR) so it isn't
   // left exposed. Cleared on unmount and whenever `seed` is reset (drawer close).
-  // Also restarts on a text/QR toggle: scanning a QR takes longer than reading
-  // text, so requesting it shouldn't inherit whatever time was left over.
+  // Also restarts on a text/QR toggle: asking for the QR means starting a
+  // separate action on another device (lining up a phone camera, driving a
+  // Jade's scanner), which deserves a full window rather than whatever time
+  // was left over from the text view, where copy-paste is the usual path.
   useEffect(() => {
     if (!seed) return;
     setRevealSecs(SEED_REVEAL_TIMEOUT_S);
