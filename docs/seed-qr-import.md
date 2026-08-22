@@ -14,16 +14,27 @@ The restore form (used by both first-run restore and forgot-password recovery �
 form, `Onboarding.tsx`) gains a **Scan seed QR** button. It opens the existing QR
 scanner in a popup window, and on a successful scan the phrase lands in the textarea.
 
-Format: the export writes `<QRCodeSVG value={encodeStandardSeedQr(seed)} />` — a
-**Standard SeedQR** digit string (each word's BIP-39 wordlist index, zero-padded to 4
-digits, concatenated; see `src/lib/seed-qr.ts`). This is one of the two formats a
-Blockstream Jade's camera-based seed import reads natively, which a bare mnemonic string
-is not — Jade recognizes SeedQR digit/binary payloads only, never literal words.
+Export offers two encodings, chosen by a toggle on the QR view:
 
-Import accepts either format: `decodeScannedSeedPhrase` treats an all-digit scanned
-payload as Standard SeedQR and decodes it, otherwise passes the value through as a plain
-mnemonic (what other wallets' plain-text QR scanners produce). Both decode to the same
-space-separated word form before the existing 12/24-word check and normalization.
+- **Text** — the bare mnemonic string, no prefix, no envelope.
+- **SeedQR** — a Standard SeedQR digit string (each word's BIP-39 wordlist index,
+  zero-padded to 4 digits, concatenated; see `src/lib/seed-qr.ts`).
+
+Both scan into a Blockstream Jade. The toggle exists because the reverse isn't true
+elsewhere: Blockstream Wallet's scanner reads only the plain-word form and silently
+ignores a SeedQR (verified in its source, and filed as
+[green_android#311](https://github.com/Blockstream/green_android/issues/311)), while
+SeedQR is what the wider hardware-wallet ecosystem standardized on.
+
+**Scan reliability is mostly physical, not about the format.** A Jade failing to read
+the code is usually screen glare or blown-out camera exposure — the QR renders at 260px
+with a brightness dimmer beside it, and turning brightness *down* is what typically
+makes a stubborn scan succeed. Reach for that before suspecting the encoding.
+
+Import accepts either format regardless of what was exported: `decodeScannedSeedPhrase`
+treats an all-digit scanned payload as Standard SeedQR and decodes it, otherwise passes
+the value through as a plain mnemonic. Both reduce to the same space-separated word form
+before the existing 12/24-word check and normalization.
 
 ## Why a popup window at all
 
