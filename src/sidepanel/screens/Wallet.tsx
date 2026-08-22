@@ -4,7 +4,7 @@
 // amounts for star glyphs; the balance pulses while syncing or when funds
 // are still unconfirmed. Sending is stubbed until the tx-builder engine op.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowDown,
@@ -49,6 +49,7 @@ import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS, DEMO_UTXOS, useDemoFunds } from "@
 import { useBalanceStrike } from "@/sidepanel/balance-warmup";
 import { cn, shortenHex } from "@/lib/utils";
 import { browser } from "@/lib/ext";
+import { encodeStandardSeedQr } from "@/lib/seed-qr";
 import {
   formatAssetAmount,
   formatAssetAmountExact,
@@ -96,8 +97,12 @@ export type View = "home" | "receive" | "send" | "swap" | "settings" | "coins";
 const HIDE_KEY = "apogee:hideBalance";
 const TX_PAGE = 25; // transactions rendered per lazy-load page
 // Auto-hide a revealed seed phrase (and its QR) after this window, so the secret
-// isn't left on screen if the user steps away.
-const SEED_REVEAL_TIMEOUT_S = 30;
+// isn't left on screen if the user steps away. Long enough for the slow paths
+// this view actually exists for: transcribing 24 words by hand, or lining up
+// another device's camera on the QR. Deliberately a trade — a longer window is
+// more exposure — but a timeout that fires mid-transcription just gets
+// re-triggered, which is worse.
+const SEED_REVEAL_TIMEOUT_S = 60;
 
 function useHideBalance(): [boolean, () => void] {
   const [hidden, setHidden] = useState(false);
@@ -2004,6 +2009,8 @@ function SettingsBody({
   const [password, setPassword] = useState("");
   const [seed, setSeed] = useState("");
   const [showQr, setShowQr] = useState(false);
+  const [qrFormat, setQrFormat] = useState<"seedqr" | "text">("seedqr");
+  const [qrBrightness, setQrBrightness] = useState(100);
   const [revealSecs, setRevealSecs] = useState(SEED_REVEAL_TIMEOUT_S);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -2112,6 +2119,32 @@ function SettingsBody({
 
   // Once revealed, count down and auto-hide the seed (phrase + QR) so it isn't
   // left exposed. Cleared on unmount and whenever `seed` is reset (drawer close).
+  // Also restarts on a text/QR toggle: asking for the QR means starting a
+  // separate action on another device (lining up a phone camera, driving a
+  // Jade's scanner), which deserves a full window rather than whatever time
+  // was left over from the text view, where copy-paste is the usual path.
+  //
+  // Format and brightness are in the deps for the same reason: calibrating the
+  // dimmer while aiming a camera is the workflow this view exists for, and
+  // actively dragging a slider is about as clear an "I'm still here" signal as
+  // there is. Without them the seed hides mid-calibration and drops the user
+  // back to the password prompt. It does mean the window can be held open by
+  // fiddling, which is moot — they're already looking at the phrase.
+  // Encoding runs on live seed material and throws on anything outside the
+  // BIP-39 English wordlist. There is no error boundary in this app, so calling
+  // it bare in render would blank the whole side panel WHILE a seed is on
+  // screen. Memoized (the countdown re-renders every second, so this would
+  // otherwise re-encode the seed ~60x per reveal) and null on failure, which
+  // falls back to the plain-word QR rather than losing the view.
+  const seedQr = useMemo(() => {
+    if (!seed) return null;
+    try {
+      return encodeStandardSeedQr(seed);
+    } catch {
+      return null;
+    }
+  }, [seed]);
+
   useEffect(() => {
     if (!seed) return;
     setRevealSecs(SEED_REVEAL_TIMEOUT_S);
@@ -2124,7 +2157,7 @@ function SettingsBody({
       window.clearInterval(tick);
       window.clearTimeout(hide);
     };
-  }, [seed]);
+  }, [seed, showQr, qrFormat, qrBrightness]);
 
   function changeAutoLock(minutes: number) {
     setAutoLockState(minutes);
@@ -2300,6 +2333,8 @@ function SettingsBody({
                 setPassword("");
                 setError("");
                 setShowQr(false);
+                setQrFormat("seedqr");
+                setQrBrightness(100);
               }
             }}
           >
@@ -2314,8 +2349,70 @@ function SettingsBody({
               {seed ? (
                 <div className="flex flex-col gap-2">
                   {showQr ? (
-                    <div className="flex justify-center rounded-lg bg-white p-3">
-                      <QRCodeSVG value={seed} size={180} level="M" />
+                    <div className="flex flex-col items-center gap-1.5">
+                      <div
+                        className="flex justify-center rounded-lg p-3"
+                        style={{ background: qrBgColor(qrBrightness) }}
+                      >
+                        {/* size drives module resolution; the classes let the
+                            rendered svg scale down instead of overflowing a
+                            narrowed side panel, where the clipped edge would be
+                            unscannable and unreachable by scrolling. */}
+                        <QRCodeSVG
+                          value={qrFormat === "seedqr" && seedQr ? seedQr : seed}
+                          size={260}
+                          className="h-auto w-full max-w-[260px]"
+                          level="M"
+                          fgColor="#000000"
+                          bgColor={qrBgColor(qrBrightness)}
+                        />
+                      </div>
+                      {/* Both formats scan into a Jade; other wallets' scanners
+                          generally read only the plain-word one, so the choice
+                          stays the user's. Deliberately NOT .console-overline:
+                          its uppercase transform mangles "SeedQR" into
+                          "SEEDQR", which doesn't read. */}
+                      <div className="mt-2 flex w-full gap-1" role="group" aria-label="QR format">
+                        {([
+                          ["seedqr", "SeedQR"],
+                          ["text", "Text"],
+                        ] as const).map(([value, label]) => (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => setQrFormat(value)}
+                            aria-pressed={qrFormat === value}
+                            className={cn(
+                              "flex-1 rounded-md border px-2 py-1 text-[11px] transition",
+                              qrFormat === value
+                                ? "border-[color:var(--accent)] bg-[color:var(--accent-soft)] text-[color:var(--text-strong)]"
+                                : "border-[color:var(--border-default)] text-[color:var(--text-subtle)] hover:border-[color:var(--border-hover)]",
+                            )}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="mt-2 flex w-full items-center gap-2">
+                        <span className="console-overline text-[10px] text-[color:var(--text-secondary)]">
+                          Brightness
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          value={qrBrightness}
+                          onChange={(e) => setQrBrightness(Number(e.target.value))}
+                          aria-label="QR brightness"
+                          className="telemetry-slider flex-1"
+                          style={{
+                            background: `linear-gradient(to right, var(--telemetry-halo) ${qrBrightness}%, color-mix(in srgb, var(--telemetry-halo) 14%, transparent) ${qrBrightness}%)`,
+                          }}
+                        />
+                        <span className="font-telemetry telemetry-glow w-7 text-right text-xs leading-none">
+                          {qrBrightness}
+                        </span>
+                      </div>
                     </div>
                   ) : (
                     <p className="selectable break-words rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 font-mono text-xs text-[color:var(--text-strong)]">
@@ -2526,6 +2623,17 @@ function SettingsBody({
   );
 }
 
+/** Interpolates the SeedQR background between white (100, max contrast) and a
+ *  dark gray (0) — foreground stays pure black throughout. Screens can't get
+ *  brighter than white via CSS, so this control is really a dimmer: useful
+ *  when a camera's exposure is blown out by screen glare, not for exceeding
+ *  the display's own peak brightness. */
+function qrBgColor(brightness: number): string {
+  const level = Math.round(64 + ((255 - 64) * Math.max(0, Math.min(100, brightness))) / 100);
+  const hex = level.toString(16).padStart(2, "0");
+  return `#${hex}${hex}${hex}`;
+}
+
 // Settings footer: check the published release against this build, on click
 // only. Sits in the footer row's spare width beside the wordmark; the wordmark +
 // copyright stack is taller than this link plus its result line, so neither
@@ -2616,7 +2724,8 @@ function SubView({
   // `toggle` alone is not enough, because a drawer can grow more than once and
   // only the first growth is a toggle. "Reveal seed phrase" opens to just a
   // password form; submitting it swaps in the phrase, a countdown and two
-  // buttons, and "Show as QR code" then swaps the phrase for a 180px QR —
+  // buttons, and "Show as QR code" then swaps the phrase for a QR plus a format
+  // toggle and a brightness row —
   // together more height than the toggle itself revealed, and both are React
   // state changes that fire no event on the element. So the toggle only decides
   // WHAT to watch, and a ResizeObserver decides WHEN to act. It also removes the
