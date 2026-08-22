@@ -44,12 +44,36 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # The zip recipe lives in scripts/build-release-zip.sh so `pnpm zip` and
+      # this job produce byte-identical archives — see that script's header for
+      # why each input is pinned.
       - name: Build and zip
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           pnpm build
-          (cd dist && zip -rX "../apogee-${VERSION}-chrome.zip" . -x '*.DS_Store')
-          echo "Chrome zip:"; unzip -l "apogee-${VERSION}-chrome.zip" | tail -3
+          scripts/build-release-zip.sh "apogee-${VERSION}-chrome.zip" \
+            "$(git log -1 --format=%ct "$GITHUB_SHA")"
+
+      # A digest alone only proves the download wasn't corrupted in transit. To
+      # be independently verifiable it has to travel with the toolchain that
+      # produced it: bsdtar, 7-Zip and Python's zipfile all emit different
+      # deflate streams from identical inputs, so "rebuild and compare" needs
+      # to know it was Info-ZIP, at this version, on this Node.
+      - name: Publish checksums
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          sha256sum "apogee-${VERSION}-chrome.zip" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          {
+            echo "Built by ${GITHUB_WORKFLOW} for ${GITHUB_REF_NAME} (${GITHUB_SHA})"
+            echo "runner: ${RUNNER_OS} ${RUNNER_ARCH}"
+            echo "node: $(node -v)"
+            echo "pnpm: $(pnpm -v)"
+            zip -v | head -2 | tr -s ' \n' ' '; echo
+            echo "umask: $(umask)"
+            echo "recipe: scripts/build-release-zip.sh (mtimes pinned to the tag's commit time, modes 644, sorted entries, deflate -6)"
+          } > BUILD-ENV.txt
+          cat BUILD-ENV.txt
 
       # Release notes come from the README's section for this version, so the
       # changelog has ONE source: the GitHub Release, the landing site's
@@ -79,4 +103,6 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --title "Apogee ${VERSION}" \
             --notes-file RELEASE_NOTES.md \
-            "apogee-${VERSION}-chrome.zip"
+            "apogee-${VERSION}-chrome.zip" \
+            SHA256SUMS.txt \
+            BUILD-ENV.txt
