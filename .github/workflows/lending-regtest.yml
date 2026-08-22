@@ -14,6 +14,12 @@ concurrency:
 
 env:
   SIMPLEX_COMMIT: 1945d11b47fff8838c3e99c210133519a9522324
+  # The `simplexup` tool itself, pinned separately from the Simplex CLI commit
+  # above: this is the version-manager script that fetches Simplex, not
+  # Simplex. Update both together after reviewing the diff at
+  # https://github.com/BlockstreamResearch/smplx/commits/master/simplexup/simplexup
+  SIMPLEXUP_COMMIT: a633534c98b1f8d453c6a3db47ccd754557e0d5b
+  SIMPLEXUP_SHA256: a234863443e9486aebcf07af4843234722d062beac1e5f261cb03f7830634af5
 
 jobs:
   chromium:
@@ -67,10 +73,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 https://smplx.simplicity-lang.org | bash
           BASE_DIR="${XDG_CONFIG_HOME:-$HOME}"
           SIMPLEX_DIR="${SIMPLEX_DIR:-$BASE_DIR/.simplex}"
           SIMPLEX_BIN_DIR="$SIMPLEX_DIR/bin"
+          mkdir -p "$SIMPLEX_BIN_DIR"
+
+          # Fetch `simplexup` itself from a pinned commit rather than the
+          # unpinned `curl https://smplx.simplicity-lang.org | bash` bootstrap
+          # (which just resolves to this same raw.githubusercontent.com file,
+          # but off `master`) — dropping both the moving ref and the pipe-to-
+          # bash pattern. `simplexup --commit` below still checksum-verifies
+          # the Simplex CLI binaries it fetches on its own; this closes the
+          # one link in the chain that wasn't already verified.
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+            "https://raw.githubusercontent.com/BlockstreamResearch/smplx/${SIMPLEXUP_COMMIT}/simplexup/simplexup" \
+            -o "$SIMPLEX_BIN_DIR/simplexup"
+          echo "${SIMPLEXUP_SHA256}  $SIMPLEX_BIN_DIR/simplexup" | sha256sum -c -
+          chmod +x "$SIMPLEX_BIN_DIR/simplexup"
+
           "$SIMPLEX_BIN_DIR/simplexup" --commit "$SIMPLEX_COMMIT"
           echo "$SIMPLEX_BIN_DIR" >> "$GITHUB_PATH"
           "$SIMPLEX_BIN_DIR/simplex" --version
