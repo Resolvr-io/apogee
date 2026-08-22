@@ -2120,6 +2120,21 @@ type ReviewedTxManifestFee = {
   selectionFee: string;
 };
 
+function buildTxManifestResult(
+  invocation: LiquidExecuteTxManifestParams,
+  txid: string,
+): LiquidExecuteTxManifestResult {
+  return {
+    requestId: invocation.requestId,
+    chainId: invocation.chainId,
+    accountIdentifier: invocation.accountIdentifier,
+    bundleHash: invocation.manifest.bundleHash,
+    action: invocation.action,
+    status: "broadcast",
+    txid,
+  };
+}
+
 async function executeProviderTxManifest(
   origin: string,
   invocation: LiquidExecuteTxManifestParams,
@@ -2196,6 +2211,7 @@ async function executeProviderTxManifest(
               void routeApproval(approval);
             });
           },
+          (txid) => buildTxManifestResult(invocation, txid),
           (checkpoint, idempotencyGeneration) =>
             resumeProviderTxManifest(
               origin,
@@ -3600,15 +3616,7 @@ async function handleApprovalDecision(
           });
         }
       }
-      const result: LiquidExecuteTxManifestResult = {
-        requestId: pending.invocation.requestId,
-        chainId: pending.invocation.chainId,
-        accountIdentifier: pending.invocation.accountIdentifier,
-        bundleHash: pending.invocation.manifest.bundleHash,
-        action: pending.invocation.action,
-        status: "broadcast",
-        txid: extracted.txid,
-      };
+      const result = buildTxManifestResult(pending.invocation, extracted.txid);
       await requireProviderPsetAuthorization(
         pending,
         "This site was disconnected before Apogee could broadcast the manifest transaction.",

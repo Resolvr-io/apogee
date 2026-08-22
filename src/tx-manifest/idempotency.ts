@@ -6,7 +6,12 @@ export type TxManifestTerminalRecord = {
   key: string;
   invocationDigest: `sha256:${string}`;
   completedAt: number;
-  result: LiquidExecuteTxManifestResult;
+  /**
+   * Only the txid is durable. Every other `LiquidExecuteTxManifestResult`
+   * field is an echo of the caller's own request, so a retry reconstructs
+   * them instead of Apogee holding counterparty/account metadata at rest.
+   */
+  txid: string;
 };
 
 /**
@@ -77,6 +82,12 @@ export class TxManifestIdempotency {
     operation: (
       generation: TxManifestExecutionGeneration,
     ) => Promise<LiquidExecuteTxManifestResult>,
+    /**
+     * Rebuilds the full result from a cached txid. Every other result field
+     * is an echo of the caller's own (invocation-digest-matched) request, so
+     * only the txid needs to be read back from durable storage.
+     */
+    reconstruct: (txid: string) => LiquidExecuteTxManifestResult,
     resume?: (
       checkpoint: TxManifestCheckpointRecord,
       generation: TxManifestExecutionGeneration,
@@ -87,7 +98,7 @@ export class TxManifestIdempotency {
     if (existing) {
       this.requireSameInvocation(existing.invocationDigest, invocationDigest);
       if (isFailed(existing)) throw new Error(existing.message);
-      if (!isCheckpoint(existing)) return existing.result;
+      if (!isCheckpoint(existing)) return reconstruct(existing.txid);
       if (!resume) throw new Error("This TX Manifest execution must be resumed from its checkpoint.");
     }
     const running = this.inFlight.get(key);
@@ -106,7 +117,7 @@ export class TxManifestIdempotency {
         : await operation(generation);
       this.assertActive(generation);
       await this.persistTerminal(
-        { key, invocationDigest, completedAt: this.now(), result },
+        { key, invocationDigest, completedAt: this.now(), txid: result.txid },
         generation,
       );
       return result;
