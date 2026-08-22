@@ -1,5 +1,9 @@
 # Security Review — Apogee PR #146 (Seed QR)
 
+**Reviewer:** Fable 5 (Anthropic), automated security scan. Not authored by the
+repository maintainer. Recorded here because this repository allows only squash
+merges, which collapse the original commit's authorship.
+
 **Scan of [PR #146 — fix(seed-qr): make the seed QR scannable by a Jade](https://github.com/Resolvr-io/apogee/pull/146)**, reviewed at head commit `19c61d3` against `main` (`14e4a09`), 2026-08-22.
 
 ## Verdict: no vulnerabilities found
