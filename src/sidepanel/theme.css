@@ -833,6 +833,12 @@
     border-radius: 999px;
     cursor: pointer;
   }
+  /* Chrome's default ring on an appearance:none range is nearly invisible, and
+     the rest of this panel is keyboard-navigable. */
+  .telemetry-slider:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--telemetry-halo) 70%, transparent);
+    outline-offset: 3px;
+  }
   .telemetry-slider::-webkit-slider-thumb {
     appearance: none;
     width: 12px;

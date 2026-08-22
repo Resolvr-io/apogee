@@ -4,7 +4,7 @@
 // amounts for star glyphs; the balance pulses while syncing or when funds
 // are still unconfirmed. Sending is stubbed until the tx-builder engine op.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowDown,
@@ -2123,6 +2123,28 @@ function SettingsBody({
   // separate action on another device (lining up a phone camera, driving a
   // Jade's scanner), which deserves a full window rather than whatever time
   // was left over from the text view, where copy-paste is the usual path.
+  //
+  // Format and brightness are in the deps for the same reason: calibrating the
+  // dimmer while aiming a camera is the workflow this view exists for, and
+  // actively dragging a slider is about as clear an "I'm still here" signal as
+  // there is. Without them the seed hides mid-calibration and drops the user
+  // back to the password prompt. It does mean the window can be held open by
+  // fiddling, which is moot — they're already looking at the phrase.
+  // Encoding runs on live seed material and throws on anything outside the
+  // BIP-39 English wordlist. There is no error boundary in this app, so calling
+  // it bare in render would blank the whole side panel WHILE a seed is on
+  // screen. Memoized (the countdown re-renders every second, so this would
+  // otherwise re-encode the seed ~60x per reveal) and null on failure, which
+  // falls back to the plain-word QR rather than losing the view.
+  const seedQr = useMemo(() => {
+    if (!seed) return null;
+    try {
+      return encodeStandardSeedQr(seed);
+    } catch {
+      return null;
+    }
+  }, [seed]);
+
   useEffect(() => {
     if (!seed) return;
     setRevealSecs(SEED_REVEAL_TIMEOUT_S);
@@ -2135,7 +2157,7 @@ function SettingsBody({
       window.clearInterval(tick);
       window.clearTimeout(hide);
     };
-  }, [seed, showQr]);
+  }, [seed, showQr, qrFormat, qrBrightness]);
 
   function changeAutoLock(minutes: number) {
     setAutoLockState(minutes);
@@ -2332,9 +2354,14 @@ function SettingsBody({
                         className="flex justify-center rounded-lg p-3"
                         style={{ background: qrBgColor(qrBrightness) }}
                       >
+                        {/* size drives module resolution; the classes let the
+                            rendered svg scale down instead of overflowing a
+                            narrowed side panel, where the clipped edge would be
+                            unscannable and unreachable by scrolling. */}
                         <QRCodeSVG
-                          value={qrFormat === "seedqr" ? encodeStandardSeedQr(seed) : seed}
+                          value={qrFormat === "seedqr" && seedQr ? seedQr : seed}
                           size={260}
+                          className="h-auto w-full max-w-[260px]"
                           level="M"
                           fgColor="#000000"
                           bgColor={qrBgColor(qrBrightness)}
@@ -2345,7 +2372,7 @@ function SettingsBody({
                           stays the user's. Deliberately NOT .console-overline:
                           its uppercase transform mangles "SeedQR" into
                           "SEEDQR", which doesn't read. */}
-                      <div className="mt-2 flex w-full gap-1">
+                      <div className="mt-2 flex w-full gap-1" role="group" aria-label="QR format">
                         {([
                           ["seedqr", "SeedQR"],
                           ["text", "Text"],
@@ -2376,6 +2403,7 @@ function SettingsBody({
                           max={100}
                           value={qrBrightness}
                           onChange={(e) => setQrBrightness(Number(e.target.value))}
+                          aria-label="QR brightness"
                           className="telemetry-slider flex-1"
                           style={{
                             background: `linear-gradient(to right, var(--telemetry-halo) ${qrBrightness}%, color-mix(in srgb, var(--telemetry-halo) 14%, transparent) ${qrBrightness}%)`,
@@ -2696,7 +2724,8 @@ function SubView({
   // `toggle` alone is not enough, because a drawer can grow more than once and
   // only the first growth is a toggle. "Reveal seed phrase" opens to just a
   // password form; submitting it swaps in the phrase, a countdown and two
-  // buttons, and "Show as QR code" then swaps the phrase for a 180px QR —
+  // buttons, and "Show as QR code" then swaps the phrase for a QR plus a format
+  // toggle and a brightness row —
   // together more height than the toggle itself revealed, and both are React
   // state changes that fire no event on the element. So the toggle only decides
   // WHAT to watch, and a ResizeObserver decides WHEN to act. It also removes the
