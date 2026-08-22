@@ -2319,7 +2319,13 @@ function SettingsBody({
                   {showQr ? (
                     <div className="flex flex-col items-center gap-1.5">
                       <div className="flex justify-center rounded-lg bg-white p-3">
-                        <QRCodeSVG value={encodeStandardSeedQr(seed)} size={180} level="M" />
+                        <QRCodeSVG
+                          value={encodeStandardSeedQr(seed)}
+                          size={260}
+                          level="M"
+                          fgColor="#000000"
+                          bgColor="#ffffff"
+                        />
                       </div>
                       <p className="text-center text-[11px] text-[color:var(--text-secondary)]">
                         Standard SeedQR — scannable by a Blockstream Jade
