@@ -51,16 +51,14 @@ jobs:
       # otherwise-identical builds differ in the zip's per-entry timestamps
       # (set to build time) and published checksums could never match a
       # third-party rebuild.
+      # The zip recipe lives in scripts/build-release-zip.sh so `pnpm zip` and
+      # this job produce byte-identical archives — see that script's header.
       - name: Build and zip
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           pnpm build
-          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct "$GITHUB_SHA")"
-          TOUCH_TS="$(date -u -d "@${SOURCE_DATE_EPOCH}" +%Y%m%d%H%M.%S)"
-          find dist -exec touch -t "$TOUCH_TS" {} +
-          (cd dist && find . -type f ! -name '*.DS_Store' | LC_ALL=C sort \
-            | zip -X "../apogee-${VERSION}-chrome.zip" -@)
-          echo "Chrome zip:"; unzip -l "apogee-${VERSION}-chrome.zip" | tail -3
+          scripts/build-release-zip.sh "apogee-${VERSION}-chrome.zip" \
+            "$(git log -1 --format=%ct "$GITHUB_SHA")"
 
       - name: Publish checksums
         run: |

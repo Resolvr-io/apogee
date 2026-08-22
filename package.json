@@ -19,7 +19,7 @@
     "test:sideswap:integration": "vitest run src/sideswap/integration.test.ts",
     "test:provider": "pnpm build && playwright test",
     "test:lending:regtest": "node scripts/test-lending-regtest.mjs",
-    "zip": "if ls .env .env.local .env.production .env.production.local 2>/dev/null | grep -q .; then echo 'refusing to zip: a .env file is present (credentials could ship in the bundle) \u2014 remove it or use the CI release zip' >&2; exit 1; fi && mkdir -p releases && rm -f releases/apogee-$npm_package_version.zip releases/apogee-$npm_package_version-chrome.zip && vite build && (cd dist && zip -rX ../releases/apogee-$npm_package_version-chrome.zip . -x '*.DS_Store')"
+    "zip": "if ls .env .env.local .env.production .env.production.local 2>/dev/null | grep -q .; then echo 'refusing to zip: a .env file is present (credentials could ship in the bundle) \u2014 remove it or use the CI release zip' >&2; exit 1; fi && mkdir -p releases && rm -f releases/apogee-$npm_package_version.zip releases/apogee-$npm_package_version-chrome.zip && vite build && scripts/build-release-zip.sh releases/apogee-$npm_package_version-chrome.zip"
   },
   "dependencies": {
     "jsqr": "^1.4.0",
