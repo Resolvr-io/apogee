@@ -822,6 +822,27 @@
     letter-spacing: 0.18em;
     color: var(--text-overline);
   }
+  /* Dimmer dial (SeedQR brightness): same phosphor track/halo the countdown
+     bar uses, on an actual range input. The filled portion is painted by the
+     caller as an inline gradient (background-position varies with value, so
+     it can't live in a static rule) — this class only resets browser chrome
+     and glows the thumb. Webkit-only; Apogee is Chrome-only. */
+  .telemetry-slider {
+    appearance: none;
+    height: 3px;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .telemetry-slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--telemetry-halo);
+    box-shadow:
+      0 0 4px color-mix(in srgb, var(--telemetry-halo) 85%, transparent),
+      0 0 10px color-mix(in srgb, var(--telemetry-halo) 55%, transparent);
+  }
   /* Phosphor hairline under an overline — the guide page's divider. Applied as
      a bottom background so it needs no extra element; the centered variant is
      for overlines that sit centered over their content. */

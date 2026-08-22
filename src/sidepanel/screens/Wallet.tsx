@@ -21,7 +21,6 @@ import {
   Eye,
   EyeOff,
   Lock,
-  Maximize2,
   QrCode,
   RefreshCw,
   Telescope,
@@ -2006,7 +2005,8 @@ function SettingsBody({
   const [password, setPassword] = useState("");
   const [seed, setSeed] = useState("");
   const [showQr, setShowQr] = useState(false);
-  const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [qrFormat, setQrFormat] = useState<"seedqr" | "text">("seedqr");
+  const [qrBrightness, setQrBrightness] = useState(100);
   const [revealSecs, setRevealSecs] = useState(SEED_REVEAL_TIMEOUT_S);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -2124,7 +2124,6 @@ function SettingsBody({
     const hide = window.setTimeout(() => {
       setSeed("");
       setShowQr(false);
-      setQrModalOpen(false);
     }, SEED_REVEAL_TIMEOUT_S * 1000);
     return () => {
       window.clearInterval(tick);
@@ -2306,7 +2305,8 @@ function SettingsBody({
                 setPassword("");
                 setError("");
                 setShowQr(false);
-                setQrModalOpen(false);
+                setQrFormat("seedqr");
+                setQrBrightness(100);
               }
             }}
           >
@@ -2322,25 +2322,63 @@ function SettingsBody({
                 <div className="flex flex-col gap-2">
                   {showQr ? (
                     <div className="flex flex-col items-center gap-1.5">
-                      <div className="flex justify-center rounded-lg bg-white p-3">
+                      <div
+                        className="flex justify-center rounded-lg p-3"
+                        style={{ background: qrBgColor(qrBrightness) }}
+                      >
                         <QRCodeSVG
-                          value={encodeStandardSeedQr(seed)}
+                          value={qrFormat === "seedqr" ? encodeStandardSeedQr(seed) : seed}
                           size={260}
                           level="M"
                           fgColor="#000000"
-                          bgColor="#ffffff"
+                          bgColor={qrBgColor(qrBrightness)}
                         />
                       </div>
-                      <p className="text-center text-[11px] text-[color:var(--text-secondary)]">
-                        Standard SeedQR — scannable by a Blockstream Jade
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setQrModalOpen(true)}
-                        className="flex items-center gap-1 text-[11px] text-[color:var(--accent-strong)]"
-                      >
-                        <Maximize2 size={12} /> Enlarge
-                      </button>
+                      {/* Both formats scan into a Jade; other wallets' scanners
+                          generally read only the plain-word one, so the choice
+                          stays the user's. Deliberately NOT .console-overline:
+                          its uppercase transform mangles "SeedQR" into
+                          "SEEDQR", which doesn't read. */}
+                      <div className="mt-2 flex w-full gap-1">
+                        {([
+                          ["seedqr", "SeedQR"],
+                          ["text", "Text"],
+                        ] as const).map(([value, label]) => (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => setQrFormat(value)}
+                            aria-pressed={qrFormat === value}
+                            className={cn(
+                              "flex-1 rounded-md border px-2 py-1 text-[11px] transition",
+                              qrFormat === value
+                                ? "border-[color:var(--accent)] bg-[color:var(--accent-soft)] text-[color:var(--text-strong)]"
+                                : "border-[color:var(--border-default)] text-[color:var(--text-subtle)] hover:border-[color:var(--border-hover)]",
+                            )}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="mt-2 flex w-full items-center gap-2">
+                        <span className="console-overline text-[10px] text-[color:var(--text-secondary)]">
+                          Brightness
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          value={qrBrightness}
+                          onChange={(e) => setQrBrightness(Number(e.target.value))}
+                          className="telemetry-slider flex-1"
+                          style={{
+                            background: `linear-gradient(to right, var(--telemetry-halo) ${qrBrightness}%, color-mix(in srgb, var(--telemetry-halo) 14%, transparent) ${qrBrightness}%)`,
+                          }}
+                        />
+                        <span className="font-telemetry telemetry-glow w-7 text-right text-xs leading-none">
+                          {qrBrightness}
+                        </span>
+                      </div>
                     </div>
                   ) : (
                     <p className="selectable break-words rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 font-mono text-xs text-[color:var(--text-strong)]">
@@ -2547,58 +2585,19 @@ function SettingsBody({
         </div>
         <UpdateCheckLink />
       </footer>
-
-      {qrModalOpen && seed && (
-        <SeedQrModal
-          value={encodeStandardSeedQr(seed)}
-          revealSecs={revealSecs}
-          onClose={() => setQrModalOpen(false)}
-        />
-      )}
     </div>
   );
 }
 
-/** Full-size SeedQR overlay. Reuses the same reveal countdown state (still
- *  ticking underneath) rather than starting a second one, so "auto-hides in"
- *  here always matches the drawer it was opened from. */
-function SeedQrModal({
-  value,
-  revealSecs,
-  onClose,
-}: {
-  value: string;
-  revealSecs: number;
-  onClose: () => void;
-}) {
-  const [qrSize, setQrSize] = useState(() => Math.min(window.innerWidth, window.innerHeight) - 96);
-  useEffect(() => {
-    const onResize = () => setQrSize(Math.min(window.innerWidth, window.innerHeight) - 96);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-  return (
-    <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-[color:var(--overlay)] p-4"
-      onClick={onClose}
-    >
-      <div className="flex flex-col items-center gap-3" onClick={(e) => e.stopPropagation()}>
-        <div className="rounded-lg bg-white p-4">
-          <QRCodeSVG value={value} size={qrSize} level="M" fgColor="#000000" bgColor="#ffffff" />
-        </div>
-        <div className="flex items-baseline gap-2">
-          <span className="console-overline text-[10px] text-[color:var(--text-secondary)]">
-            Auto-hides in
-          </span>
-          <span className="font-telemetry telemetry-glow text-lg leading-none">{revealSecs}</span>
-          <span className="console-overline text-[10px] text-[color:var(--text-secondary)]">sec</span>
-        </div>
-        <Button variant="secondary" onClick={onClose}>
-          Close
-        </Button>
-      </div>
-    </div>
-  );
+/** Interpolates the SeedQR background between white (100, max contrast) and a
+ *  dark gray (0) — foreground stays pure black throughout. Screens can't get
+ *  brighter than white via CSS, so this control is really a dimmer: useful
+ *  when a camera's exposure is blown out by screen glare, not for exceeding
+ *  the display's own peak brightness. */
+function qrBgColor(brightness: number): string {
+  const level = Math.round(64 + ((255 - 64) * Math.max(0, Math.min(100, brightness))) / 100);
+  const hex = level.toString(16).padStart(2, "0");
+  return `#${hex}${hex}${hex}`;
 }
 
 // Settings footer: check the published release against this build, on click
