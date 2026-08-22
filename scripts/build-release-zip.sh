@@ -30,12 +30,32 @@ if ! TOUCH_TS="$(date -u -d "@${EPOCH}" +%Y%m%d%H%M.%S 2>/dev/null)"; then
 fi
 find dist -exec touch -t "$TOUCH_TS" {} +
 
+# Same reason as the touch: zip records st_mode in the central directory's
+# external attributes, and -X only drops the *extra* fields (UT timestamps, Ux
+# uid/gid). A builder whose umask is 002 gets 664 files and therefore a
+# different digest from CI's 644 — from byte-identical inputs, which is exactly
+# the "looks like tampering" failure this script exists to prevent. Verify with
+# `unzip -Z <zip>`: every entry should read -rw-r--r--.
+find dist -type f -exec chmod 644 {} +
+find dist -type d -exec chmod 755 {} +
+
+# A Vite dist/ has no symlinks. If one ever appears, fail loudly rather than
+# silently omit it: `find -type f` skips symlinks, where the old `zip -rX`
+# dereferenced and stored their contents.
+if find dist -type l -print -quit | grep -q .; then
+  echo "refusing to zip: dist/ contains a symlink" >&2
+  exit 1
+fi
+
 # A sorted file list, not `zip -r`: -r walks in filesystem order, which is not
 # stable across machines. `find -type f` also emits no directory entries, so
 # the archive has none — unzip and the Chrome Web Store both create parents
 # implicitly, so this is safe, but it IS a change in artifact contents worth
 # knowing before anyone "restores" -r and silently breaks the digest.
-(cd dist && find . -type f ! -name '*.DS_Store' | LC_ALL=C sort | zip -X "$OUT_ABS" -@)
+# -6 is Info-ZIP's long-standing default, so pinning it is insurance rather
+# than a fix — but the deflate level is one of only a few inputs to the
+# compressed stream, and every other one here is explicit.
+(cd dist && find . -type f ! -name '*.DS_Store' | LC_ALL=C sort | zip -X -6 "$OUT_ABS" -@)
 
 echo "Wrote $OUT_ABS"
 unzip -l "$OUT_ABS" | tail -3
