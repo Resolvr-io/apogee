@@ -97,8 +97,12 @@ export type View = "home" | "receive" | "send" | "swap" | "settings" | "coins";
 const HIDE_KEY = "apogee:hideBalance";
 const TX_PAGE = 25; // transactions rendered per lazy-load page
 // Auto-hide a revealed seed phrase (and its QR) after this window, so the secret
-// isn't left on screen if the user steps away.
-const SEED_REVEAL_TIMEOUT_S = 30;
+// isn't left on screen if the user steps away. Long enough for the slow paths
+// this view actually exists for: transcribing 24 words by hand, or lining up
+// another device's camera on the QR. Deliberately a trade — a longer window is
+// more exposure — but a timeout that fires mid-transcription just gets
+// re-triggered, which is worse.
+const SEED_REVEAL_TIMEOUT_S = 60;
 
 function useHideBalance(): [boolean, () => void] {
   const [hidden, setHidden] = useState(false);
