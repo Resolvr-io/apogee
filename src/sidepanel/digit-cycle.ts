@@ -1,7 +1,8 @@
 // Per-glyph timing for the telemetry "strike" (theme.css: .telemetry-digit,
-// balance-warmup.ts). Framework-free on purpose: balance-warmup.ts needs the
-// bound below, and importing it through ui.tsx would pull React and its
-// transitive icon-library imports into a test that mocks the "react" module.
+// balance-strike.ts). Framework-free on purpose: balance-strike.ts imports the
+// bound below and is itself imported by tests that run DOM-less and React-less
+// — pulling this through ui.tsx would drag React and its transitive
+// icon-library imports into them.
 
 const DELAY_MOD_MS = 190; // delay range: 0..DELAY_MOD_MS - 1
 const DURATION_BASE_MS = 620;

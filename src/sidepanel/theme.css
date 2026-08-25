@@ -824,7 +824,7 @@
   }
 
   /* Balance warm-up: the numerals striking like a neon tube the first time a
-     balance is shown (armed in balance-warmup.ts, per-digit timing set inline by
+     balance is shown (armed in balance-strike.ts, per-digit timing set inline by
      TelemetryNumber).
 
      Neon doesn't fade up — it stutters. So the keyframes are deliberately
