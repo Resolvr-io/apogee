@@ -2,7 +2,7 @@
 // gradient → star canvas → moon (masked photo + halo + bright core) → blue
 // horizon glow → moonlit ocean pinned at the bottom. The ocean is the animated
 // mp4 (OceanVideo, with a loop-seam crossfade) by default, or the static poster
-// JPG when the "Background animation" setting is off. While animated, occasional
+// JPG when the "Animations" setting is off. While animated, occasional
 // shooting stars streak the upper sky (ShootingStars). Purely decorative.
 //
 // `intro` drives the one-time first-run cinematic (see useMoonIntro in App.tsx

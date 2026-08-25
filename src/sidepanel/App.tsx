@@ -128,7 +128,7 @@ function useMoonIntro(
     }
     // The preference is read asynchronously and starts at its optimistic
     // default, so deciding before it lands can play the cinematic for someone
-    // who turned Background animation off.
+    // who turned Animations off.
     if (!animationsLoaded) return;
     // Reduced motion leaves the flag UNWRITTEN, so every place that ASKS about
     // it agrees on the PHASE — initializer, the mid-flight listener below,

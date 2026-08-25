@@ -189,8 +189,17 @@ function useDenomination(): [Denom, (d: Denom) => void, () => void] {
   const set = useCallback((d: Denom) => {
     setDenom(d);
     void browser.storage.local.set({ [DENOM_KEY]: d });
+    // The reshaped figure re-strikes (see restrikeBalance in balance-strike.ts):
+    // reconciled glyph spans would otherwise mix mid-flicker reuse with fresh
+    // mounts, and the figure changed — the sign relights. Also covers a toggle
+    // to fiat before the rate arrives: the arming is held until the figure is
+    // ready, and strikes when it is.
+    restrikeBalance();
   }, []);
   const cycle = useCallback(() => {
+    // Outside the updater: side effects in a state updater run twice under
+    // StrictMode's double-invoke.
+    restrikeBalance();
     setDenom((cur) => {
       const next = DENOM_ORDER[(DENOM_ORDER.indexOf(cur) + 1) % DENOM_ORDER.length];
       void browser.storage.local.set({ [DENOM_KEY]: next });
@@ -416,10 +425,29 @@ export function Wallet({
   // balance would arrive already lit. The settling signal is an unconfirmed tx,
   // NOT `pulse` — that also covers syncing and a pending rate, and neither of
   // those is a confirmation.
+  // The Animations preference, read here for the strike (the Settings toggle
+  // and the Scene hold their own subscriptions). `loaded` gates the DECISION,
+  // not just the rendering: the preference starts at its optimistic default,
+  // and striking before it lands would consume the arming for someone who has
+  // animations off — the same window App guards the intro cinematic against.
+  // With animations off, `ready` stays false, the arming is held, and turning
+  // animations back on strikes the figure then showing.
+  const [animated, , animationsLoaded] = useAnimations();
   const strikeEpoch = useBalanceStrike(
     String(total.totalSats),
     hasUnconfirmed,
-    !(hidden || !sync) && (denom !== "fiat" || rate != null),
+    // `ready` means "real numerals are ON SCREEN" — including the view. The
+    // hook lives above the `view !== "home"` early return (hooks can't be
+    // conditional), so without this a denomination change from the Display
+    // dropdown in Settings would consume the re-strike arming on a hero that
+    // isn't rendered, and the ~1.3s window would lapse before the return
+    // home. Held here instead, the arming spends on the false→true edge when
+    // the home view remounts.
+    homeActive &&
+      !(hidden || !sync) &&
+      (denom !== "fiat" || rate != null) &&
+      animationsLoaded &&
+      animated,
   );
   useEffect(() => {
     if (fiat === "USD" || !holdsPeggedToken) {
@@ -2448,13 +2476,13 @@ function SettingsBody({
           <div className="flex items-center justify-between gap-3">
             <span className="flex flex-col">
               <span className="text-xs font-medium text-[color:var(--text-secondary)]">
-                Background animation
+                Animations
               </span>
               <span className="text-[11px] text-[color:var(--text-subtle)]">
-                Lock and intro screens only
+                Background scene and the balance strike
               </span>
             </span>
-            <Switch checked={animated} onChange={setAnimated} label="Background animation" />
+            <Switch checked={animated} onChange={setAnimated} label="Animations" />
           </div>
         </div>
       </Card>

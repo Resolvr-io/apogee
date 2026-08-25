@@ -11,7 +11,8 @@ import { STRIKE_MS, getArmVersion, shouldStrike, subscribeToArming } from "@/sid
  * playing can actually replay — the glyph spans are only mounted fresh on the
  * warmup false→true edge, so a boolean would coalesce invisibly into the
  * running animation. Callers pass `warmup = epoch > 0` and key the rendered
- * figure by the epoch.
+ * figure by the epoch, which is also what makes a denomination toggle
+ * re-strike cleanly (see restrikeBalance's callers in Wallet).
  *
  * Decided in an effect rather than during render: StrictMode double-invokes
  * render in development, so consuming the one-shot there would hand `false` to

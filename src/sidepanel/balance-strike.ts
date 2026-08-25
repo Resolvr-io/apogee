@@ -91,7 +91,8 @@ export function armBalanceStrike(): void {
 }
 
 /** Re-arm AND nudge a mounted hero, so its figure re-strikes even unchanged —
- *  the manual sync (see Wallet's `refresh`). */
+ *  the manual sync (see Wallet's `refresh`) and the denomination toggle: the
+ *  figure reshapes either way, and the sign relights with it. */
 export function restrikeBalance(): void {
   arm(true);
 }

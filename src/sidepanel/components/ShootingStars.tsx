@@ -1,6 +1,6 @@
 // Occasional shooting stars for the lock/intro sky. A dedicated canvas on a
 // continuous rAF loop, mounted only while the animated backdrop is shown (locked
-// + Background animation on — see Scene). A meteor streaks the upper sky roughly
+// + Animations on — see Scene). A meteor streaks the upper sky roughly
 // every 9–25s, on a shallow downward diagonal, fading in and out. The base
 // Starfield only redraws on scroll, so meteors live on their own layer here.
 // Meteor logic mirrors the Astrolabe site's starfield.
