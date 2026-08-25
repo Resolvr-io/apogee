@@ -8,6 +8,7 @@
 // keystore. Requests are plain JSON (structured-clone over chrome.runtime).
 
 import type { LiquidNetwork, WalletInfo, WalletSigner } from "@/keystore/keystore";
+import type { PasskeyKind } from "@/keystore/slots";
 import type { TxManifestBundleHash } from "@/tx-manifest/registry";
 import type { TxManifestHistoryAnnotation } from "@/tx-manifest/history";
 import type {
@@ -605,6 +606,14 @@ export type WalletRequest =
   | { type: "wallet/stepUp"; panelSession?: string; password: string }
   // Unlock-attempt throttle state (fails / cooldown / hard lock) for the UI.
   | { type: "wallet/getUnlockThrottle" }
+  // Passkey unlock (docs/passkey-unlock.md). The PRF bytes travel BASE64: a
+  // Uint8Array in a runtime message arrives as a plain object and would
+  // silently derive the wrong key — the router decodes and length-checks.
+  | { type: "wallet/listPasskeys" }
+  | { type: "wallet/passkeyChallenge" } // enrolled ids + vault PRF salt, or null
+  | { type: "wallet/enrollPasskey"; prf: string; credentialId: string; kind: PasskeyKind }
+  | { type: "wallet/unlockWithPasskey"; panelSession?: string; prf: string }
+  | { type: "wallet/removePasskey"; id: string }
   // password (first run) initializes the keystore as part of the same call.
   | { type: "wallet/create"; password?: string; label: string; network: LiquidNetwork }
   // NOTE: `wallet/restore` is deliberately NOT here — its plaintext mnemonic

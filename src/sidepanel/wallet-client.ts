@@ -28,6 +28,8 @@ import type {
   WalletInfo,
   WalletSigner,
 } from "@/keystore/keystore";
+import { bytesToBase64 } from "@/keystore/crypto";
+import type { PasskeyInfo } from "@/keystore/keystore";
 import { browser } from "@/lib/ext";
 import type { UpdateCheck } from "@/lib/version-check";
 
@@ -73,6 +75,26 @@ export const wallet = {
   lock: () => call<void>({ type: "wallet/lock" }),
   reset: () => call<void>({ type: "wallet/reset" }),
   verifyPassword: (password: string) => call<boolean>({ type: "wallet/verifyPassword", password }),
+  /** Passkey surface (docs/passkey-unlock.md). The raw PRF bytes are encoded
+   *  here, at the client boundary — a Uint8Array in a runtime message arrives
+   *  as a plain object and would silently derive the wrong key. */
+  listPasskeys: () => call<PasskeyInfo[]>({ type: "wallet/listPasskeys" }),
+  passkeyChallenge: () =>
+    call<{ credentialIds: string[]; prfSalt: string } | null>({ type: "wallet/passkeyChallenge" }),
+  enrollPasskey: (
+    prf: Uint8Array<ArrayBuffer>,
+    credentialId: string,
+    kind: "device" | "cross-device" | "security-key",
+  ) =>
+    call<PasskeyInfo>({
+      type: "wallet/enrollPasskey",
+      prf: bytesToBase64(prf),
+      credentialId,
+      kind,
+    }),
+  unlockWithPasskey: (prf: Uint8Array<ArrayBuffer>) =>
+    call<void>({ type: "wallet/unlockWithPasskey", panelSession: PANEL_SESSION, prf: bytesToBase64(prf) }),
+  removePasskey: (id: string) => call<void>({ type: "wallet/removePasskey", id }),
   /** Re-verify the password on panel reopen while auto-lock is "never". */
   stepUp: (password: string) =>
     call<boolean>({ type: "wallet/stepUp", panelSession: PANEL_SESSION, password }),

@@ -18,6 +18,7 @@ if (typeof window === "undefined") {
 
 import type { LiquidNetwork } from "@/keystore/keystore";
 import * as keystore from "@/keystore/keystore";
+import { base64ToBytes } from "@/keystore/crypto";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY, ENTERPRISE_ROOTS } from "@/lib/debug";
 import { KNOWN_ASSETS } from "@/lib/asset-registry";
 import { shortenHex } from "@/lib/utils";
@@ -259,6 +260,14 @@ if (typeof browser.storage.session?.setAccessLevel === "function") {
     .catch((err: unknown) => console.error("[apogee] storage.session.setAccessLevel failed", err));
 }
 
+/** Decode a PRF payload from the wire (base64 — see protocol.ts) and check
+ *  its shape before it becomes key material. */
+function decodePrf(b64: string): Uint8Array<ArrayBuffer> {
+  const bytes = base64ToBytes(b64);
+  if (bytes.length !== 32) throw new Error("PASSKEY_BAD_PRF");
+  return bytes;
+}
+
 // wallet/* messages that count as genuine user activity and so defer the idle
 // auto-lock. Passive/polled reads (getState, sync, getTransactions, getBalance,
 // getRate, getAsset, qr, getConnectedSites, getAutoLock) are intentionally
@@ -276,6 +285,8 @@ const AUTOLOCK_DEFERRING = new Set<UiRequest["type"]>([
   "wallet/swap",
   "wallet/swapQuote",
   "wallet/revealMnemonic",
+  "wallet/enrollPasskey",
+  "wallet/unlockWithPasskey",
   "wallet/verifyPassword",
   "wallet/stepUp",
   "wallet/setAutoLock",
@@ -617,6 +628,31 @@ async function handleUi(msg: UiRequest): Promise<unknown> {
       else await browser.storage.session.remove(PANEL_STEPUP_KEY);
       return r;
     }
+
+    case "wallet/listPasskeys":
+      return keystore.listPasskeys();
+
+    case "wallet/passkeyChallenge":
+      return keystore.passkeyChallenge();
+
+    case "wallet/enrollPasskey": {
+      // Decode + length-check rather than trusting the wire's shape: the PRF
+      // output is exactly 32 bytes, and a truncated/oversized blob should fail
+      // here, loudly, not as a subtly wrong key derivation.
+      const prf = decodePrf(msg.prf);
+      return keystore.enrollPasskey(prf, { credentialId: msg.credentialId, kind: msg.kind });
+    }
+
+    case "wallet/unlockWithPasskey": {
+      const r = await keystore.unlockWithPasskey(decodePrf(msg.prf));
+      // A passkey unlock proves the user exactly as a password one does.
+      if (msg.panelSession) await setPanelStepUp(msg.panelSession, false);
+      else await browser.storage.session.remove(PANEL_STEPUP_KEY);
+      return r;
+    }
+
+    case "wallet/removePasskey":
+      return keystore.removePasskey(msg.id);
 
     case "wallet/stepUp": {
       // Same password oracle as unlock/verifyPassword, so it shares the throttle.
