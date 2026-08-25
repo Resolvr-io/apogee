@@ -13,17 +13,50 @@
 // transitively through the service worker and is not loadable there).
 
 import type { Enc, Kdf } from "./crypto";
-import { decryptString, encryptString } from "./crypto";
+import { checkVerifier, decryptString, encryptString, makeVerifier } from "./crypto";
 import type { WalletRecord } from "./keystore";
+import {
+  type KeySlot,
+  dekCheckAad,
+  generateDek,
+  makePasswordSlotWithKey,
+  sameKey,
+  unwrapDek,
+} from "./slots";
 
-/** The persisted store shape (kept in sync with keystore.ts). */
-export interface StoreShape {
+/** The pre-v3 store shape: every payload wrapped directly under the password
+ *  key, whose KDF descriptor sat at the top level. `version` is open rather
+ *  than the literal 2 because the migration engine's tests build synthetic
+ *  future versions on the same shape — the real 2→v3 step checks the version
+ *  itself. */
+/** (Type alias, not interface: it must satisfy the engine's indexed VaultStore.) */
+export type StoreV2Shape = {
   version: number;
   kdf: Kdf;
   verifier: Enc;
   wallets: Record<string, WalletRecord>;
   order: string[];
 }
+
+/** The persisted store shape from v3 on (kept in sync with keystore.ts): all
+ *  payloads under the DEK, and one wrapped copy of the DEK per unlock factor
+ *  (see slots.ts and docs/passkey-unlock.md §1). The top-level `kdf` is gone —
+ *  each password slot carries its own. */
+/** (Type alias, not interface: it must satisfy the engine's indexed VaultStore.) */
+export type StoreShape = {
+  version: 3;
+  slots: KeySlot[];
+  verifier: Enc; // password-bound — proves the password before a slot is opened
+  dekCheck: Enc; // DEK-bound — validates a session-cached key (see ensureLoaded)
+  wallets: Record<string, WalletRecord>;
+  order: string[];
+}
+
+/** Any store a migration step may consume or produce. The engine's contract
+ *  is version-stepping; which shape a step reads or writes is the step's own
+ *  business (migrateV2ToV3 narrows internally, tests use synthetic versions
+ *  that no shipped store ever had). */
+export type VaultStore = { version: number } & Record<string, unknown>;
 
 /** Envelope AAD for a given store version — see keystore.ts for the scheme. */
 export function verifierAad(version: number): string {
@@ -37,11 +70,13 @@ export function mnemonicAad(version: number, walletId: string): string {
  *  `fromVersion` to `fromVersion + 1`, under the SAME derived key. This is the
  *  shape every AAD-scheme bump needs; a migration that changes more than the
  *  envelope scheme can compose on top of it. */
-export async function rewrapEnvelopes(
-  key: CryptoKey,
-  store: StoreShape,
-  fromVersion: number,
-): Promise<StoreShape> {
+export async function rewrapEnvelopes<
+  S extends {
+    version: number;
+    verifier: Enc;
+    wallets: Record<string, WalletRecord>;
+  },
+>(key: CryptoKey, store: S, fromVersion: number): Promise<S> {
   const to = fromVersion + 1;
   // Driven by the wallets MAP, not `order`: a record that exists but fell out
   // of `order` (corrupt index) is carried through, not silently deleted — this
@@ -71,18 +106,86 @@ export async function rewrapEnvelopes(
   };
 }
 
-/** One vault migration: store at version N in, store at version N+1 out. */
-export type VaultMigration = (key: CryptoKey, store: StoreShape) => Promise<StoreShape>;
+/** One vault migration: store at version N in, store at version N+1 out. The
+ *  engine's contract is version-stepping only — what each step re-shapes is
+ *  the step's business, so the shapes are the union both ways. */
+export type VaultMigration = (key: CryptoKey, store: VaultStore) => Promise<VaultStore>;
 
 /**
- * Registered migrations, keyed by the version they upgrade FROM. Empty today:
- * no shipped vault format is older than the current one. To bump STORE_VERSION
- * to N, register the N-1 entry — normally
- * `(key, store) => rewrapEnvelopes(key, store, N - 1)` — and extend
- * migrations.test.ts. unlock()/ensureLoaded() step through this chain while the
- * vault key is live; a missing entry falls back to the reset-and-re-import path.
+ * v2 → v3 — the slot rework (docs/passkey-unlock.md §1). Every mnemonic is
+ * decrypted out of its password-wrapped v2 envelope and re-encrypted under a
+ * fresh random DEK; a single password slot wraps that DEK under the same
+ * password key (this migration changes the FORMAT, never the password), and a
+ * DEK-bound check takes the place the verifier held for session validation.
+ *
+ * Before anything is usable, every new ciphertext is decrypted back out and
+ * compared byte-for-byte with what went in — the plaintexts of every mnemonic,
+ * the DEK that comes back out of the new slot, both verifiers. The caller
+ * persists only on success, so a failure anywhere leaves the v2 vault intact
+ * and the user exactly where they were.
  */
-export const VAULT_MIGRATIONS: Record<number, VaultMigration> = {};
+export async function migrateV2ToV3(key: CryptoKey, input: VaultStore): Promise<StoreShape> {
+  if (input.version !== 2 || !("kdf" in input) || !("wallets" in input)) {
+    throw new Error("v2→v3 migration called on a store that is not v2");
+  }
+  const store = input as StoreV2Shape;
+  const dek = await generateDek();
+  const wallets: Record<string, WalletRecord> = {};
+  // Driven by the wallets MAP, not `order`: a record that fell out of `order`
+  // (corrupt index) is carried through, not silently deleted — this runs on
+  // every user's first unlock after the update, and the dropped record would
+  // be an encrypted seed.
+  for (const [id, w] of Object.entries(store.wallets)) {
+    if (!w) continue;
+    // Hardware wallets have no seed to wrap; carry them through unchanged.
+    wallets[id] = w.enc
+      ? {
+          ...w,
+          enc: await encryptString(dek, await decryptString(key, w.enc, mnemonicAad(2, id)), mnemonicAad(3, id)),
+        }
+      : w;
+  }
+  const slot = await makePasswordSlotWithKey(key, store.kdf, dek);
+  const next: StoreShape = {
+    version: 3,
+    slots: [slot],
+    verifier: await makeVerifier(key, verifierAad(3)),
+    dekCheck: await makeVerifier(dek, dekCheckAad()),
+    wallets,
+    order: store.order,
+  };
+
+  // ---- byte-verify: nothing above is trusted until it reads back identical.
+  for (const [id, w] of Object.entries(store.wallets)) {
+    if (!w?.enc) continue;
+    const from = await decryptString(key, w.enc, mnemonicAad(2, id));
+    const back = await decryptString(dek, wallets[id].enc!, mnemonicAad(3, id));
+    if (from !== back) throw new Error(`v2→v3 migration verify failed for wallet ${id}`);
+  }
+  if (!(await sameKey(dek, await unwrapDek(key, slot)))) {
+    throw new Error("v2→v3 migration verify failed: slot does not unwrap to the DEK");
+  }
+  if (!(await checkVerifier(key, next.verifier, verifierAad(3)))) {
+    throw new Error("v2→v3 migration verify failed: verifier");
+  }
+  if (!(await checkVerifier(dek, next.dekCheck, dekCheckAad()))) {
+    throw new Error("v2→v3 migration verify failed: DEK check");
+  }
+  return next;
+}
+
+/**
+ * Registered migrations, keyed by the version they upgrade FROM. v1 predates
+ * public release and has no path (reset-and-re-import, as ever). To bump
+ * STORE_VERSION to N, register the N-1 entry — a pure AAD-scheme bump is
+ * `(key, store) => rewrapEnvelopes(key, store, N - 1)`; a shape change gets a
+ * hand-written step like migrateV2ToV3 — and extend migrations.test.ts.
+ * unlock()/ensureLoaded() step through this chain while the vault key is live;
+ * a missing entry falls back to the reset-and-re-import path.
+ */
+export const VAULT_MIGRATIONS: Record<number, VaultMigration> = {
+  2: migrateV2ToV3,
+};
 
 /**
  * Whether a chain of registered migrations can carry `from` up to `target`.
@@ -111,10 +214,10 @@ export function hasMigrationPath(
  */
 export async function migrateStore(
   key: CryptoKey,
-  store: StoreShape,
+  store: VaultStore,
   target: number,
   migrations: Record<number, VaultMigration> = {},
-): Promise<StoreShape> {
+): Promise<VaultStore> {
   if (store.version > target) {
     throw new Error(`vault version ${store.version} is newer than this build supports (${target})`);
   }

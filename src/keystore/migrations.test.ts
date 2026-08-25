@@ -12,7 +12,7 @@ import {
 } from "./crypto";
 import type { WalletRecord } from "./keystore";
 import {
-  type StoreShape,
+  type StoreV2Shape,
   type VaultMigration,
   hasMigrationPath,
   migrateStore,
@@ -45,7 +45,7 @@ function wallet(id: string, enc?: Enc): WalletRecord {
 
 /** A store at `version` whose envelopes (verifier + every mnemonic) are bound
  *  to that version's AAD scheme. */
-async function storeAt(version: number, mnemonics: Record<string, string>): Promise<StoreShape> {
+async function storeAt(version: number, mnemonics: Record<string, string>): Promise<StoreV2Shape> {
   const key = await testKey();
   const wallets: Record<string, WalletRecord> = {};
   for (const [id, mnemonic] of Object.entries(mnemonics)) {
@@ -99,8 +99,8 @@ describe("rewrapEnvelopes", () => {
 
 describe("hasMigrationPath", () => {
   const m: Record<number, VaultMigration> = {
-    2: (k, s) => rewrapEnvelopes(k, s, 2),
-    3: (k, s) => rewrapEnvelopes(k, s, 3),
+    2: (k, s) => rewrapEnvelopes(k, s as StoreV2Shape, 2),
+    3: (k, s) => rewrapEnvelopes(k, s as StoreV2Shape, 3),
   };
 
   it("is true only when every step on the chain is registered", () => {
@@ -122,10 +122,10 @@ describe("migrateStore", () => {
     const key = await testKey();
     const store = await storeAt(2, { a: "alpha phrase" });
     const migrations: Record<number, VaultMigration> = {
-      2: (k, s) => rewrapEnvelopes(k, s, 2),
-      3: (k, s) => rewrapEnvelopes(k, s, 3),
+      2: (k, s) => rewrapEnvelopes(k, s as StoreV2Shape, 2),
+      3: (k, s) => rewrapEnvelopes(k, s as StoreV2Shape, 3),
     };
-    const out = await migrateStore(key, store, 4, migrations);
+    const out = (await migrateStore(key, store, 4, migrations)) as StoreV2Shape;
     expect(out.version).toBe(4);
     expect(await decryptString(key, out.wallets.a.enc!, mnemonicAad(4, "a"))).toBe("alpha phrase");
     expect(await checkVerifier(key, out.verifier, verifierAad(4))).toBe(true);
@@ -134,7 +134,7 @@ describe("migrateStore", () => {
   it("is a no-op when the store is already at target", async () => {
     const key = await testKey();
     const store = await storeAt(4, { a: "alpha phrase" });
-    const out = await migrateStore(key, store, 4, { 2: (k, s) => rewrapEnvelopes(k, s, 2) });
+    const out = await migrateStore(key, store, 4, { 2: (k, s) => rewrapEnvelopes(k, s as StoreV2Shape, 2) });
     expect(out).toBe(store);
   });
 
@@ -165,7 +165,7 @@ describe("migrateStore", () => {
     const key = await testKey();
     const store = await storeAt(2, { a: "alpha phrase" });
     const broken: Record<number, VaultMigration> = {
-      2: (k, s) => rewrapEnvelopes(k, s, 2),
+      2: (k, s) => rewrapEnvelopes(k, s as StoreV2Shape, 2),
       3: () => Promise.reject(new Error("boom")),
     };
     await expect(migrateStore(key, store, 4, broken)).rejects.toThrow("boom");

@@ -27,12 +27,23 @@ import {
 import { isValidFingerprint } from "@/lib/utils";
 import {
   type StoreShape,
+  type StoreV2Shape,
+  type VaultStore,
   VAULT_MIGRATIONS,
   hasMigrationPath,
   migrateStore,
   mnemonicAad as mnemonicAadFor,
   verifierAad as verifierAadFor,
 } from "./migrations";
+import {
+  type KeySlot,
+  type PasswordSlot,
+  dekCheckAad,
+  generateDek,
+  makePasswordSlotWithKey,
+  unwrapDek,
+  wrapDek,
+} from "./slots";
 
 export type LiquidNetwork = "liquid" | "liquidtestnet" | "regtest";
 
@@ -51,10 +62,12 @@ const STORE_KEY = "apogee_keystore";
 const ACTIVE_KEY = "apogee_active_wallet";
 const SESSION_KEY = "apogee_session";
 const THROTTLE_KEY = "apogee_unlock_throttle";
-// v2 binds AES-GCM AAD to each envelope. Older vaults migrate in place while
-// unlocked (see migrations.ts) — v1 predates public release and has no
-// registered path, so those still require a reset.
-const STORE_VERSION = 2;
+// v3 puts every payload under one random data key (the DEK) and wraps that
+// key in per-factor slots (see slots.ts and docs/passkey-unlock.md §1); the
+// in-memory `dek` below is that key, not the password-derived key. v2 vaults
+// migrate in place while unlocked (see migrations.ts) — v1 predates public
+// release and has no registered path, so those still require a reset.
+const STORE_VERSION = 3;
 
 /** A wallet record as persisted (mnemonic encrypted, descriptor cleartext). */
 export interface WalletRecord {
@@ -100,7 +113,9 @@ export interface NewWallet {
 }
 
 // ---- in-memory state (cleared on lock / SW eviction) ----
-let derivedKey: CryptoKey | null = null;
+// The DEK — the single key every payload is encrypted under, unwrapped from a
+// slot at unlock. The password key exists only for the unwrap and the verifier.
+let dek: CryptoKey | null = null;
 const unlockedMnemonics = new Map<string, string>(); // walletId → mnemonic
 
 // ---- unlock attempt throttling ----
@@ -197,11 +212,31 @@ async function sessionClear(key: string): Promise<void> {
   await browser.storage.session.remove(key);
 }
 
-async function loadStore(): Promise<StoreShape | undefined> {
-  return localGet<StoreShape>(STORE_KEY);
+// Either shape can be on disk — v2 until an unlocked migration rewrites it.
+async function loadStore(): Promise<StoreV2Shape | StoreShape | undefined> {
+  return localGet<StoreV2Shape | StoreShape>(STORE_KEY);
 }
-async function saveStore(store: StoreShape): Promise<void> {
+// Accepts either shape: mutations of shared fields (wallets/order) can run
+// against a not-yet-migrated store, and writing it back unchanged is exactly
+// what it read. Envelope/key mutations are version-guarded at their sites.
+async function saveStore(store: StoreV2Shape | StoreShape): Promise<void> {
   await localSet(STORE_KEY, store);
+}
+
+/** Narrow a loaded store to the current shape — valid only once its version
+ *  has been checked or a migration has landed it there. */
+function asCurrent(store: VaultStore): StoreShape {
+  if (store.version !== STORE_VERSION) throw new Error("vault format needs upgrading");
+  return store as StoreShape;
+}
+
+/** The vault's password slot. Exactly one always exists — a future passkey is
+ *  an ADDITIONAL door and removing the password slot is refused at this layer
+ *  (see docs/passkey-unlock.md, "the password slot is permanent"). */
+function passwordSlotOf(store: StoreShape): PasswordSlot {
+  const slot = store.slots.find((s): s is PasswordSlot => s.type === "password");
+  if (!slot) throw new Error("vault has no password slot");
+  return slot;
 }
 
 function genId(): string {
@@ -215,7 +250,7 @@ export async function isInitialized(): Promise<boolean> {
 }
 
 export function isLocked(): boolean {
-  return derivedKey === null;
+  return dek === null;
 }
 
 function toInfo(w: WalletRecord): WalletInfo {
@@ -308,16 +343,18 @@ export async function initialize(password: string): Promise<void> {
   if (await isInitialized()) throw new Error("Keystore already initialized");
   const kdf = newKdf();
   const key = await deriveKey(password, kdf);
+  const freshDek = await generateDek();
   const store: StoreShape = {
     version: STORE_VERSION,
-    kdf,
+    slots: [await makePasswordSlotWithKey(key, kdf, freshDek)],
     verifier: await makeVerifier(key, verifierAad()),
+    dekCheck: await makeVerifier(freshDek, dekCheckAad()),
     wallets: {},
     order: [],
   };
   await saveStore(store);
-  derivedKey = key;
-  await persistSession(key);
+  dek = freshDek;
+  await persistSession(freshDek);
   await clearUnlockFailures(); // fresh vault — a stale counter must not guard it
 }
 
@@ -344,7 +381,10 @@ export async function unlock(password: string): Promise<void> {
     );
   }
   await assertAttemptAllowed();
-  const key = await deriveKey(password, store.kdf);
+  // The KDF descriptor moved into the password slot in v3; a v2 store still
+  // carries it at the top level.
+  const kdf = "kdf" in store ? store.kdf : passwordSlotOf(asCurrent(store)).kdf;
+  const key = await deriveKey(password, kdf);
   // Verify against the version ON DISK — the verifier is version-bound, and the
   // password must prove itself against the vault as it exists, pre-migration.
   if (!(await checkVerifier(key, store.verifier, verifierAadFor(store.version)))) {
@@ -352,12 +392,13 @@ export async function unlock(password: string): Promise<void> {
     throw new Error("Incorrect password");
   }
   await clearUnlockFailures();
+  let vault: StoreV2Shape | StoreShape = store;
   if (store.version < STORE_VERSION) {
     // One-step re-wrap while the key is live (see migrations.ts). Nothing is
     // persisted unless every step succeeds, so a failure leaves the old-format
     // vault intact and lands on the same recovery message as before.
     try {
-      const vault = await migrateStore(key, store, STORE_VERSION, VAULT_MIGRATIONS);
+      vault = asCurrent(await migrateStore(key, store, STORE_VERSION, VAULT_MIGRATIONS));
       await saveStore(vault);
     } catch (err) {
       // Diagnostic only — the error is an OperationError/quota error, not key
@@ -369,17 +410,20 @@ export async function unlock(password: string): Promise<void> {
       );
     }
   }
+  // The password key's job ends here: it opens the password slot, and the DEK
+  // that comes out is what the session holds and every payload decrypts under.
+  const opened = await unwrapDek(key, passwordSlotOf(asCurrent(vault)));
   // Mnemonics are NOT decrypted here — getMnemonic decrypts on demand, so a
   // plaintext seed enters SW memory only while that wallet is actually in use,
   // never all wallets at once for the length of the session.
   unlockedMnemonics.clear();
-  derivedKey = key;
-  await persistSession(key);
+  dek = opened;
+  await persistSession(opened);
 }
 
 /** Wipe all in-memory secrets and the session cache. */
 export async function lock(): Promise<void> {
-  derivedKey = null;
+  dek = null;
   unlockedMnemonics.clear();
   await sessionClear(SESSION_KEY);
 }
@@ -391,7 +435,7 @@ export async function lock(): Promise<void> {
  * the recovery phrase). Leaves the app uninitialized.
  */
 export async function reset(): Promise<void> {
-  derivedKey = null;
+  dek = null;
   unlockedMnemonics.clear();
   await sessionClear(SESSION_KEY);
   // THROTTLE_KEY goes too: the counter guards the vault being destroyed, and a
@@ -423,7 +467,7 @@ export async function verifyPassword(password: string): Promise<boolean> {
   // here would burn the unlock throttle for a correct password.
   if (store.version !== STORE_VERSION) throw new Error("Keystore format needs upgrading — unlock first");
   await assertAttemptAllowed();
-  const key = await deriveKey(password, store.kdf);
+  const key = await deriveKey(password, passwordSlotOf(asCurrent(store)).kdf);
   const ok = await checkVerifier(key, store.verifier, verifierAad());
   if (ok) await clearUnlockFailures();
   else await recordUnlockFailure();
@@ -440,42 +484,41 @@ export async function changePassword(oldPassword: string, newPassword: string): 
   // against an older store would corrupt every seed in the vault.
   if (store.version !== STORE_VERSION) throw new Error("Keystore format needs upgrading — unlock first");
   await assertAttemptAllowed();
-  const oldKey = await deriveKey(oldPassword, store.kdf);
+  const oldKey = await deriveKey(oldPassword, passwordSlotOf(asCurrent(store)).kdf);
   if (!(await checkVerifier(oldKey, store.verifier, verifierAad()))) {
     await recordUnlockFailure();
     throw new Error("Incorrect password");
   }
   await clearUnlockFailures();
+  const current = asCurrent(store);
+  const oldSlot = passwordSlotOf(current);
+  // v3: the DEK is unwrapped once and re-wrapped under the new password — no
+  // mnemonic ciphertext moves, which is the whole point of the slot design:
+  // there is exactly one wrap site to remember, and forgetting is impossible.
+  const openedDek = await unwrapDek(oldKey, oldSlot);
   const kdf = newKdf();
   const newKey = await deriveKey(newPassword, kdf);
-  const wallets: Record<string, WalletRecord> = {};
-  for (const id of store.order) {
-    const w = store.wallets[id];
-    if (!w) continue;
-    // Hardware wallets have no seed to re-wrap; carry them through unchanged.
-    wallets[id] = w.enc
-      ? {
-          ...w,
-          enc: await encryptString(newKey, await decryptString(oldKey, w.enc, mnemonicAad(id)), mnemonicAad(id)),
-        }
-      : w;
+  const slots: KeySlot[] = [];
+  for (const s of current.slots) {
+    slots.push(s === oldSlot ? { ...s, kdf, wrappedDek: await wrapDek(openedDek, newKey, s.id) } : s);
   }
   const next: StoreShape = {
-    ...store,
-    kdf,
+    ...current,
+    slots,
     verifier: await makeVerifier(newKey, verifierAad()),
-    wallets,
   };
   await saveStore(next);
-  derivedKey = newKey;
-  await persistSession(newKey);
+  // The DEK is unchanged — the vault stays unlocked and the session stays
+  // valid; dekCheck and every wallet envelope are byte-identical.
+  dek = openedDek;
+  await persistSession(openedDek);
 }
 
 // ---- wallet management ----
 
 /** Persist a new wallet (caller derived descriptor/fingerprint via engine). */
 export async function addWallet(w: NewWallet): Promise<WalletInfo> {
-  if (isLocked() || !derivedKey) throw new Error("Keystore is locked");
+  if (isLocked() || !dek) throw new Error("Keystore is locked");
   const store = await loadStore();
   if (!store) throw new Error("Keystore not initialized");
 
@@ -494,7 +537,7 @@ export async function addWallet(w: NewWallet): Promise<WalletInfo> {
       // Refresh to the seed-derived fingerprint; the watch-only import read it
       // from the descriptor's key-origin text, which lwk doesn't verify.
       existing.fingerprint = w.fingerprint;
-      existing.enc = await encryptString(derivedKey, w.mnemonic, mnemonicAad(existing.id));
+      existing.enc = await encryptString(dek, w.mnemonic, mnemonicAad(existing.id));
       await saveStore(store);
     }
     unlockedMnemonics.set(existing.id, w.mnemonic);
@@ -509,7 +552,7 @@ export async function addWallet(w: NewWallet): Promise<WalletInfo> {
     signer: "local",
     descriptor: w.descriptor,
     fingerprint: w.fingerprint,
-    enc: await encryptString(derivedKey, w.mnemonic, mnemonicAad(id)),
+    enc: await encryptString(dek, w.mnemonic, mnemonicAad(id)),
     createdAt: Date.now(),
   };
   store.wallets[id] = record;
@@ -535,7 +578,7 @@ export interface NewHardwareWallet {
  * lock model is uniform; signing is delegated to the device.
  */
 export async function addHardwareWallet(w: NewHardwareWallet): Promise<WalletInfo> {
-  if (isLocked() || !derivedKey) throw new Error("Keystore is locked");
+  if (isLocked() || !dek) throw new Error("Keystore is locked");
   const store = await loadStore();
   if (!store) throw new Error("Keystore not initialized");
   // The fingerprint is what verifies the device signs for this wallet; refuse to
@@ -619,13 +662,13 @@ export async function getDescriptor(id: string): Promise<string> {
  *  warm every wallet's seed, so plaintext mnemonics exist in SW memory one at a
  *  time, only for wallets that actually sign. */
 export async function getMnemonic(id: string): Promise<string> {
-  if (isLocked() || !derivedKey) throw new Error("Keystore is locked");
+  if (isLocked() || !dek) throw new Error("Keystore is locked");
   const cached = unlockedMnemonics.get(id);
   if (cached) return cached;
   const store = await loadStore();
   const rec = store?.wallets[id];
   if (!rec?.enc) throw new Error("No local seed for this wallet (hardware signer)");
-  const mnemonic = await decryptString(derivedKey, rec.enc, mnemonicAad(id));
+  const mnemonic = await decryptString(dek, rec.enc, mnemonicAad(id));
   unlockedMnemonics.set(id, mnemonic);
   return mnemonic;
 }
@@ -641,7 +684,7 @@ async function persistSession(key: CryptoKey): Promise<void> {
  * so signing survives service-worker eviction without re-prompting.
  */
 export async function ensureLoaded(): Promise<void> {
-  if (derivedKey) return;
+  if (dek) return;
   const sess = await sessionGet<{ k: string }>(SESSION_KEY);
   if (!sess?.k) return; // genuinely locked
   const store = await loadStore();
@@ -651,30 +694,40 @@ export async function ensureLoaded(): Promise<void> {
   }
   if (store.version !== STORE_VERSION && !hasMigrationPath(store.version, STORE_VERSION, VAULT_MIGRATIONS)) {
     // Unmigratable here too (corrupt version field or a pruned chain entry):
-    // the verifier check below would fail against an AAD scheme this build
-    // never wrote, and we'd drop a perfectly good session for no reason.
+    // the checks below would fail against a scheme this build never wrote, and
+    // we'd drop a perfectly good session for no reason.
     await sessionClear(SESSION_KEY);
     return;
   }
   const key = await importKeyRaw(sess.k);
-  if (!(await checkVerifier(key, store.verifier, verifierAadFor(store.version)))) {
-    await sessionClear(SESSION_KEY); // stale session (password changed/tamper)
-    return;
-  }
   if (store.version < STORE_VERSION) {
-    // The cached session key IS the vault key, so the re-wrap can run here too —
-    // a browser that stayed open across an update migrates without a prompt. On
-    // any failure, drop the session and let unlock() retry with the password.
+    // A pre-v3 session caches the PASSWORD key, and it is a valid vault key,
+    // so the migration can run here too — a browser that stayed open across an
+    // update migrates without a prompt. Afterwards the session is upgraded to
+    // the DEK the migrated vault unwraps to. On any failure, drop the session
+    // and let unlock() retry with the password.
     try {
-      const vault = await migrateStore(key, store, STORE_VERSION, VAULT_MIGRATIONS);
+      const vault = asCurrent(await migrateStore(key, store, STORE_VERSION, VAULT_MIGRATIONS));
       await saveStore(vault);
+      const opened = await unwrapDek(key, passwordSlotOf(asCurrent(vault)));
+      unlockedMnemonics.clear();
+      dek = opened;
+      await persistSession(opened);
     } catch (err) {
       console.warn("vault migration failed", err);
       await sessionClear(SESSION_KEY);
-      return;
     }
+    return;
+  }
+  // v3 sessions cache the DEK. The DEK-bound check (not the password-bound
+  // verifier — no password is involved here) is what drops a stale or foreign
+  // key: a pre-v3 session key against a migrated store fails it and lands on
+  // the password prompt, which is the correct place for it.
+  if (!(await checkVerifier(key, asCurrent(store).dekCheck, dekCheckAad()))) {
+    await sessionClear(SESSION_KEY);
+    return;
   }
   // Same as unlock(): recover the key, decrypt nothing eagerly.
   unlockedMnemonics.clear();
-  derivedKey = key;
+  dek = key;
 }
