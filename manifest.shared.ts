@@ -17,6 +17,14 @@ const hasEnterprise = (mode: string): boolean => {
 // gateway for contract reads during dev. Identical across targets.
 export function hostPermissions(mode: string): string[] {
   return [
+    // WebAuthn RP ID for passkey unlock (docs/passkey-unlock.md §4): an
+    // extension origin cannot be a registrable domain, so the extension claims
+    // this first-party one (Chrome 122+). Permanent once SHIPPED — every
+    // credential ever enrolled is baked to it — and it costs a one-time
+    // re-confirmation prompt for existing users on update, which the release
+    // notes must call out. This branch adds it for testing; the ship/no-ship
+    // call stays with the release decision.
+    "https://apogee.resolvr.io/*",
     ...(hasEnterprise(mode)
       ? ["https://enterprise.blockstream.info/*", "https://login.blockstream.com/*"]
       : []),

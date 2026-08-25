@@ -14,6 +14,9 @@ import {
   ArrowUpRight,
   Activity,
   ChevronDown,
+  Fingerprint,
+  Plus,
+  X,
   ChevronLeft,
   ChevronRight,
   ExternalLink,
@@ -49,6 +52,8 @@ import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS, DEMO_UTXOS, useDemoFunds } from "@
 import { restrikeBalance } from "@/sidepanel/balance-strike";
 import { useBalanceStrike } from "@/sidepanel/balance-warmup";
 import { useHeroCollapse } from "@/sidepanel/hero-collapse";
+import type { PasskeyKind } from "@/keystore/slots";
+import { usePasskeyEnroll } from "@/sidepanel/use-passkey-enroll";
 import { moonRise, resetSceneScroll, setSceneScroll } from "@/sidepanel/scene-scroll";
 import { cn, shortenHex } from "@/lib/utils";
 import { browser } from "@/lib/ext";
@@ -156,9 +161,19 @@ function usableRate(r: number | null): number | null {
  */
 type SyncKind = "initial" | "manual" | "background";
 
+/** Settings copy for where a passkey lives — captured at enrollment, because
+ *  it can never be fetched retroactively without another ceremony. */
+const PASSKEY_KIND_LABEL: Record<PasskeyKind, string> = {
+  device: "This device",
+  "cross-device": "Cross-device",
+  "security-key": "Security key",
+};
+
 // Tap-to-cycle order — matches the Display settings dropdown (Sats > LBTC > Fiat).
 const DENOM_ORDER: Denom[] = ["sats", "btc", "fiat"];
 const DENOM_KEY = "apogee:denomination";
+// Dismissing the one-time passkey offer is forever — "not now" means now.
+const PASSKEY_OFFER_KEY = "apogee:passkeyOfferDismissed";
 const FIAT_KEY = "apogee:fiat";
 const FIAT_OPTIONS = ["USD", "EUR", "GBP", "CAD", "AUD", "CHF", "JPY"];
 
@@ -272,6 +287,28 @@ export function Wallet({
   const collapse = useHeroCollapse(scrollRef, homeActive);
   const { compact } = collapse;
   const figureBtnRef = useRef<HTMLButtonElement>(null);
+  // One-time passkey offer: the vault holds a local-seed wallet, no passkey is
+  // enrolled, a real ceremony could run here, and it hasn't been dismissed —
+  // dismissal persists and never nags again. (Jade and watch-only wallets hold
+  // no seed, so unlock gates nothing for them and the offer stays quiet.)
+  const passkeyEnroll = usePasskeyEnroll();
+  const [offerDismissed, setOfferDismissed] = useState(true);
+  useEffect(() => {
+    void browser.storage.local.get(PASSKEY_OFFER_KEY).then((o) => {
+      setOfferDismissed(o[PASSKEY_OFFER_KEY] === true);
+    });
+  }, []);
+  const hasLocalSeed = state.wallets.some((w) => (w.signer ?? "local") === "local");
+  const showPasskeyOffer =
+    homeActive &&
+    hasLocalSeed &&
+    passkeyEnroll.supported &&
+    passkeyEnroll.passkeys.length === 0 &&
+    !offerDismissed;
+  function dismissPasskeyOffer() {
+    setOfferDismissed(true);
+    void browser.storage.local.set({ [PASSKEY_OFFER_KEY]: true });
+  }
 
   // Folding hides whatever was focused in the folded rows — visibility: hidden
   // dumps focus on <body> and loses the user's place in the tab order. Hand it
@@ -1020,6 +1057,51 @@ export function Wallet({
             costs the list's content exactly one pixel of offset. */}
         <div ref={collapse.sentinelRef} aria-hidden className="h-px w-full" />
         <ErrorText>{error}</ErrorText>
+        {showPasskeyOffer && (
+          <div className="apogee-panel mb-3 flex flex-col gap-2 rounded-xl border border-[color:var(--border-default)] p-3">
+            <div className="flex items-start justify-between gap-2">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-[color:var(--text-strong)]">
+                <Fingerprint size={13} />
+                Unlock with your fingerprint
+              </span>
+              <button
+                type="button"
+                aria-label="Dismiss"
+                onClick={dismissPasskeyOffer}
+                className="icon-btn size-6 shrink-0"
+              >
+                <X size={12} />
+              </button>
+            </div>
+            <p className="text-[11px] leading-relaxed text-[color:var(--text-subtle)]">
+              Skip the password on every unlock — use this device&rsquo;s passkey instead. Your
+              password always works.
+            </p>
+            <div className="flex items-center justify-between">
+              <Button
+                variant="secondary"
+                className="h-9 px-3 text-xs"
+                disabled={passkeyEnroll.busy}
+                onClick={() => {
+                  void passkeyEnroll.enroll().then((ok) => {
+                    if (ok) dismissPasskeyOffer();
+                  });
+                }}
+              >
+                {passkeyEnroll.busy ? <Spinner className="size-4" /> : null}
+                Set up passkey
+              </Button>
+              <button
+                type="button"
+                onClick={dismissPasskeyOffer}
+                className="text-[11px] text-[color:var(--text-subtle)] hover:underline"
+              >
+                Not now
+              </button>
+            </div>
+            {passkeyEnroll.error && <ErrorText>{passkeyEnroll.error}</ErrorText>}
+          </div>
+        )}
         <Tokens
           sync={sync}
           hidden={hidden}
@@ -2231,6 +2313,21 @@ function SettingsBody({
     setDebugEnterprise(on);
     void browser.storage.local.set({ [DEBUG_ENTERPRISE_KEY]: on });
   }
+  // Passkeys (docs/passkey-unlock.md): shared with the home-screen offer.
+  const passkeyEnroll = usePasskeyEnroll();
+  const {
+    passkeys,
+    supported: passkeySupported,
+    busy: passkeyBusy,
+    error: passkeyError,
+    enroll: addPasskey,
+    remove: removePasskeyById,
+  } = passkeyEnroll;
+  const [confirmRemovePasskey, setConfirmRemovePasskey] = useState<string | null>(null);
+  function removePasskey(id: string) {
+    setConfirmRemovePasskey(null);
+    void removePasskeyById(id);
+  }
   // Read through the same live hook the wallet screens use, so the switch and
   // what's on screen can't disagree; this card only writes.
   const demoFundsOn = useDemoFunds();
@@ -2476,6 +2573,78 @@ function SettingsBody({
             ))}
           </select>
         </Field>
+        {(passkeySupported || passkeys.length > 0) && (
+          <div className="mt-3 flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-[color:var(--text-secondary)]">
+                Passkeys
+              </span>
+              {passkeySupported && (
+                <button
+                  type="button"
+                  onClick={() => void addPasskey()}
+                  disabled={passkeyBusy}
+                  className="inline-flex items-center gap-1 text-xs font-medium text-[color:var(--accent)] hover:underline disabled:opacity-50"
+                >
+                  <Plus size={12} />
+                  Add passkey
+                </button>
+              )}
+            </div>
+            {passkeys.map((pk) => (
+              <div
+                key={pk.id}
+                className="flex items-center justify-between gap-2 rounded-lg border border-[color:var(--border-soft)] px-3 py-2"
+              >
+                <span className="flex flex-col">
+                  <span className="text-xs text-[color:var(--text-strong)]">
+                    {PASSKEY_KIND_LABEL[pk.kind]}
+                  </span>
+                  <span className="text-[11px] text-[color:var(--text-subtle)]">
+                    Added {new Date(pk.addedAt).toLocaleDateString()}
+                  </span>
+                </span>
+                {confirmRemovePasskey === pk.id ? (
+                  <span className="flex items-center gap-2 text-[11px]">
+                    {/* WebAuthn has no delete: the credential stays in the OS
+                        password manager, and the copy says so. */}
+                    <span className="text-[color:var(--text-subtle)]">Remove? It stays in your device&rsquo;s password manager.</span>
+                    <button
+                      type="button"
+                      onClick={() => void removePasskey(pk.id)}
+                      disabled={passkeyBusy}
+                      className="font-medium text-[color:var(--danger,var(--accent))] hover:underline"
+                    >
+                      Remove
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmRemovePasskey(null)}
+                      className="font-medium text-[color:var(--text-secondary)] hover:underline"
+                    >
+                      Keep
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmRemovePasskey(pk.id)}
+                    className="text-[11px] text-[color:var(--text-subtle)] hover:text-[color:var(--text-secondary)] hover:underline"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+            ))}
+            {passkeys.length === 0 && (
+              <p className="text-[11px] text-[color:var(--text-subtle)]">
+                Unlock with a fingerprint, face, or security key instead of typing your password.
+                Your password always works.
+              </p>
+            )}
+            <ErrorText>{passkeyError}</ErrorText>
+          </div>
+        )}
       </Card>
 
       <Card>

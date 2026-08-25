@@ -85,12 +85,14 @@ export const wallet = {
     prf: Uint8Array<ArrayBuffer>,
     credentialId: string,
     kind: "device" | "cross-device" | "security-key",
+    prfSalt: string,
   ) =>
     call<PasskeyInfo>({
       type: "wallet/enrollPasskey",
       prf: bytesToBase64(prf),
       credentialId,
       kind,
+      prfSalt,
     }),
   unlockWithPasskey: (prf: Uint8Array<ArrayBuffer>) =>
     call<void>({ type: "wallet/unlockWithPasskey", panelSession: PANEL_SESSION, prf: bytesToBase64(prf) }),

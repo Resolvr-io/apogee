@@ -611,7 +611,18 @@ export type WalletRequest =
   // silently derive the wrong key — the router decodes and length-checks.
   | { type: "wallet/listPasskeys" }
   | { type: "wallet/passkeyChallenge" } // enrolled ids + vault PRF salt, or null
-  | { type: "wallet/enrollPasskey"; prf: string; credentialId: string; kind: PasskeyKind }
+  | {
+      type: "wallet/enrollPasskey";
+      prf: string;
+      credentialId: string;
+      kind: PasskeyKind;
+      // The salt the ceremony evaluated. For the vault's FIRST passkey there
+      // is nothing stored to hand the ceremony, so the panel mints it and the
+      // SW adopts it; once a passkey exists the stored salt is authoritative
+      // and a mismatch is refused (the slot would look enrolled and open for
+      // nobody).
+      prfSalt: string;
+    }
   | { type: "wallet/unlockWithPasskey"; panelSession?: string; prf: string }
   | { type: "wallet/removePasskey"; id: string }
   // password (first run) initializes the keystore as part of the same call.

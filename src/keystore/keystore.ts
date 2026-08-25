@@ -761,13 +761,19 @@ export async function passkeyChallenge(): Promise<{
 export async function enrollPasskey(
   prfOutput: Uint8Array<ArrayBuffer>,
   meta: { credentialId: string; kind: PasskeyKind },
+  /** The salt the panel's ceremony evaluated: adopted for the vault's first
+   *  passkey (nothing stored could have supplied it), cross-checked against
+   *  the stored one afterwards — a slot sealed under a salt the unlock
+   *  ceremony never asks for looks enrolled and opens for nobody. */
+  ceremonySalt: string,
 ): Promise<PasskeyInfo> {
   if (isLocked() || !dek) throw new Error("Keystore is locked");
   const store = await loadStore();
   if (!store) throw new Error("Keystore not initialized");
   if (store.version !== STORE_VERSION) throw new Error("Keystore format needs upgrading — unlock first");
   const current = asCurrent(store);
-  const slot = await enrollPasskeySlot(dek, prfOutput, meta, vaultPrfSalt(current.slots));
+  const prfSalt = vaultPrfSalt(current.slots, ceremonySalt);
+  const slot = await enrollPasskeySlot(dek, prfOutput, meta, prfSalt);
   current.slots.push(slot);
   await saveStore(current);
   return { id: slot.id, kind: slot.kind, addedAt: slot.addedAt };

@@ -4,9 +4,10 @@
 // wallet on this device). Both wipe the unusable encrypted vault first.
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, ChevronLeft, X } from "lucide-react";
+import { AlertTriangle, ChevronLeft, Fingerprint, X } from "lucide-react";
 import type { UnlockThrottle } from "@/keystore/keystore";
 import { Button, ErrorText, Field, Input, Spinner, WelcomeShell } from "@/sidepanel/components/ui";
+import { PasskeyCancelled, unlockPasskeyCeremony } from "@/sidepanel/passkey-ceremony";
 import {
   UNLOCK_BLOCKED_TEXT,
   errMessage,
@@ -33,6 +34,19 @@ export function Unlock({
   const [error, setError] = useState("");
   const [forgot, setForgot] = useState<null | "intro" | "reset">(null);
   const [confirmText, setConfirmText] = useState("");
+  // The passkey door, offered only when the vault actually has one enrolled
+  // (the challenge carries the ids + salt the ceremony needs). Read once per
+  // mount — enrolling or removing happens behind an unlocked vault.
+  const [challenge, setChallenge] = useState<{ credentialIds: string[]; prfSalt: string } | null>(
+    null,
+  );
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  useEffect(() => {
+    void wallet
+      .passkeyChallenge()
+      .then(setChallenge)
+      .catch(() => setChallenge(null));
+  }, []);
 
   // Failed-attempt throttle (enforced by the keystore; this is display-only).
   // `now` ticks once a second while a cooldown is live so the countdown renders.
@@ -100,8 +114,47 @@ export function Unlock({
     }
   }
 
+  // Deliberately NOT gated on the throttle states below: passkey failures
+  // never count toward it (nothing was guessed), a passkey unlock works while
+  // password-throttled, and a success clears the counter outright — so this
+  // door stays open exactly when the password one is closing.
+  async function unlockWithPasskey() {
+    if (!challenge || passkeyBusy) return;
+    setPasskeyBusy(true);
+    setError("");
+    try {
+      const prf = await unlockPasskeyCeremony(challenge.prfSalt, challenge.credentialIds);
+      await wallet.unlockWithPasskey(prf);
+      onDone();
+    } catch (err) {
+      const msg = errMessage(err);
+      if (err instanceof PasskeyCancelled) {
+        // A cancelled prompt is a shrug — no error, nothing spent.
+      } else if (msg.includes("PASSKEY_UNLOCK_FAILED")) {
+        setError("That passkey didn\u2019t unlock this vault. Try again, or use your password.");
+      } else if (msg.includes("PASSKEY_NO_PRF")) {
+        setError("This passkey can\u2019t unlock on this device. Your password still works.");
+      } else {
+        setError(msg);
+      }
+    } finally {
+      setPasskeyBusy(false);
+    }
+  }
+
   return (
     <WelcomeShell subtitle="Enter your password to unlock.">
+      {challenge && (
+        <div className="mb-4 flex flex-col gap-1.5">
+          <Button variant="secondary" onClick={unlockWithPasskey} disabled={passkeyBusy}>
+            {passkeyBusy ? <Spinner /> : <Fingerprint size={16} />}
+            Unlock with passkey
+          </Button>
+          <p className="text-center text-[11px] text-[color:var(--text-subtle)]">
+            Your fingerprint or face. Your password always works.
+          </p>
+        </div>
+      )}
       <form onSubmit={submit} className="flex flex-col gap-3">
         <Field label="Password">
           <Input

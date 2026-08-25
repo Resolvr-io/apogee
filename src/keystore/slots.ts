@@ -204,9 +204,17 @@ export async function enrollPasskeySlot(
  *  salt, so per-credential salts would cost one authenticator tap per enrolled
  *  device; the PRF is already keyed by the credential's own secret, so a shared
  *  salt still yields a distinct output per passkey. */
-export function vaultPrfSalt(slots: KeySlot[]): string {
+export function vaultPrfSalt(slots: KeySlot[], firstEnrollmentSalt?: string): string {
   const existing = slots.find((s): s is PasskeySlot => s.type === "passkey");
-  return existing ? existing.prfSalt : bytesToBase64(randomBytes(32));
+  if (existing) {
+    if (firstEnrollmentSalt !== undefined && firstEnrollmentSalt !== existing.prfSalt) {
+      // The ceremony evaluated a salt the vault never stored — sealing this
+      // slot would enroll a door that opens for nobody.
+      throw new Error("PASSKEY_SALT_MISMATCH");
+    }
+    return existing.prfSalt;
+  }
+  return firstEnrollmentSalt ?? bytesToBase64(randomBytes(32));
 }
 
 /**
