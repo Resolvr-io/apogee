@@ -189,8 +189,17 @@ function useDenomination(): [Denom, (d: Denom) => void, () => void] {
   const set = useCallback((d: Denom) => {
     setDenom(d);
     void browser.storage.local.set({ [DENOM_KEY]: d });
+    // The reshaped figure re-strikes (see restrikeBalance in balance-strike.ts):
+    // reconciled glyph spans would otherwise mix mid-flicker reuse with fresh
+    // mounts, and the figure changed — the sign relights. Also covers a toggle
+    // to fiat before the rate arrives: the arming is held until the figure is
+    // ready, and strikes when it is.
+    restrikeBalance();
   }, []);
   const cycle = useCallback(() => {
+    // Outside the updater: side effects in a state updater run twice under
+    // StrictMode's double-invoke.
+    restrikeBalance();
     setDenom((cur) => {
       const next = DENOM_ORDER[(DENOM_ORDER.indexOf(cur) + 1) % DENOM_ORDER.length];
       void browser.storage.local.set({ [DENOM_KEY]: next });
