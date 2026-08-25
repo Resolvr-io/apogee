@@ -4,19 +4,27 @@
 // toggle, replaying on a remount, or never firing at all under StrictMode's
 // double render).
 //
-// useBalanceStrike itself (the effect that clears a latched `strike` flag on an
-// early return) is NOT covered here: "react" is mocked below so __shouldStrike
-// can be imported without a renderer, which means the hook's own body never
-// runs. That fix is inspection-verified only.
+// The effect body inside useBalanceStrike (clearing a latched `strike` flag on an
+// early return, the timeout that ends it) is NOT covered here: "react" is mocked
+// below so __shouldStrike can be imported without a renderer, and the mocked
+// useEffect never invokes its callback. That fix is inspection-verified only.
+// The hook's *subscription* is reachable though, and pinned at the bottom — the
+// re-strike on a manual sync depends entirely on that notification firing.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Framework-free (see its own doc comment) — safe as a normal static import
 // even though "react" is mocked below.
 import { MAX_DIGIT_STRIKE_MS } from "@/sidepanel/digit-cycle";
 
-vi.mock("react", () => ({ useEffect: vi.fn(), useState: vi.fn(() => [false, vi.fn()]) }));
+vi.mock("react", () => ({
+  useEffect: vi.fn(),
+  useState: vi.fn(() => [false, vi.fn()]),
+  useSyncExternalStore: vi.fn((_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot()),
+}));
 
-const { armBalanceStrike, __shouldStrike } = await import("./balance-warmup");
+const react = await import("react");
+const { armBalanceStrike, restrikeBalance, __shouldStrike, useBalanceStrike } =
+  await import("./balance-warmup");
 // Mirrors the +100ms margin in balance-warmup.ts's STRIKE_MS — not imported
 // directly since it isn't exported (only the memo/flag lifetime need it, both
 // internal), so this is the outside view of the same window.
@@ -84,6 +92,63 @@ describe("balance strike", () => {
     expect(__shouldStrike("2157431", false)).toBe(true);
     armBalanceStrike();
     // After a lock the same figure is a first display again.
+    expect(__shouldStrike("2157431", false)).toBe(true);
+  });
+
+  it("re-strikes an unchanged figure after a manual sync", () => {
+    // The whole point of the Sync button's strike: the balance hasn't moved (a
+    // quiet poll already established that, past the memo window, and got no
+    // strike), and pressing Sync still relights the numerals.
+    expect(__shouldStrike("2157431", false)).toBe(true); // first display
+    vi.advanceTimersByTime(STRIKE_MS + 1);
+    expect(__shouldStrike("2157431", false)).toBe(false); // a poll that found nothing
+    restrikeBalance(); // the Sync button, on a successful sync
+    expect(__shouldStrike("2157431", false)).toBe(true);
+  });
+
+  it("notifies a mounted hero when a manual re-strike happens", () => {
+    // Flipping the flag isn't enough on its own — the strike is decided in an
+    // effect keyed on the balance, so a re-arm that leaves the figure unchanged
+    // has to change this snapshot for the decision to be re-run at all.
+    useBalanceStrike("2157431", false, true);
+    const call = vi.mocked(react.useSyncExternalStore).mock.calls.at(-1);
+    const [subscribe, getSnapshot] = call as unknown as [
+      (onChange: () => void) => () => void,
+      () => number,
+    ];
+
+    const onChange = vi.fn();
+    const unsubscribe = subscribe(onChange);
+    const before = getSnapshot();
+    restrikeBalance();
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(getSnapshot()).not.toBe(before);
+
+    unsubscribe();
+    restrikeBalance();
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("delivers no notification on the lock re-arm", () => {
+    // The lock paths call armBalanceStrike() while the hero is still mounted,
+    // and a notification there forces a re-render that re-runs the effect and
+    // consumes the arming on the locking screen — the next unlock would find
+    // nothing left to strike. This pin keeps arming split into a silent and a
+    // notifying half.
+    useBalanceStrike("2157431", false, true);
+    const call = vi.mocked(react.useSyncExternalStore).mock.calls.at(-1);
+    const [subscribe, getSnapshot] = call as unknown as [
+      (onChange: () => void) => () => void,
+      () => number,
+    ];
+
+    const onChange = vi.fn();
+    subscribe(onChange);
+    const before = getSnapshot();
+    armBalanceStrike(); // a lock
+    expect(onChange).not.toHaveBeenCalled();
+    expect(getSnapshot()).toBe(before);
+    // ...but it still armed: the next figure shown is a first display again.
     expect(__shouldStrike("2157431", false)).toBe(true);
   });
 });
