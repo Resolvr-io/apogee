@@ -46,7 +46,7 @@ import { KNOWN_ASSETS, policyAssetId } from "@/lib/asset-registry";
 import { type Denom, assetRows, heroSubtitle, portfolioTotal } from "@/lib/portfolio";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY } from "@/lib/debug";
 import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS, DEMO_UTXOS, useDemoFunds } from "@/lib/demo-funds";
-import { useBalanceStrike } from "@/sidepanel/balance-warmup";
+import { restrikeBalance, useBalanceStrike } from "@/sidepanel/balance-warmup";
 import { cn, shortenHex } from "@/lib/utils";
 import { browser } from "@/lib/ext";
 import { encodeStandardSeedQr } from "@/lib/seed-qr";
@@ -133,6 +133,25 @@ function useHideBalance(): [boolean, () => void] {
 function usableRate(r: number | null): number | null {
   return typeof r === "number" && Number.isFinite(r) && r > 0 ? r : null;
 }
+
+/**
+ * Why a sync happened, which is what decides how loudly it shows:
+ *
+ *   "initial"    — mount and wallet switch. Spinner and errors, no strike: the
+ *                  first figure of a session strikes on its own arming, and
+ *                  re-arming here would replay it on the remount that returning
+ *                  from the step-up screen causes.
+ *   "manual"     — the Sync button. Spinner, errors, and a re-strike of the
+ *                  numerals even if the figure is unchanged.
+ *   "background" — the 20s poll, tab focus, the settle poll, the demo toggle.
+ *                  Silent: no spinner flash, no transient error surfaced. These
+ *                  still strike when the balance genuinely moves, which is the
+ *                  point — a flicker every 20s regardless would be noise.
+ *
+ * A boolean can't carry this: "initial" and "manual" are both non-silent and
+ * differ only in the strike.
+ */
+type SyncKind = "initial" | "manual" | "background";
 
 // Tap-to-cycle order — matches the Display settings dropdown (Sats > LBTC > Fiat).
 const DENOM_ORDER: Denom[] = ["sats", "btc", "fiat"];
@@ -324,7 +343,7 @@ export function Wallet({
   // balance would arrive already lit. The settling signal is an unconfirmed tx,
   // NOT `pulse` — that also covers syncing and a pending rate, and neither of
   // those is a confirmation.
-  const warmup = useBalanceStrike(
+  const strikeEpoch = useBalanceStrike(
     String(total.totalSats),
     hasUnconfirmed,
     !(hidden || !sync) && (denom !== "fiat" || rate != null),
@@ -353,17 +372,30 @@ export function Wallet({
   // 1 USD in the display currency, or null when unknown/not needed.
   const usdToFiat = fiat === "USD" ? 1 : rate != null && rateUsd != null ? rate / rateUsd : null;
 
-  // `silent` background refreshes (the auto-poll / tab-focus) update balance and
-  // activity without flashing the sync spinner or surfacing transient errors.
   // Returns the sync result so the settle poll can detect when the balance moves.
   const refresh = useCallback(
-    async (silent = false): Promise<SyncResult | null> => {
+    async (kind: SyncKind = "initial"): Promise<SyncResult | null> => {
       if (!active) return null;
+      const silent = kind === "background";
       if (!silent) setSyncing(true);
       if (!silent) setError("");
       try {
         const result = await wallet.sync(active.id);
         const transactions = await wallet.getTransactions(active.id);
+        // Pressing Sync is an explicit "tell me where I stand", so the numerals
+        // light again even when the figure hasn't moved — the spinner stopping
+        // is otherwise the only acknowledgement, and it stops whether or not the
+        // sync found anything.
+        //
+        // restrikeBalance() rather than armBalanceStrike() because it must also
+        // nudge a still-mounted hero — see balance-warmup.ts for why the lock
+        // paths deliberately don't. Armed here rather than on the click for two
+        // reasons: the strike then runs on the fresh figure instead of the stale
+        // one, and a sync that threw gets the error notice rather than a
+        // flourish. It also has to be the same React task as the setSync below —
+        // batched into one render — or the balance landing and the arming are
+        // two passes, and the second restarts the animation mid-flicker.
+        if (kind === "manual") restrikeBalance();
         setSync(result);
         setTxs(transactions);
         return result;
@@ -378,7 +410,7 @@ export function Wallet({
   );
 
   useEffect(() => {
-    void refresh();
+    void refresh("initial");
   }, [refresh]);
 
   // After a tx lands, the new balance only appears once Esplora indexes it (a few
@@ -395,7 +427,7 @@ export function Wallet({
     const baseline = balanceRef.current;
     let polls = 0;
     const tick = async () => {
-      const result = await refresh(true);
+      const result = await refresh("background");
       polls += 1;
       if ((result && result.lbtcSats !== baseline) || polls >= 12) {
         settleTimer.current = null;
@@ -418,7 +450,7 @@ export function Wallet({
   useEffect(() => {
     if (!active) return;
     const tick = () => {
-      if (!document.hidden) void refresh(true);
+      if (!document.hidden) void refresh("background");
     };
     const id = setInterval(tick, 20_000);
     document.addEventListener("visibilitychange", tick);
@@ -497,7 +529,7 @@ export function Wallet({
     if (lastDemoFunds.current === demoFunds) return;
     lastDemoFunds.current = demoFunds;
     seenTxids.current = null;
-    void refresh(true);
+    void refresh("background");
   }, [demoFunds, refresh]);
 
   // Toast on transactions the user hasn't seen yet. The first synced load seeds
@@ -652,22 +684,31 @@ export function Wallet({
   // ways, so the denominations cannot disagree.
   const sats = total.totalSats;
   const showStars = hidden || !sync;
+  // The figure is keyed by the strike epoch so a re-strike (a Sync landing while
+  // a strike is still playing) mounts fresh glyph spans and the flicker restarts
+  // — TelemetryNumber only builds the animated spans on the warmup false→true
+  // edge, so an unchanged `warmup` would coalesce into the running animation.
   let amountNode: React.ReactNode;
   if (showStars) {
     amountNode = <HiddenValue count={5} size={16} gap={9} className="telemetry-stars" />;
   } else if (denom === "fiat") {
     amountNode =
       rate != null ? (
-        <TelemetryNumber value={formatFiat(satsToFiat(sats, rate), fiat)} wide warmup={warmup} />
+        <TelemetryNumber
+          key={strikeEpoch}
+          value={formatFiat(satsToFiat(sats, rate), fiat)}
+          wide
+          warmup={strikeEpoch > 0}
+        />
       ) : rateFailed ? (
         "—"
       ) : (
         <Spinner className="size-6" />
       );
   } else if (denom === "sats") {
-    amountNode = <TelemetryNumber value={formatSats(sats)} wide warmup={warmup} />;
+    amountNode = <TelemetryNumber key={strikeEpoch} value={formatSats(sats)} wide warmup={strikeEpoch > 0} />;
   } else {
-    amountNode = <TelemetryNumber value={formatBtc(sats)} wide warmup={warmup} />;
+    amountNode = <TelemetryNumber key={strikeEpoch} value={formatBtc(sats)} wide warmup={strikeEpoch > 0} />;
   }
   const subtitle = heroSubtitle({ denom, fiat, total, rate, missingCount });
 
@@ -681,7 +722,7 @@ export function Wallet({
           <IconButton label={hidden ? "Show balance" : "Hide balance"} onClick={toggleHidden}>
             {hidden ? <EyeOff size={16} /> : <Eye size={16} />}
           </IconButton>
-          <IconButton label="Sync" onClick={() => refresh()} disabled={syncing}>
+          <IconButton label="Sync" onClick={() => refresh("manual")} disabled={syncing}>
             <RefreshCw size={16} className={syncing ? "animate-spin" : undefined} />
           </IconButton>
         </div>
