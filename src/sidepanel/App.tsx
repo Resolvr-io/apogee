@@ -258,6 +258,11 @@ export function App() {
   const [state, setState] = useState<KeystoreState | null>(null);
   const [error, setError] = useState("");
   const [view, setView] = useState<View>("home");
+  // Bumped every time the header logo is clicked. The wallet home listens and
+  // scrolls its activity list to the top, so the logo is "home" in full: back
+  // to the balance view, the hero expanded, the newest transactions in view —
+  // even when already on the balance, deep in the list.
+  const [homeTopSeq, setHomeTopSeq] = useState(0);
   // Debug builds only: suppresses the network placard so a screenshot taken on
   // a testnet wallet reads as mainnet, matching the demo dataset.
   const demoFunds = useDemoFunds();
@@ -448,7 +453,10 @@ export function App() {
           <header className="relative z-10 flex h-14 shrink-0 items-center gap-2 px-4">
             <button
               type="button"
-              onClick={() => setView("home")}
+              onClick={() => {
+                setView("home");
+                setHomeTopSeq((n) => n + 1);
+              }}
               aria-label="Go to balance"
               className="flex items-center transition-opacity hover:opacity-80"
             >
@@ -500,6 +508,7 @@ export function App() {
               setRecovering(false);
               void refresh();
             }}
+            homeTopSeq={homeTopSeq}
           />
         </main>
         {unlocked && <ConnectionBar onManage={() => setView("settings")} />}
@@ -563,6 +572,7 @@ function Body({
   onImport,
   onExitRecovery,
   onReset,
+  homeTopSeq,
 }: {
   state: KeystoreState | null;
   error: string;
@@ -574,6 +584,7 @@ function Body({
   onImport: () => void;
   onExitRecovery: () => void;
   onReset: () => void;
+  homeTopSeq: number;
 }) {
   if (!state) {
     return (
@@ -617,6 +628,13 @@ function Body({
     return <StepUp onDone={refresh} />;
   }
   return (
-    <Wallet state={state} view={view} onView={onView} onToast={onToast} onReset={onReset} />
+    <Wallet
+      state={state}
+      view={view}
+      onView={onView}
+      onToast={onToast}
+      onReset={onReset}
+      homeTopSeq={homeTopSeq}
+    />
   );
 }
