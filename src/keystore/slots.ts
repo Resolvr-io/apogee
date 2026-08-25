@@ -16,11 +16,13 @@ import {
   type Kdf,
   base64ToBytes,
   bytesToBase64,
+  checkVerifier,
   decryptBytes,
   deriveKey,
   encryptBytes,
   exportKeyRaw,
   importKeyRaw,
+  randomBytes,
 } from "./crypto";
 
 /** A slot wrapping the DEK under the password: the PBKDF2 descriptor plus the
@@ -170,6 +172,68 @@ export async function makePasskeySlot(
 function newSlotId(): string {
   return `s_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 }
+
+/**
+ * The pure core of enrollment: derive the KEK from a ceremony's PRF output,
+ * wrap the DEK, and byte-verify that the new slot unwraps back to the live DEK
+ * before the caller persists anything. `prfSalt` is the vault-wide salt — the
+ * caller supplies the existing one, or mints the vault's first.
+ */
+export async function enrollPasskeySlot(
+  dek: CryptoKey,
+  prfOutput: Uint8Array<ArrayBuffer>,
+  meta: { credentialId: string; kind: PasskeyKind },
+  prfSalt: string,
+): Promise<PasskeySlot> {
+  const hkdfSalt = bytesToBase64(randomBytes(32));
+  const kek = await derivePasskeyKek(prfOutput, hkdfSalt);
+  const slot = await makePasskeySlot(kek, dek, {
+    credentialId: meta.credentialId,
+    prfSalt,
+    hkdfSalt,
+    kind: meta.kind,
+  });
+  if (!(await sameKey(dek, await unwrapDek(kek, slot)))) {
+    throw new Error("passkey enrollment verify failed: slot does not unwrap to the DEK");
+  }
+  return slot;
+}
+
+/** The vault-wide PRF salt, taken from any enrolled passkey slot, or a fresh
+ *  one for the vault's first. Per-VAULT by design: a get() carries exactly one
+ *  salt, so per-credential salts would cost one authenticator tap per enrolled
+ *  device; the PRF is already keyed by the credential's own secret, so a shared
+ *  salt still yields a distinct output per passkey. */
+export function vaultPrfSalt(slots: KeySlot[]): string {
+  const existing = slots.find((s): s is PasskeySlot => s.type === "passkey");
+  return existing ? existing.prfSalt : bytesToBase64(randomBytes(32));
+}
+
+/**
+ * The pure core of passkey unlock: try one PRF evaluation against every
+ * enrolled passkey slot; return the DEK if one opens AND passes the DEK-bound
+ * check, null otherwise. Null rather than throw: a failed unwrap carries no
+ * information (the throttle's job is a guessable secret, not this), and the
+ * caller decides what a miss means. A slot whose prfSalt disagrees with the
+ * salt the evaluation used simply fails to open — same outcome as the refusal.
+ */
+export async function openPasskeyDek(
+  slots: KeySlot[],
+  prfOutput: Uint8Array<ArrayBuffer>,
+  dekCheck: Enc,
+): Promise<CryptoKey | null> {
+  for (const slot of slots) {
+    if (slot.type !== "passkey") continue;
+    try {
+      const opened = await unwrapDek(await derivePasskeyKek(prfOutput, slot.hkdfSalt), slot);
+      if (await checkVerifier(opened, dekCheck, dekCheckAad(SLOT_AAD_VERSION))) return opened;
+    } catch {
+      continue; // this slot doesn't open under this evaluation — try the next
+    }
+  }
+  return null;
+}
+
 
 /** Whether two keys are the same bytes — used by the v2→v3 migration's
  *  byte-verify (the DEK that comes back out of the new slot must be the DEK

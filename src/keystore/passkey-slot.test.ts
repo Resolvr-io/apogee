@@ -8,13 +8,18 @@
 // browser-only and wait on the RP ID decision.
 
 import { describe, expect, it } from "vitest";
-import { base64ToBytes, bytesToBase64, randomBytes } from "./crypto";
+import { base64ToBytes, bytesToBase64, makeVerifier, newKdf, randomBytes } from "./crypto";
 import {
+  dekCheckAad,
   derivePasskeyKek,
+  enrollPasskeySlot,
   generateDek,
   makePasskeySlot,
+  openPasskeyDek,
   sameKey,
   unwrapDek,
+  vaultPrfSalt,
+  type PasswordSlot,
 } from "./slots";
 
 /** The fake authenticator: a credential is a secret; evaluating the PRF is
@@ -122,5 +127,66 @@ describe("passkey slot shape", () => {
     // No field carries key material: everything present is identifiers, salts,
     // and the wrapped DEK.
     expect(slot.wrappedDek.ct).not.toContain(CREDENTIAL_SECRET.join(","));
+  });
+});
+
+describe("passkey enrollment and unlock cores", () => {
+  async function vaultWithPasskey() {
+    const dek = await generateDek();
+    const prf = await fakePrfAsync(CREDENTIAL_SECRET, PRF_SALT);
+    const slot = await enrollPasskeySlot(dek, prf, { credentialId: "cred-1", kind: "device" }, PRF_SALT);
+    const dekCheck = await makeVerifier(dek, dekCheckAad(3));
+    return { dek, slot, dekCheck };
+  }
+
+  it("enrolls a slot that a later evaluation of the same credential opens", async () => {
+    const { dek, slot, dekCheck } = await vaultWithPasskey();
+    const prf = await fakePrfAsync(CREDENTIAL_SECRET, PRF_SALT); // a fresh ceremony
+    const opened = await openPasskeyDek([slot], prf, dekCheck);
+    expect(opened).toBeDefined();
+    expect(await sameKey(dek, opened!)).toBe(true);
+  });
+
+  it("vaultPrfSalt reuses the existing salt — one per vault, not per credential", async () => {
+    const { slot } = await vaultWithPasskey();
+    expect(vaultPrfSalt([slot])).toBe(slot.prfSalt);
+    expect(vaultPrfSalt([])).not.toBe(vaultPrfSalt([])); // fresh when the vault has none
+  });
+
+  it("one evaluation opens either of two enrolled credentials (the shared-salt property)", async () => {
+    const dek = await generateDek();
+    const prfSalt = PRF_SALT;
+    const secretB = randomBytes(32); // the second credential's own secret
+    const slots = [
+      await enrollPasskeySlot(dek, await fakePrfAsync(CREDENTIAL_SECRET, prfSalt), { credentialId: "a", kind: "device" }, prfSalt),
+      await enrollPasskeySlot(dek, await fakePrfAsync(secretB, prfSalt), { credentialId: "b", kind: "cross-device" }, prfSalt),
+    ];
+    const dekCheck = await makeVerifier(dek, dekCheckAad(3));
+    // One prompt's bytes come from whichever credential the user picks; either
+    // must open the vault through the shared salt.
+    for (const secret of [CREDENTIAL_SECRET, secretB]) {
+      const opened = await openPasskeyDek(slots, await fakePrfAsync(secret, prfSalt), dekCheck);
+      expect(opened).toBeDefined();
+      expect(await sameKey(dek, opened!)).toBe(true);
+    }
+  });
+
+  it("a wrong evaluation returns null (no throw) and never reports which slot failed", async () => {
+    const { slot, dekCheck } = await vaultWithPasskey();
+    const stranger = await fakePrfAsync(randomBytes(32), PRF_SALT);
+    expect(await openPasskeyDek([slot], stranger, dekCheck)).toBeNull();
+  });
+
+  it("skips password slots entirely", async () => {
+    const { dek, slot, dekCheck } = await vaultWithPasskey();
+    const passwordSlot: PasswordSlot = {
+      type: "password",
+      id: "pw",
+      kdf: { ...newKdf(), iterations: 1000 },
+      wrappedDek: { iv: "", ct: "" },
+    };
+    const prf = await fakePrfAsync(CREDENTIAL_SECRET, PRF_SALT);
+    const opened = await openPasskeyDek([passwordSlot, slot], prf, dekCheck);
+    expect(await sameKey(dek, opened!)).toBe(true);
   });
 });

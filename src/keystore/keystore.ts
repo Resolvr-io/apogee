@@ -37,11 +37,16 @@ import {
 } from "./migrations";
 import {
   type KeySlot,
+  type PasskeyKind,
+  type PasskeySlot,
   type PasswordSlot,
   dekCheckAad,
+  enrollPasskeySlot,
   generateDek,
   makePasswordSlotWithKey,
+  openPasskeyDek,
   unwrapDek,
+  vaultPrfSalt,
   wrapDek,
 } from "./slots";
 
@@ -707,6 +712,115 @@ export async function getMnemonic(id: string): Promise<string> {
   const mnemonic = await decryptString(dek, rec.enc, mnemonicAad(id));
   unlockedMnemonics.set(id, mnemonic);
   return mnemonic;
+}
+
+// ---- passkey slots (docs/passkey-unlock.md §2) ----
+
+/** Secret-free passkey view for the UI — the unlock screen's button and the
+ *  Settings list. Readable while locked: none of these fields is key
+ *  material, and the unlock screen has to know whether a passkey door exists
+ *  before asking for one. */
+export interface PasskeyInfo {
+  id: string;
+  kind: PasskeyKind;
+  addedAt: number;
+}
+
+export async function listPasskeys(): Promise<PasskeyInfo[]> {
+  const store = await loadStore();
+  if (!store || store.version !== STORE_VERSION) return [];
+  return asCurrent(store)
+    .slots.filter((s): s is PasskeySlot => s.type === "passkey")
+    .map(({ id, kind, addedAt }) => ({ id, kind, addedAt }));
+}
+
+/** What the unlock ceremony needs BEFORE any user gesture: the enrolled
+ *  credential ids (so the prompt offers exactly this vault's passkeys) and the
+ *  vault-wide PRF salt. Null when no passkey is enrolled or the store is not
+ *  current — the caller treats that as "no passkey door". */
+export async function passkeyChallenge(): Promise<{
+  credentialIds: string[];
+  prfSalt: string;
+} | null> {
+  const store = await loadStore();
+  if (!store || store.version !== STORE_VERSION) return null;
+  const slots = asCurrent(store).slots.filter((s): s is PasskeySlot => s.type === "passkey");
+  if (slots.length === 0) return null;
+  // Every passkey slot carries the same vault salt by construction (see
+  // enrollPasskey); reading the first is reading the salt.
+  return { credentialIds: slots.map((s) => s.credentialId), prfSalt: slots[0].prfSalt };
+}
+
+/**
+ * Enroll: seal the DEK under a passkey. The PRF bytes arrive from the panel's
+ * ceremony (base64 over the runtime message — a Uint8Array would arrive as a
+ * plain object and silently derive the wrong key; the router decodes and
+ * length-checks). Requires an unlocked vault — what gets sealed is the DEK —
+ * and the ceremony itself already supplied user verification.
+ */
+export async function enrollPasskey(
+  prfOutput: Uint8Array<ArrayBuffer>,
+  meta: { credentialId: string; kind: PasskeyKind },
+): Promise<PasskeyInfo> {
+  if (isLocked() || !dek) throw new Error("Keystore is locked");
+  const store = await loadStore();
+  if (!store) throw new Error("Keystore not initialized");
+  if (store.version !== STORE_VERSION) throw new Error("Keystore format needs upgrading — unlock first");
+  const current = asCurrent(store);
+  const slot = await enrollPasskeySlot(dek, prfOutput, meta, vaultPrfSalt(current.slots));
+  current.slots.push(slot);
+  await saveStore(current);
+  return { id: slot.id, kind: slot.kind, addedAt: slot.addedAt };
+}
+
+/**
+ * Unlock through a passkey: one PRF evaluation against every enrolled slot
+ * (they share the vault salt, so one prompt's bytes may open any of them).
+ * Deliberately does NOT consult or touch the unlock throttle on failure — the
+ * throttle exists for a secret an attacker can guess; a failed unwrap carries
+ * no information, and counting attempts would let a flaky fingerprint sensor
+ * hard-lock the owner out of their own vault. A SUCCESS clears it, because it
+ * proves the legitimate user.
+ */
+export async function unlockWithPasskey(prfOutput: Uint8Array<ArrayBuffer>): Promise<void> {
+  const store = await loadStore();
+  if (!store) throw new Error("Keystore not initialized");
+  if (store.version > STORE_VERSION) {
+    throw new Error(
+      "This vault was written by a newer version of Apogee. Update the extension, or reset Apogee and re-import your recovery phrase.",
+    );
+  }
+  if (store.version !== STORE_VERSION) {
+    // An older store must migrate through the password path first; the
+    // passkey slot only exists from v3 on.
+    throw new Error("Keystore format needs upgrading — unlock with the password first");
+  }
+  const current = asCurrent(store);
+  const opened = await openPasskeyDek(current.slots, prfOutput, current.dekCheck);
+  if (!opened) throw new Error("PASSKEY_UNLOCK_FAILED");
+  await clearUnlockFailures();
+  unlockedMnemonics.clear();
+  dek = opened;
+  await persistSession(opened);
+}
+
+/**
+ * Remove a passkey slot (Settings). Requires an unlocked vault, and is
+ * non-destructive by construction — the vault and every key survive; only a
+ * convenience is lost, which is why there is no step-up here (step-up is for
+ * destruction). The password slot is permanent and structurally unreachable:
+ * this only ever removes slots of type "passkey".
+ */
+export async function removePasskey(id: string): Promise<void> {
+  if (isLocked() || !dek) throw new Error("Keystore is locked");
+  const store = await loadStore();
+  if (!store) throw new Error("Keystore not initialized");
+  if (store.version !== STORE_VERSION) throw new Error("Keystore format needs upgrading — unlock first");
+  const current = asCurrent(store);
+  const before = current.slots.length;
+  current.slots = current.slots.filter((s) => s.type !== "passkey" || s.id !== id);
+  if (current.slots.length === before) throw new Error("Unknown passkey");
+  await saveStore(current);
 }
 
 // ---- MV3 session recovery ----
