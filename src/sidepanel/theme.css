@@ -158,6 +158,15 @@
     z-index: 0;
     overflow: hidden;
     pointer-events: none;
+    /* Where the moon parks when it is off the panel: exactly high enough that
+       its halo (340% of the 56px disc, bottom edge ~163px from its rest
+       position) clears the top on every viewport. One constant, three
+       consumers: the intro hold, the descend keyframes, and the scroll-away
+       rise (see the .apogee-moon rule below). */
+    --moon-park: -185px;
+    /* The glow's resting opacity — the intro's keyframes land here and the
+       scroll driver starts here, so they can't drift apart. */
+    --glow-rest: 0.7;
   }
   .apogee-sky {
     position: absolute;
@@ -194,7 +203,11 @@
     right: 0;
     bottom: 22%;
     height: 46%;
-    opacity: 0.7;
+    /* Scroll driver (see .apogee-scroll-dim below): with the moon gone there
+       is nothing to light the horizon, so the dome dies with the scroll —
+       0.7 at rest to 0 once the history has it. The intro paths are unaffected:
+       the hold class outranks this rule and the animation outranks both. */
+    opacity: calc(var(--glow-rest) * (1 - var(--scene-recede, 0)));
     background: radial-gradient(
       130% 100% at 50% 100%,
       rgba(116, 184, 254, 0.45) 0%,
@@ -268,12 +281,17 @@
   /* high in the sky (apogee) — pinned a fixed distance from the top so the
      moon sits at the same height in every viewport (a % anchor made it ride
      up on short panels and sink on tall ones). 40px keeps it just below the
-     header, matching the original look; 72px sat too low. Static for now. */
+     header, matching the original look; 72px sat too low.
+     --moon-rise (set by scene-scroll.ts as the wallet list scrolls) takes the
+     moon off the TOP — the intro's descend reversed: the same destination the
+     intro parks at, reached as you read the list. Scrubbed by the scroll
+     itself, so no transition here — the easing lives in moonRise(). The intro
+     hold and keyframes override this transform while the cinematic runs. */
   .apogee-moon {
     position: absolute;
     left: 50%;
     top: 40px;
-    transform: translateX(-50%);
+    transform: translateX(-50%) translateY(calc(var(--moon-rise, 0) * var(--moon-park)));
     width: 56px;
   }
   .apogee-moon-halo {
@@ -352,7 +370,7 @@
      invisible stretch. Front-loaded but not thrown — the settle is still long
      enough that it does not read as a fall. */
   .apogee-scene--intro-hold .apogee-moon {
-    transform: translate(-50%, -185px);
+    transform: translate(-50%, var(--moon-park));
   }
   .apogee-scene--intro-hold .apogee-glow {
     opacity: 0;
@@ -366,33 +384,50 @@
   .apogee-scene--intro .apogee-glow {
     animation: apogee-glow-rise 2.6s ease-out 2.3s both;
   }
-  /* Dims the water band while the moon is still on its way down — same box and
-     waterline feather as the ocean beneath it. Tinted into the sky's own range
-     rather than near-black — #060e1c sits between its 56% stop (#050b18) and its
-     bottom (#07101f), which suits a band covering 72-100% — and never fully
-     opaque, so the sea keeps its texture and the horizon doesn't read as a hard
-     black bar under the stars.
-     Base opacity 0: the visible states come from the hold class or the
-     keyframes, so reduced-motion (which disables the animation) leaves it
-     invisible rather than stuck down. */
-  .apogee-intro-dim {
+  /* The water-dim band, shared by its two drivers:
+     - the intro dims the water while the moon is still on its way down (opacity
+       from the hold class and the lift keyframes), and
+     - scrolling the history dims it as the moon leaves (opacity from the
+       --scene-recede var scene-scroll.ts writes alongside --moon-rise).
+     Same box and waterline feather as the ocean beneath it. Tinted into the
+     sky's own range rather than near-black — #060e1c sits between its 56% stop
+     (#050b18) and its bottom (#07101f), which suits a band covering 72-100% —
+     and never fully opaque, so the sea keeps its texture and the horizon
+     doesn't read as a hard black bar under the stars. */
+  .apogee-intro-dim,
+  .apogee-scroll-dim {
     position: absolute;
     left: 0;
     right: 0;
     bottom: 0;
     height: 28%;
     z-index: 3;
-    opacity: 0;
     background: #060e1c;
     -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 5px);
     mask-image: linear-gradient(to bottom, transparent 0, #000 5px);
+  }
+  /* Base opacity 0: the visible states come from the hold class or the
+     keyframes, so reduced-motion (which disables the animation) leaves it
+     invisible rather than stuck down. */
+  .apogee-intro-dim {
+    opacity: 0;
+  }
+  .apogee-scroll-dim {
+    /* The scroll driver: deeper than the intro's pre-arrival 0.68 — the
+       horizon glow dies with the same scroll (see .apogee-glow above), and the
+       sea it lit deserves the darker night — but never fully opaque, so a trace
+       of the water's motion survives behind the rows. At rest the var is
+       absent/0 and the band is gone. The two drivers can't collide: the scroll
+       var only moves once the wallet is interactive, and the intro's element
+       unmounts when its phase ends. */
+    opacity: calc(var(--scene-recede, 0) * 0.85);
   }
   .apogee-scene--intro .apogee-intro-dim {
     animation: apogee-water-lift 2.8s ease-out 2.3s both;
   }
   @keyframes apogee-moon-descend {
     from {
-      transform: translate(-50%, -185px);
+      transform: translate(-50%, var(--moon-park));
     }
     to {
       transform: translate(-50%, 0);
@@ -403,7 +438,7 @@
       opacity: 0;
     }
     to {
-      opacity: 0.7;
+      opacity: var(--glow-rest);
     }
   }
   @keyframes apogee-water-lift {
@@ -512,9 +547,16 @@
     );
   }
   /* feathered top edge for scrolling sections: as content scrolls up it dissolves
-     into the scene above instead of hitting a hard cut-off line. The 24px ramp is
-     sized to the scroll container's pt-6, so at rest only the (empty) top padding
-     is masked and the first content sits at full opacity. */
+     into the scene above instead of hitting a hard cut-off line. The 40px ramp is
+     sized to the scroll container's pt-10, so at rest only the (empty) top padding
+     is masked and the first content sits at full opacity. 40px, not the 24px it
+     grew from: the wallet home's boundary above the list is now the folded hero
+     against a darkened scene, and a shallow ramp read as a cut rather than a
+     fade — at ~64px rows, two-thirds of a row dissolves before it's gone. The
+     height is load-bearing in three other places that count the ramp: the two
+     feathered containers' pt-10, the settings drawer-reveal anchor in
+     Wallet.tsx, and the collapse/moon thresholds (hero-collapse.ts,
+     scene-scroll.ts). */
   .apogee-feather-top {
     /* Two mask layers, added together:
        1. the vertical fade — content dissolves as it scrolls up past the top edge;
@@ -522,19 +564,109 @@
        The mask has to stay on the SCROLL CONTAINER for the fade to work at all: its
        box is the fixed viewport, so content scrolls *through* the gradient. (Moving
        it to an inner wrapper makes the gradient scroll away with the content, which
-       removes the effect entirely after the first 24px.) But a mask clips everything
+       removes the effect entirely after the first 40px.) But a mask clips everything
        the element paints, including its own scrollbar, so the fade also ate the top
        of the scrollbar thumb. Compositing a gutter-width opaque layer over it spares
        the scrollbar while leaving the content fade untouched — and needs no JS.
        `mask-composite: add` (with the -webkit- alias `source-over`) is the union of
        the two layers. Keep the 8px offset in step with
        `.apogee-scrollbar::-webkit-scrollbar { width }` below. */
-    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 24px),
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 40px),
       linear-gradient(to right, transparent calc(100% - 8px), #000 calc(100% - 8px));
-    mask-image: linear-gradient(to bottom, transparent 0, #000 24px),
+    mask-image: linear-gradient(to bottom, transparent 0, #000 40px),
       linear-gradient(to right, transparent calc(100% - 8px), #000 calc(100% - 8px));
     -webkit-mask-composite: source-over;
     mask-composite: add;
+  }
+
+  /* ── Hero collapse (see hero-collapse.ts). Scrolling the activity list past
+     the sentinel compacts the balance frame: the eye/sync row, the rate bar
+     and chart, and the Send/Swap/Receive row fold away and the figure shrinks.
+     The fold is eased — an abrupt swap reads as a glitch; this reads as the
+     summary stepping aside. The curve is the intro descend's own
+     (cubic-bezier(0.2, 0.6, 0.3, 1)) at scroll speed: fast away, soft settle.
+
+     The folding rows ride grid-template-rows 1fr → 0fr, which interpolates
+     between the rows' natural heights with no max-height guesswork: the slot
+     is a one-row grid whose track collapses, and the inner element
+     (min-height: 0 + overflow: hidden) is what actually gets squeezed.
+
+     `visibility` is the accessibility half of the fold: display:none can't be
+     transitioned, and a merely-clipped control would stay in the tab order and
+     the a11y tree. It flips discretely — on collapse delayed to the full
+     duration (still reachable while it visibly renders), on expand immediate
+     (the transition property that governs is the one on the state being
+     entered). */
+  .apogee-hero-frame {
+    --hero-collapse-ms: 300ms;
+    --hero-collapse-ease: cubic-bezier(0.2, 0.6, 0.3, 1);
+    transition: padding-top var(--hero-collapse-ms) var(--hero-collapse-ease);
+  }
+  .apogee-hero-figure {
+    /* gap too: the compact pair keeps a half step of it (see the Wallet.tsx
+       ternary) and a snapping gap breaks the one-movement read. */
+    transition:
+      padding var(--hero-collapse-ms) var(--hero-collapse-ease),
+      gap var(--hero-collapse-ms) var(--hero-collapse-ease);
+  }
+  .apogee-hero-figure-glyph {
+    /* line-height because the Tailwind size pairs (36/30 vs 32/24) change it
+       alongside font-size — easing one and not the other visibly staggers. */
+    transition:
+      height var(--hero-collapse-ms) var(--hero-collapse-ease),
+      font-size var(--hero-collapse-ms) var(--hero-collapse-ease),
+      line-height var(--hero-collapse-ms) var(--hero-collapse-ease);
+  }
+  .apogee-collapse-slot {
+    display: grid;
+    grid-template-rows: 1fr;
+    visibility: visible;
+    transition:
+      grid-template-rows var(--hero-collapse-ms) var(--hero-collapse-ease),
+      margin-top var(--hero-collapse-ms) var(--hero-collapse-ease),
+      opacity calc(var(--hero-collapse-ms) * 0.6) var(--hero-collapse-ease),
+      visibility 0s;
+  }
+  /* Clipped while the slot has ANY fold in it (the track squeezes the inner
+     element; without clipping the content paints past the shrinking track),
+     but VISIBLE at rest — overflow would otherwise eat the focus rings of
+     controls that sit flush with the row's edge (Send/Swap/Receive). The
+     delayed allow-discrete flip is the same trick the visibility rule below
+     uses: entering the collapsed state flips immediately (no delay there),
+     leaving it stays clipped through the whole fold and releases after. */
+  .apogee-collapse-slot > * {
+    min-height: 0;
+    overflow: visible;
+    transition: overflow 0s var(--hero-collapse-ms) allow-discrete;
+  }
+  .apogee-hero-frame--compact .apogee-collapse-slot > * {
+    overflow: hidden;
+    transition: overflow 0s allow-discrete;
+  }
+  /* The one slot that carries the spacing below the figure — on the slot
+     itself, so the fold takes the gap with it. Matches the old mt-3. */
+  .apogee-collapse-slot--gap {
+    margin-top: 12px;
+  }
+  .apogee-hero-frame--compact .apogee-collapse-slot {
+    grid-template-rows: 0fr;
+    margin-top: 0;
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      grid-template-rows var(--hero-collapse-ms) var(--hero-collapse-ease),
+      margin-top var(--hero-collapse-ms) var(--hero-collapse-ease),
+      opacity calc(var(--hero-collapse-ms) * 0.6) var(--hero-collapse-ease),
+      visibility 0s var(--hero-collapse-ms);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .apogee-hero-frame,
+    .apogee-hero-figure,
+    .apogee-hero-figure-glyph,
+    .apogee-collapse-slot,
+    .apogee-hero-frame--compact .apogee-collapse-slot {
+      transition: none;
+    }
   }
   /* thin, dark-themed scrollbar */
   .apogee-scrollbar {

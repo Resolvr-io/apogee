@@ -46,6 +46,12 @@ export function Scene({
         <div className="apogee-moon-core" />
       </div>
       {animated ? <OceanVideo /> : <div className="apogee-ocean" />}
+      {/* Scroll-away water dim (see .apogee-scroll-dim in theme.css and
+          scene-scroll.ts): as the history list scrolls the moon off the top,
+          the sea dims and the horizon glow dies with it. Driven by the
+          --scene-recede var, invisible at rest, and unconnected to the intro's
+          dim element above. */}
+      <div className="apogee-scroll-dim" />
       {/* The water dim finishes last (2.3s delay + 2.8s = 5.1s, against the
           moon's 5.0s and the UI's 4.8s), so its end is the timeline's end.
           KEEP IN SYNC with the timeline in theme.css and MOON_INTRO_MS in

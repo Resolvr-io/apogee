@@ -47,6 +47,8 @@ import { type Denom, assetRows, heroSubtitle, portfolioTotal } from "@/lib/portf
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY } from "@/lib/debug";
 import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS, DEMO_UTXOS, useDemoFunds } from "@/lib/demo-funds";
 import { restrikeBalance, useBalanceStrike } from "@/sidepanel/balance-warmup";
+import { useHeroCollapse } from "@/sidepanel/hero-collapse";
+import { moonRise, resetSceneScroll, setSceneScroll } from "@/sidepanel/scene-scroll";
 import { cn, shortenHex } from "@/lib/utils";
 import { browser } from "@/lib/ext";
 import { encodeStandardSeedQr } from "@/lib/seed-qr";
@@ -203,12 +205,17 @@ export function Wallet({
   onView,
   onToast,
   onReset,
+  homeTopSeq,
 }: {
   state: KeystoreState;
   view: View;
   onView: (v: View) => void;
   onToast: (n: ToastNotice) => void;
   onReset: () => void;
+  // Bumped by the header logo click (see App). Each bump scrolls the activity
+  // list back to the top — which expands the hero (sentinel back in view) and
+  // shows the newest transactions — so the logo reads as "home", from anywhere.
+  homeTopSeq: number;
 }) {
   const active = state.wallets.find((w) => w.id === state.activeWalletId) ?? state.wallets[0];
   // Watch-only wallets have no key/signer: track balance + receive, but no Send.
@@ -257,6 +264,71 @@ export function Wallet({
   const [visible, setVisible] = useState(TX_PAGE);
   const scrollRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  // Hero collapse (see hero-collapse.ts). Lives with the other hooks — the home
+  // view renders conditionally below — and is keyed on the home view being
+  // mounted, because the component persists across views while this DOM swaps.
+  const homeActive = view === "home";
+  const collapse = useHeroCollapse(scrollRef, homeActive);
+  const { compact } = collapse;
+  const figureBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Folding hides whatever was focused in the folded rows — visibility: hidden
+  // dumps focus on <body> and loses the user's place in the tab order. Hand it
+  // to the figure, the one interactive element that survives both states, so
+  // focus stays in the region instead of falling out of the panel.
+  useEffect(() => {
+    if (!compact) return;
+    const frame = collapse.frameRef.current;
+    const active = document.activeElement;
+    if (frame && active instanceof HTMLElement && frame.contains(active) && active !== figureBtnRef.current) {
+      figureBtnRef.current?.focus({ preventScroll: true });
+    }
+  }, [compact, collapse.frameRef]);
+
+  // The list's scroll drives the celestial backdrop (see scene-scroll.ts): the
+  // moon rises off the top of the panel as the hero compacts, and the starfield
+  // depth-parallaxes against the offset. rAF-coalesced like the starfield's own
+  // redraw, so the two never drift. Keyed on the home view for the same reason
+  // as the collapse above (the list element the listener binds to is remounted
+  // by every sub-view trip), and the cleanup resets the scene — leaving the
+  // view or locking must not strand the moon off-screen for a view that never
+  // scrolled.
+  useEffect(() => {
+    if (!homeActive) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    let raf = 0;
+    const report = () => {
+      // Guarded like the starfield's own redraw (see Starfield.tsx): a scroll
+      // gesture delivers several events per frame, and without the guard each
+      // one queues another callback — redundant writes per frame, and the
+      // cleanup could only ever cancel the newest handle.
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        setSceneScroll(moonRise(el.scrollTop), el.scrollTop);
+      });
+    };
+    el.addEventListener("scroll", report, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", report);
+      if (raf) cancelAnimationFrame(raf);
+      resetSceneScroll();
+    };
+  }, [homeActive]);
+
+  // The logo click's "home" — scroll the list back to the newest transactions,
+  // expanding the hero on the way past the sentinel. Smooth for the same
+  // reason the settings drawer scroll is; instant under reduced motion.
+  useEffect(() => {
+    if (homeTopSeq === 0) return;
+    scrollRef.current?.scrollTo({
+      top: 0,
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+    });
+  }, [homeTopSeq]);
 
   useEffect(() => {
     let alive = true;
@@ -569,8 +641,13 @@ export function Wallet({
     });
   }, [sync, txs, onToast, denom, rate, fiat]);
 
-  // Render more transactions as the sentinel scrolls into view.
+  // Render more transactions as the sentinel scrolls into view. Keyed on
+  // homeActive like the collapse and scene wiring: the pill lives in the home
+  // JSX, so a sub-view trip detaches it, and without re-attaching on return
+  // the observer would keep watching the dead node — paging silently dead
+  // until some refresh changed txs.length.
   useEffect(() => {
+    if (!homeActive) return;
     const sentinel = sentinelRef.current;
     const root = scrollRef.current;
     if (!sentinel || !root) return;
@@ -582,7 +659,7 @@ export function Wallet({
     );
     io.observe(sentinel);
     return () => io.disconnect();
-  }, [visible, txs.length]);
+  }, [visible, txs.length, homeActive]);
 
   if (!active) return null;
 
@@ -716,18 +793,36 @@ export function Wallet({
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* Balance frame — fixed above the scrollable activity list. No bottom
           padding: the activity list's pt-6 (which sizes its feather ramp) already
-          supplies the gap below Send/Receive, so pb-5 here would double it. */}
-      <div className="shrink-0 px-4 pt-6">
-        <div className="flex items-center justify-between">
-          <IconButton label={hidden ? "Show balance" : "Hide balance"} onClick={toggleHidden}>
-            {hidden ? <EyeOff size={16} /> : <Eye size={16} />}
-          </IconButton>
-          <IconButton label="Sync" onClick={() => refresh("manual")} disabled={syncing}>
-            <RefreshCw size={16} className={syncing ? "animate-spin" : undefined} />
-          </IconButton>
+          supplies the gap below Send/Receive, so pb-5 here would double it.
+          While the list is scrolled the frame compacts (see hero-collapse.ts):
+          the rows fold away and the figure shrinks, so the list gets the space
+          the summary was holding. The fold is eased — see .apogee-hero-frame
+          and .apogee-collapse-slot in theme.css. */}
+      <div
+        ref={collapse.frameRef}
+        // pt as a ternary, NOT base-plus-override: both classes are the same
+        // specificity, and Tailwind emits padding utilities in numeric order —
+        // the larger value wins the cascade no matter the class order, so a
+        // compact "pt-2" layered over a base "pt-6" silently never applied (the
+        // compact strip rode around with the expanded frame's 24px of top air).
+        className={cn(
+          "apogee-hero-frame shrink-0 px-4",
+          compact ? "pt-2 apogee-hero-frame--compact" : "pt-6",
+        )}
+      >
+        <div className="apogee-collapse-slot">
+          <div className="flex items-center justify-between">
+            <IconButton label={hidden ? "Show balance" : "Hide balance"} onClick={toggleHidden}>
+              {hidden ? <EyeOff size={16} /> : <Eye size={16} />}
+            </IconButton>
+            <IconButton label="Sync" onClick={() => refresh("manual")} disabled={syncing}>
+              <RefreshCw size={16} className={syncing ? "animate-spin" : undefined} />
+            </IconButton>
+          </div>
         </div>
 
         <button
+          ref={figureBtnRef}
           type="button"
           onClick={cycleDenom}
           // No point cycling the denomination while the amount is hidden (or not
@@ -735,11 +830,23 @@ export function Wallet({
           disabled={showStars}
           aria-label={showStars ? undefined : "Change denomination"}
           className={cn(
-            "flex w-full flex-col items-center gap-0.5 py-4 text-[color:var(--text-strong)]",
+            "apogee-hero-figure flex w-full flex-col items-center text-[color:var(--text-strong)]",
+            // gap as a ternary like the paddings (same Tailwind cascade trap):
+            // the compact pair runs its line-height proportionally taller, so
+            // the same flex gap there reads 2px tighter against the digits —
+            // compact keeps the half step.
+            compact ? "gap-0.5 py-1.5" : "gap-1 py-4",
             pulse && "animate-pulse",
           )}
         >
-          <span className="flex h-9 items-center justify-center text-3xl">{amountNode}</span>
+          <span
+            className={cn(
+              "apogee-hero-figure-glyph flex items-center justify-center",
+              compact ? "h-8 text-2xl" : "h-9 text-3xl",
+            )}
+          >
+            {amountNode}
+          </span>
           {/* No denomination label while hidden — the unit is irrelevant when the
               amount is stars. A non-breaking space holds the line so toggling
               hide doesn't shift the Send/Receive row. */}
@@ -763,13 +870,19 @@ export function Wallet({
             bolted into the panel, and the surrounding UI floats its readouts in space
             (see the balance subtitle above). Wide letter-spacing and generous gaps do
             the separating instead of a container. */}
-        <button
-          type="button"
-          onClick={() => setChartOpen((o) => !o)}
-          aria-expanded={chartOpen}
-          aria-label={chartOpen ? "Hide price chart" : "Show price chart"}
-          className="group flex w-full items-center justify-center gap-3 py-2 text-left"
-        >
+        {/* One slot for the bar AND the chart it opens, so both fold together.
+            The chart stays mounted while compact — its state and fetched history
+            ride out the fold, and it lays out clipped rather than remounting
+            when the frame re-expands. */}
+        <div className="apogee-collapse-slot">
+          <div>
+            <button
+              type="button"
+              onClick={() => setChartOpen((o) => !o)}
+              aria-expanded={chartOpen}
+              aria-label={chartOpen ? "Hide price chart" : "Show price chart"}
+              className="group flex w-full items-center justify-center gap-3 py-2 text-left"
+            >
           <Activity
             size={12}
             className={cn(
@@ -814,30 +927,33 @@ export function Wallet({
               chartOpen && "rotate-180",
             )}
           />
-        </button>
-        {chartOpen && (
-          <div className="pt-2">
-            {chartError ? (
-              // Say so in place rather than collapsing — a silent close looks broken.
-              <p className="py-3 text-center text-xs text-[color:var(--text-subtle)]">
-                Price history unavailable.
-              </p>
-            ) : history ? (
-              <PriceChart
-                history={history}
-                range={chartRange}
-                onRangeChange={setChartRange}
-                formatPrice={(v) => formatFiat(v, fiat)}
-              />
-            ) : (
-              <div className="flex justify-center py-6">
-                <Spinner className="size-5" />
+            </button>
+            {chartOpen && (
+              <div className="pt-2">
+                {chartError ? (
+                  // Say so in place rather than collapsing — a silent close looks broken.
+                  <p className="py-3 text-center text-xs text-[color:var(--text-subtle)]">
+                    Price history unavailable.
+                  </p>
+                ) : history ? (
+                  <PriceChart
+                    history={history}
+                    range={chartRange}
+                    onRangeChange={setChartRange}
+                    formatPrice={(v) => formatFiat(v, fiat)}
+                  />
+                ) : (
+                  <div className="flex justify-center py-6">
+                    <Spinner className="size-5" />
+                  </div>
+                )}
               </div>
             )}
           </div>
-        )}
+        </div>
 
-        <div className="mt-3 flex gap-2">
+        <div className="apogee-collapse-slot apogee-collapse-slot--gap">
+          <div className="flex gap-2">
           {watchOnly ? (
             // Watch-only wallets hold no key: the Send slot becomes a dashed
             // marker that opens an explainer on tap.
@@ -882,17 +998,26 @@ export function Wallet({
           >
             <ArrowDown size={18} strokeWidth={2.5} />
           </Button>
+          </div>
         </div>
       </div>
 
       {/* Scrollable activity list. Feathered top edge (matching the settings
           SubView) so rows dissolve as they scroll up instead of hard-cutting;
-          pt-6 sizes the content to the 24px mask ramp so headings sit at full
-          opacity at rest. */}
+          pt-10 sizes the content to the 40px mask ramp so headings sit at full
+          opacity at rest. pb-8 rather than pb-4: the transient version badge
+          (VersionBadge, bottom-2) floats over this area for the first ~15s
+          after unlock — exactly when a fresh balance gets scrolled — and the
+          last row must clear it, not land on it. */}
       <div
         ref={scrollRef}
-        className="apogee-scrollbar apogee-feather-top flex-1 overflow-y-auto px-4 pb-4 pt-6"
+        className="apogee-scrollbar apogee-feather-top flex-1 overflow-y-auto px-4 pb-8 pt-10"
       >
+        {/* Collapse sentinel (see hero-collapse.ts) — first child so it reads the
+            head of the scroll content. Sits inside the pt-10 ramp, which deepens
+            the effective collapse threshold by its own height; one pixel, and it
+            costs the list's content exactly one pixel of offset. */}
+        <div ref={collapse.sentinelRef} aria-hidden className="h-px w-full" />
         <ErrorText>{error}</ErrorText>
         <Tokens
           sync={sync}
@@ -956,6 +1081,12 @@ export function Wallet({
             )}
           </>
         )}
+        {/* Collapse spacer (see hero-collapse.ts): grows by exactly the height
+            the frame loses — tracked frame-by-frame while the fold animates —
+            so compacting never changes the scrollable range and can't clamp the
+            scroll into the bounce this exists to prevent. Height is written
+            imperatively by the hook, not rendered. */}
+        <div ref={collapse.spacerRef} aria-hidden />
       </div>
 
       {watchInfo && (
@@ -2799,12 +2930,13 @@ function SubView({
       if (dRect.bottom <= cRect.bottom + 1) return;
       // Bring the section's header near the top, which reveals everything below
       // it — or, for a section taller than the viewport, the most useful anchor.
-      // 28px and not 12: the non-centered container wears .apogee-feather-top,
-      // whose mask runs transparent -> opaque across its first 24px, so a header
+      // 44px and not 12: the non-centered container wears .apogee-feather-top,
+      // whose mask runs transparent -> opaque across its first 40px, so a header
       // parked inside that band gets scrolled into view and then half dissolved.
-      // KEEP IN SYNC with that gradient in theme.css.
+      // 44 = 40 + the 4px of full opacity it keeps. KEEP IN SYNC with that
+      // gradient in theme.css.
       const target = details.querySelector("summary") ?? details;
-      const top = target.getBoundingClientRect().top - cRect.top - 28;
+      const top = target.getBoundingClientRect().top - cRect.top - 44;
       // Downward only. A drawer taller than the viewport can be scrolled into,
       // putting its header above the top edge while the bottom is still clipped;
       // this delta then goes negative and would yank the reader back up to the
@@ -2870,7 +3002,7 @@ function SubView({
         ref={scrollRef}
         className={cn(
           "min-h-0 flex-1 overflow-y-auto px-4 pb-4",
-          center ? "flex flex-col justify-center" : "apogee-feather-top pt-6",
+          center ? "flex flex-col justify-center" : "apogee-feather-top pt-10",
         )}
       >
         {children}
