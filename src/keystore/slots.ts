@@ -33,14 +33,75 @@ export interface PasswordSlot {
   wrappedDek: Enc;
 }
 
-export type KeySlot = PasswordSlot;
+/** Where a passkey lives, captured at enrollment from
+ *  `authenticatorAttachment` (which outranks the transports hint — hybrid
+ *  covers phones and synced platform passkeys alike). It can never be fetched
+ *  retroactively without another ceremony, so it is frozen into the slot. */
+export type PasskeyKind = "device" | "cross-device" | "security-key";
 
-export function dekSlotAad(slotId: string): string {
-  return `apogee:dek-slot:v3:${slotId}`;
+/** A slot wrapping the DEK under a passkey: the PRF output of the WebAuthn
+ *  credential (run through HKDF, see derivePasskeyKek) is the key. The salts:
+ *  `prfSalt` is ONE PER VAULT, not per credential — a get() carries exactly one
+ *  salt, so per-credential salts would mean one authenticator tap per enrolled
+ *  device; the PRF is already keyed by the credential's own secret, so a shared
+ *  salt still yields a distinct output per passkey. Nothing here is secret:
+ *  each field is only what's needed to ask the authenticator again and open
+ *  the answer. */
+export interface PasskeySlot {
+  type: "passkey";
+  id: string;
+  credentialId: string; // base64 WebAuthn credential id
+  prfSalt: string; // base64, shared by every passkey slot of this vault
+  hkdfSalt: string; // base64, this slot's HKDF salt
+  kind: PasskeyKind;
+  addedAt: number;
+  wrappedDek: Enc;
 }
 
-export function dekCheckAad(): string {
-  return "apogee:verifier-dek:v3";
+export type KeySlot = PasswordSlot | PasskeySlot;
+
+/** Version-parameterized like every other AAD in the scheme (see keystore.ts):
+ *  the slot wraps and the DEK check are the two envelopes a future format bump
+ *  must re-bind, so they take the version rather than hardcoding this one. */
+export function dekSlotAad(version: number, slotId: string): string {
+  return `apogee:dek-slot:v${version}:${slotId}`;
+}
+
+export function dekCheckAad(version: number): string {
+  return `apogee:verifier-dek:v${version}`;
+}
+
+/** The AAD scheme version this module's wraps write today. */
+const SLOT_AAD_VERSION = 3;
+
+/** HKDF `info` — domain-separates this derivation from any other use the same
+ *  credential's PRF output might ever be put to. */
+const PASSKEY_KEK_INFO = "apogee:passkey-kek:v1";
+
+/**
+ * The passkey KEK: HKDF-SHA-256 over the authenticator's 32 PRF bytes. HKDF,
+ * not PBKDF2 — PBKDF2's iterations exist to slow down guessing a low-entropy
+ * secret, and the PRF output is already 32 uniformly random bytes an attacker
+ * cannot brute-force toward. The KEK is NON-EXTRACTABLE: it never needs to
+ * survive a restart, because what persists is the DEK it unwraps.
+ */
+export async function derivePasskeyKek(
+  prfOutput: Uint8Array<ArrayBuffer>,
+  hkdfSalt: string,
+): Promise<CryptoKey> {
+  const base = await crypto.subtle.importKey("raw", prfOutput, "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: base64ToBytes(hkdfSalt),
+      info: new TextEncoder().encode(PASSKEY_KEK_INFO),
+    },
+    base,
+    { name: "AES-GCM", length: 256 },
+    false, // non-extractable by design
+    ["encrypt", "decrypt"],
+  );
 }
 
 /** A fresh random DEK. Extractable because it must be wrapped into slots and
@@ -55,7 +116,7 @@ export async function generateDek(): Promise<CryptoKey> {
 /** Seal the DEK under a key-encrypting key, bound to this slot's identity. */
 export async function wrapDek(dek: CryptoKey, kek: CryptoKey, slotId: string): Promise<Enc> {
   // exportKeyRaw/importKeyRaw speak base64; the envelope speaks bytes.
-  return encryptBytes(kek, base64ToBytes(await exportKeyRaw(dek)), dekSlotAad(slotId));
+  return encryptBytes(kek, base64ToBytes(await exportKeyRaw(dek)), dekSlotAad(SLOT_AAD_VERSION, slotId));
 }
 
 /** Open a slot back into the DEK. Throws (OperationError) on a wrong key or an
@@ -63,7 +124,7 @@ export async function wrapDek(dek: CryptoKey, kek: CryptoKey, slotId: string): P
 export async function unwrapDek(kek: CryptoKey, slot: KeySlot): Promise<CryptoKey> {
   // importKeyRaw length-checks the decode; a corrupted envelope fails here,
   // at the slot, rather than as a shorter key failing later and far away.
-  const raw = await decryptBytes(kek, slot.wrappedDek, dekSlotAad(slot.id));
+  const raw = await decryptBytes(kek, slot.wrappedDek, dekSlotAad(SLOT_AAD_VERSION, slot.id));
   return importKeyRaw(bytesToBase64(raw));
 }
 
@@ -84,8 +145,30 @@ export async function makePasswordSlotWithKey(
   kdf: Kdf,
   dek: CryptoKey,
 ): Promise<PasswordSlot> {
-  const id = `s_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  const id = newSlotId();
   return { type: "password", id, kdf, wrappedDek: await wrapDek(dek, kek, id) };
+}
+
+/** Build a passkey slot from a ceremony's outcome: the KEK already derived
+ *  from the PRF evaluation, plus the descriptors needed to ask again. The
+ *  ceremony itself (browser-only) lives elsewhere; this is the pure half. */
+export async function makePasskeySlot(
+  kek: CryptoKey,
+  dek: CryptoKey,
+  meta: { credentialId: string; prfSalt: string; hkdfSalt: string; kind: PasskeyKind },
+): Promise<PasskeySlot> {
+  const id = newSlotId();
+  return {
+    type: "passkey",
+    id,
+    ...meta,
+    addedAt: Date.now(),
+    wrappedDek: await wrapDek(dek, kek, id),
+  };
+}
+
+function newSlotId(): string {
+  return `s_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 }
 
 /** Whether two keys are the same bytes — used by the v2→v3 migration's

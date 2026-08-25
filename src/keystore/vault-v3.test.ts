@@ -99,8 +99,8 @@ describe("v2→v3 migration", () => {
     const key = await passwordKey();
     const next = await migrateV2ToV3(key, await v2Store({ a: "alpha phrase" }));
     const dek = await unwrapDek(key, next.slots[0]);
-    expect(await checkVerifier(dek, next.dekCheck, dekCheckAad())).toBe(true);
-    expect(await checkVerifier(key, next.dekCheck, dekCheckAad())).toBe(false); // password key is not the DEK
+    expect(await checkVerifier(dek, next.dekCheck, dekCheckAad(3))).toBe(true);
+    expect(await checkVerifier(key, next.dekCheck, dekCheckAad(3))).toBe(false); // password key is not the DEK
   });
 
   it("carries hardware (seedless) wallets through unchanged", async () => {
