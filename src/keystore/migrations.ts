@@ -28,8 +28,8 @@ import {
  *  key, whose KDF descriptor sat at the top level. `version` is open rather
  *  than the literal 2 because the migration engine's tests build synthetic
  *  future versions on the same shape — the real 2→v3 step checks the version
- *  itself. */
-/** (Type alias, not interface: it must satisfy the engine's indexed VaultStore.) */
+ *  itself. (Type alias, not interface: it must satisfy the engine's indexed
+ *  VaultStore, and aliases get the implicit index signature.) */
 export type StoreV2Shape = {
   version: number;
   kdf: Kdf;
@@ -41,8 +41,8 @@ export type StoreV2Shape = {
 /** The persisted store shape from v3 on (kept in sync with keystore.ts): all
  *  payloads under the DEK, and one wrapped copy of the DEK per unlock factor
  *  (see slots.ts and docs/passkey-unlock.md §1). The top-level `kdf` is gone —
- *  each password slot carries its own. */
-/** (Type alias, not interface: it must satisfy the engine's indexed VaultStore.) */
+ *  each password slot carries its own. (Type alias for the same indexed-store
+ *  reason as StoreV2Shape.) */
 export type StoreShape = {
   version: 3;
   slots: KeySlot[];
@@ -129,6 +129,16 @@ export async function migrateV2ToV3(key: CryptoKey, input: VaultStore): Promise<
     throw new Error("v2→v3 migration called on a store that is not v2");
   }
   const store = input as StoreV2Shape;
+  // Prove the key opens THIS vault before anything is re-keyed under it. The
+  // byte-verify below cannot do this job: it checks the OUTPUT against the
+  // migration's own inputs, and for a seedless vault — hardware-only, or a
+  // password set before any wallet exists — `key` is otherwise never used to
+  // decrypt anything pre-existing, so any key produces a self-consistent v3
+  // store. This step must be self-defending (not a caller-side check) because
+  // ensureLoaded feeds it a session key that nothing else has verified.
+  if (!(await checkVerifier(key, store.verifier, verifierAad(2)))) {
+    throw new Error("v2→v3 migration called with a key that does not open this vault");
+  }
   const dek = await generateDek();
   const wallets: Record<string, WalletRecord> = {};
   // Driven by the wallets MAP, not `order`: a record that fell out of `order`
@@ -150,12 +160,15 @@ export async function migrateV2ToV3(key: CryptoKey, input: VaultStore): Promise<
     version: 3,
     slots: [slot],
     verifier: await makeVerifier(key, verifierAad(3)),
-    dekCheck: await makeVerifier(dek, dekCheckAad()),
+    dekCheck: await makeVerifier(dek, dekCheckAad(3)),
     wallets,
     order: store.order,
   };
 
   // ---- byte-verify: nothing above is trusted until it reads back identical.
+  // This deliberately decrypts each v2 envelope a SECOND time (the wrapping
+  // loop already held the plaintext): a verify that reuses in-flight values
+  // verifies the arithmetic, not the store.
   for (const [id, w] of Object.entries(store.wallets)) {
     if (!w?.enc) continue;
     const from = await decryptString(key, w.enc, mnemonicAad(2, id));
@@ -168,7 +181,7 @@ export async function migrateV2ToV3(key: CryptoKey, input: VaultStore): Promise<
   if (!(await checkVerifier(key, next.verifier, verifierAad(3)))) {
     throw new Error("v2→v3 migration verify failed: verifier");
   }
-  if (!(await checkVerifier(dek, next.dekCheck, dekCheckAad()))) {
+  if (!(await checkVerifier(dek, next.dekCheck, dekCheckAad(3)))) {
     throw new Error("v2→v3 migration verify failed: DEK check");
   }
   return next;

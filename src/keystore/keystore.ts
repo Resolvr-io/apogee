@@ -239,6 +239,42 @@ function passwordSlotOf(store: StoreShape): PasswordSlot {
   return slot;
 }
 
+// One vault migration at a time. Each run mints a FRESH random DEK, so two
+// racing runs would each persist their own store — and the loser's in-memory
+// key would no longer open the winner's ciphertexts, failing every later
+// decrypt until a lock/unlock. unlock() and ensureLoaded() can genuinely race:
+// ensureLoaded is the first await of both SW message handlers, and a password
+// unlock can arrive while one is mid-flight.
+let migrationChain: Promise<unknown> = Promise.resolve();
+function serializeMigration<T>(run: () => Promise<T>): Promise<T> {
+  const result = migrationChain.then(run);
+  migrationChain = result.then(
+    () => undefined,
+    () => undefined, // the other run's failure is its own caller's to report
+  );
+  return result;
+}
+
+/** Migrate `store` to the current version if needed, exactly once across any
+ *  concurrent callers: re-reads the store inside the lock, so a caller that
+ *  queued behind a finished migration adopts its result instead of minting a
+ *  second DEK. The key must be verified against the on-disk store first. */
+async function migrateExclusive(
+  key: CryptoKey,
+  store: StoreV2Shape | StoreShape,
+): Promise<StoreShape> {
+  return serializeMigration(async () => {
+    // Re-read under the lock: another caller may have migrated while this one
+    // queued. A missing store means it was reset mid-flight — treat the
+    // caller's own snapshot as the thing to refuse on.
+    const fresh = (await loadStore()) ?? store;
+    if (fresh.version >= STORE_VERSION) return fresh as StoreShape;
+    const migrated = asCurrent(await migrateStore(key, fresh, STORE_VERSION, VAULT_MIGRATIONS));
+    await saveStore(migrated);
+    return migrated;
+  });
+}
+
 function genId(): string {
   return `w_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 }
@@ -348,7 +384,7 @@ export async function initialize(password: string): Promise<void> {
     version: STORE_VERSION,
     slots: [await makePasswordSlotWithKey(key, kdf, freshDek)],
     verifier: await makeVerifier(key, verifierAad()),
-    dekCheck: await makeVerifier(freshDek, dekCheckAad()),
+    dekCheck: await makeVerifier(freshDek, dekCheckAad(STORE_VERSION)),
     wallets: {},
     order: [],
   };
@@ -392,27 +428,27 @@ export async function unlock(password: string): Promise<void> {
     throw new Error("Incorrect password");
   }
   await clearUnlockFailures();
-  let vault: StoreV2Shape | StoreShape = store;
-  if (store.version < STORE_VERSION) {
-    // One-step re-wrap while the key is live (see migrations.ts). Nothing is
-    // persisted unless every step succeeds, so a failure leaves the old-format
-    // vault intact and lands on the same recovery message as before.
-    try {
-      vault = asCurrent(await migrateStore(key, store, STORE_VERSION, VAULT_MIGRATIONS));
-      await saveStore(vault);
-    } catch (err) {
-      // Diagnostic only — the error is an OperationError/quota error, not key
-      // material, and a bare field report of "it told me to reset" is otherwise
-      // indistinguishable between a bad envelope and a failed storage write.
-      console.warn("vault migration failed", err);
-      throw new Error(
-        "Apogee's encrypted storage format changed in this update and couldn't be upgraded in place. Reset Apogee and re-import your recovery phrase.",
-      );
-    }
+  // Migration (if any) and the slot unwrap share one recovery message: a vault
+  // that cannot be migrated or whose slot will not open is bricked either way,
+  // and the user should see the reset-and-re-import path, not a raw
+  // OperationError. Nothing is persisted unless every step succeeds, so a
+  // failure leaves the old-format vault intact.
+  let opened: CryptoKey;
+  try {
+    const vault = await migrateExclusive(key, store);
+    // The password key's job ends here: it opens the password slot, and the
+    // DEK that comes out is what the session holds and every payload
+    // decrypts under.
+    opened = await unwrapDek(key, passwordSlotOf(vault));
+  } catch (err) {
+    // Diagnostic only — the error is an OperationError/quota error, not key
+    // material, and a bare field report of "it told me to reset" is otherwise
+    // indistinguishable between a bad envelope and a failed storage write.
+    console.warn("vault migration failed", err);
+    throw new Error(
+      "Apogee's encrypted storage format changed in this update and couldn't be upgraded in place. Reset Apogee and re-import your recovery phrase.",
+    );
   }
-  // The password key's job ends here: it opens the password slot, and the DEK
-  // that comes out is what the session holds and every payload decrypts under.
-  const opened = await unwrapDek(key, passwordSlotOf(asCurrent(vault)));
   // Mnemonics are NOT decrypted here — getMnemonic decrypts on demand, so a
   // plaintext seed enters SW memory only while that wallet is actually in use,
   // never all wallets at once for the length of the session.
@@ -707,9 +743,10 @@ export async function ensureLoaded(): Promise<void> {
     // the DEK the migrated vault unwraps to. On any failure, drop the session
     // and let unlock() retry with the password.
     try {
-      const vault = asCurrent(await migrateStore(key, store, STORE_VERSION, VAULT_MIGRATIONS));
-      await saveStore(vault);
-      const opened = await unwrapDek(key, passwordSlotOf(asCurrent(vault)));
+      // Through the shared mutex, and re-read inside: an unlock that raced us
+      // to the migration is adopted rather than doubled.
+      const vault = await migrateExclusive(key, store);
+      const opened = await unwrapDek(key, passwordSlotOf(vault));
       unlockedMnemonics.clear();
       dek = opened;
       await persistSession(opened);
@@ -723,7 +760,7 @@ export async function ensureLoaded(): Promise<void> {
   // verifier — no password is involved here) is what drops a stale or foreign
   // key: a pre-v3 session key against a migrated store fails it and lands on
   // the password prompt, which is the correct place for it.
-  if (!(await checkVerifier(key, asCurrent(store).dekCheck, dekCheckAad()))) {
+  if (!(await checkVerifier(key, asCurrent(store).dekCheck, dekCheckAad(STORE_VERSION)))) {
     await sessionClear(SESSION_KEY);
     return;
   }

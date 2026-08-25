@@ -89,7 +89,8 @@ describe("v2→v3 migration", () => {
     const key = await passwordKey();
     const store = await v2Store({ a: "alpha phrase" });
     const next = await migrateV2ToV3(key, store);
-    expect(next.slots[0].kdf).toEqual(store.kdf);
+    expect(next.slots[0].type).toBe("password"); // and then its kdf is v2's
+    expect(next.slots[0].type === "password" && next.slots[0].kdf).toEqual(store.kdf);
     // The verifier still proves the SAME password under the v3 AAD.
     expect(await checkVerifier(key, next.verifier, verifierAad(3))).toBe(true);
     expect(await checkVerifier(await passwordKey(OTHER_PASSWORD), next.verifier, verifierAad(3))).toBe(false);
@@ -111,7 +112,47 @@ describe("v2→v3 migration", () => {
     store.wallets.j = jade;
     store.order.push("j");
     const next = await migrateV2ToV3(key, store);
-    expect(next.wallets.j).toBe(jade);
+    expect(next.wallets.j).toEqual(jade);
+  });
+
+  it("refuses a key that does not open this vault — even with seeds to decrypt", async () => {
+    // The guard, not the envelope decryption, is what rejects a wrong key:
+    // without it a wrong-but-plausible key would re-key the vault to nobody.
+    const store = await v2Store({ a: "alpha phrase" });
+    await expect(migrateV2ToV3(await passwordKey(OTHER_PASSWORD), store)).rejects.toThrow(
+      "does not open this vault",
+    );
+    expect(store.version).toBe(2); // untouched
+  });
+
+  it("refuses a wrong key on a SEEDLESS vault, where nothing else would catch it", async () => {
+    // Hardware-only (or zero-wallet) vaults never decrypt anything with the
+    // password key, so the byte-verify alone is self-consistent under ANY key
+    // — this is exactly the case the entry guard exists for.
+    const key = await passwordKey();
+    const store = await v2Store({});
+    const jade = wallet("j");
+    jade.signer = "jade";
+    store.wallets.j = jade;
+    store.order.push("j");
+    // The right key migrates it fine…
+    const next = await migrateV2ToV3(key, store);
+    expect(next.wallets.j).toEqual(jade);
+    // …and a wrong key is refused rather than silently re-keying the vault.
+    const store2 = await v2Store({});
+    store2.wallets.j = jade;
+    store2.order.push("j");
+    await expect(migrateV2ToV3(await passwordKey(OTHER_PASSWORD), store2)).rejects.toThrow(
+      "does not open this vault",
+    );
+  });
+
+  it("migrates a zero-wallet vault (password set, nothing added yet)", async () => {
+    const key = await passwordKey();
+    const next = await migrateV2ToV3(key, await v2Store({}));
+    expect(next.order).toEqual([]);
+    expect(await unwrapDek(key, next.slots[0])).toBeDefined();
+    expect(await checkVerifier(await unwrapDek(key, next.slots[0]), next.dekCheck, dekCheckAad(3))).toBe(true);
   });
 
   it("carries an orphaned record (in wallets, missing from order) through", async () => {
