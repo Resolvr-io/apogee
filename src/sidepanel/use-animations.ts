@@ -1,6 +1,8 @@
-// Preference for the animated ocean backdrop. Animated by default; persisted in
-// browser.storage.local so the Settings toggle and the Scene stay in sync across
-// the panel (both subscribe to browser.storage.onChanged). Mirrors useHideBalance.
+// Preference for the app's decorative motion — the animated ocean backdrop and
+// the balance's neon strike. Animated by default; persisted in
+// browser.storage.local so the Settings toggle, the Scene, and the strike stay
+// in sync across the panel (all subscribe to browser.storage.onChanged).
+// Mirrors useHideBalance.
 
 import { useCallback, useEffect, useState } from "react";
 import { browser } from "@/lib/ext";
