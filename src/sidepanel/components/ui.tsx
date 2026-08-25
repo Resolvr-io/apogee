@@ -341,6 +341,14 @@ export function TelemetryNumber({
   // Counts glyphs across segments so the beat sequence runs the whole figure
   // rather than restarting at each separator.
   let warmupIndex = 0;
+  // The per-glyph beat as inline custom properties (see .telemetry-digit).
+  const digitStyle = (index: number): React.CSSProperties => {
+    const { delay, duration } = digitCycle(index);
+    return {
+      "--digit-delay": `${delay}ms`,
+      "--digit-dur": `${duration}ms`,
+    } as React.CSSProperties;
+  };
 
   // `glow` covers the figure only: a ticker is a label, and the phosphor halo
   // belongs to the numerals. Nothing inlines a unit into a glow'd value today
@@ -357,12 +365,32 @@ export function TelemetryNumber({
         !ticker && className,
       )}
     >
-      {figureSegments(figureText).map((seg, si) =>
-        seg.letters ? (
-          <span key={si} className={seg.prefix ? "telemetry-unit" : undefined}>
-            {seg.text}
-          </span>
-        ) : (
+      {figureSegments(figureText).map((seg, si) => {
+        if (seg.letters) {
+          // A currency prefix (the A in A$, CHF) is one compound symbol, so it
+          // takes ONE beat of the warm-up rather than per-letter beats — it
+          // strikes alongside the numerals it belongs to instead of sitting
+          // lit while they stutter. Trailing letter runs (asset-id fragments)
+          // stay static: they follow the figure rather than introducing it.
+          const strikes = warmup && seg.prefix;
+          if (!strikes) {
+            return (
+              <span key={si} className={seg.prefix ? "telemetry-unit" : undefined}>
+                {seg.text}
+              </span>
+            );
+          }
+          return (
+            <span
+              key={si}
+              className="telemetry-digit telemetry-unit"
+              style={digitStyle(warmupIndex++)}
+            >
+              {seg.text}
+            </span>
+          );
+        }
+        return (
           Array.from(seg.text).map((ch, i) => {
             // The "1" cell (see the doc comment) is a span either way; warm-up
             // needs one around EVERY glyph so each can carry its own beat, and
@@ -377,7 +405,6 @@ export function TelemetryNumber({
                 ch
               );
             }
-            const { delay, duration } = digitCycle(warmupIndex++);
             return (
               <span
                 key={`${si}-${i}`}
@@ -385,19 +412,14 @@ export function TelemetryNumber({
                   "telemetry-digit",
                   narrow && "w-[0.7ch] text-center",
                 )}
-                style={
-                  {
-                    "--digit-delay": `${delay}ms`,
-                    "--digit-dur": `${duration}ms`,
-                  } as React.CSSProperties
-                }
+                style={digitStyle(warmupIndex++)}
               >
                 {ch}
               </span>
             );
           })
-        ),
-      )}
+        );
+      })}
     </span>
   );
 

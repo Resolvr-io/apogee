@@ -1,141 +1,9 @@
-// The balance "strike" — numerals coming on like a neon tube (see
-// .telemetry-digit in theme.css). It plays at three moments:
-//
-//   1. the first real figure after an unlock,
-//   2. when a figure that was still settling becomes final, or a final figure
-//      changes — a received amount confirming, a send landing, and
-//   3. when the user presses Sync, whether or not the figure moved.
-//
-// Rule 3 still defers to the "not while settling" gate below: an unconfirmed tx
-// is already pulsing the whole hero, and striking a figure that isn't final yet
-// would claim it is. That balance gets its strike at rule 2's moment instead.
-//
-// State lives at module scope, not in component state, because the hero unmounts
-// every time you visit Receive/Send/Settings: component state would replay the
-// flicker on every return home. Lifetime is the panel document, so reopening the
-// panel plays it again (those numerals really are lighting up for the first time
-// in that view), and a lock re-arms it explicitly.
+// The strike's React half: turns the decisions of balance-strike.ts (same
+// module family as digit-cycle.ts — pure logic there, rendering here) into a
+// per-render epoch the hero can key its numerals by.
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { MAX_DIGIT_STRIKE_MS } from "@/sidepanel/digit-cycle";
-
-/** Longest a strike can run, with margin — derived from digitCycle's actual
- *  range rather than a hand-copied number, so retuning it can't silently
- *  desync this. Both the visible flag and the decision memo below expire on
- *  this window. */
-const STRIKE_MS = MAX_DIGIT_STRIKE_MS + 100;
-
-let armed = true;
-let lastUnconfirmed = false;
-let lastSats: string | null = null;
-// Memo of the last decision, so repeat calls for the SAME state within one
-// short window are idempotent — StrictMode invokes effects twice in
-// development, and a denomination toggle re-runs them with the same
-// underlying balance. Expires after STRIKE_MS (below) rather than only on
-// armBalanceStrike(): without that expiry, a component that unmounts and
-// remounts with an unchanged (sats, unconfirmed) — returning from the
-// step-up screen, which unmounts Wallet — would read this stale decision
-// forever and replay an animation that already finished. `armed`,
-// `lastUnconfirmed` and `lastSats` are NOT expired here: they're the actual
-// state machine that detects the next real change, and have to persist
-// indefinitely for that to work.
-let memo: { key: string; strike: boolean } | null = null;
-
-// Arming is imperative — a lock, or the user pressing Sync — but the strike is
-// decided in an effect keyed on the balance. A manual sync that leaves the figure
-// unchanged changes nothing in that effect's deps, so it has to nudge the hook as
-// well as flip the flag.
-//
-// Only the manual sync may nudge, which is why arming is two exported functions
-// rather than one with a flag: the lock paths call armBalanceStrike() while the
-// hero is STILL mounted (the panel is on screen until `state.locked` flips), and
-// a notification there forces a re-render that re-runs the effect and consumes
-// the arming on the locking screen — leaving nothing for the next unlock, the
-// one moment rule 1 exists for. armBalanceStrike() is silent for exactly that
-// reason; restrikeBalance() is the one that talks.
-//
-// The counter behind the nudge lives here at module scope with the rest of the
-// state machine rather than in the component: component state resets to 0 on the
-// remount the step-up screen causes, and a reset reads as a change — which would
-// replay a finished animation on every return, the exact failure this file is
-// otherwise built to avoid.
-let armVersion = 0;
-const listeners = new Set<() => void>();
-
-function subscribeToArming(onChange: () => void): () => void {
-  listeners.add(onChange);
-  return () => {
-    listeners.delete(onChange);
-  };
-}
-
-function getArmVersion(): number {
-  return armVersion;
-}
-
-function arm(notify: boolean): void {
-  armed = true;
-  lastUnconfirmed = false;
-  lastSats = null;
-  memo = null;
-  if (!notify) return;
-  armVersion += 1;
-  for (const listener of listeners) listener();
-}
-
-/** Re-arm, so the next balance shown strikes again. Called on lock — the hero
- *  unmounts and remounts around it, so no live hook needs telling. */
-export function armBalanceStrike(): void {
-  arm(false);
-}
-
-/** Re-arm AND nudge a mounted hero, so its figure re-strikes even unchanged —
- *  the manual sync (see Wallet's `refresh`). */
-export function restrikeBalance(): void {
-  arm(true);
-}
-
-/**
- * Whether this balance state deserves a strike. Keyed on the underlying sats
- * rather than the rendered string, so cycling sats → L-BTC → fiat does not
- * count as the balance changing.
- */
-function shouldStrike(sats: string, unconfirmed: boolean): boolean {
-  const key = `${sats}:${unconfirmed}`;
-  if (memo?.key === key) return memo.strike;
-
-  let strike = false;
-  if (!unconfirmed) {
-    if (armed) {
-      armed = false;
-      strike = true;
-    } else if (lastUnconfirmed) {
-      // Was settling, now final — the confirmation moment.
-      strike = true;
-    } else if (lastSats !== null && lastSats !== sats) {
-      // Went from one final figure to another without us seeing the pending
-      // phase (a sync that picked up an already-confirmed transaction).
-      strike = true;
-    }
-  }
-
-  lastUnconfirmed = unconfirmed;
-  lastSats = sats;
-  memo = { key, strike };
-  // Only ever one live timer per fresh computation: a repeat call for the
-  // same key returns early above without scheduling another. The guard
-  // checks the memo still names THIS key before clearing it, so an unrelated
-  // later write (a different key) can't have its memo clobbered by an
-  // earlier key's stale expiry.
-  setTimeout(() => {
-    if (memo?.key === key) memo = null;
-  }, STRIKE_MS);
-  return strike;
-}
-
-/** Test seam: the decision is the part worth pinning, and it can't be reached
- *  through the hook without a renderer. Not for production callers. */
-export const __shouldStrike = shouldStrike;
+import { STRIKE_MS, getArmVersion, shouldStrike, subscribeToArming } from "@/sidepanel/balance-strike";
 
 /**
  * The strike epoch: 0 while idle, otherwise a counter that increments per
@@ -170,8 +38,68 @@ export function useBalanceStrike(sats: string, unconfirmed: boolean, ready: bool
       return;
     }
     setEpoch((e) => e + 1);
-    const t = window.setTimeout(() => setEpoch(0), STRIKE_MS);
-    return () => window.clearTimeout(t);
+    // Hidden-time correction: CSS animations PAUSE while the panel document is
+    // hidden, but this wall-clock timer keeps running (throttled, not paused) —
+    // so closing and reopening the panel mid-strike would pull the epoch before
+    // the digits finished. What the animations actually need is STRIKE_MS of
+    // VISIBLE time: track every hidden stretch, and at each check recompute the
+    // deadline as STRIKE_MS + hiddenTotal − elapsed. While hidden the check
+    // parks rather than re-arms (the animations aren't moving, and a hidden
+    // timer is throttled into churn); the visibility edge resumes it. The +100
+    // slack errs the last re-arm late — the safe direction: a late clear keeps
+    // the glow a beat longer, an early one yanks it mid-flicker.
+    const start = performance.now();
+    let hiddenTotal = 0;
+    // `null` when visible — a clock value, so truthiness shouldn't be the test.
+    let hiddenSince: number | null = document.hidden ? start : null;
+    let parked = false;
+    let timer = 0;
+    const onVisibility = () => {
+      if (document.hidden) {
+        hiddenSince = performance.now();
+      } else {
+        if (hiddenSince != null) {
+          hiddenTotal += performance.now() - hiddenSince;
+          hiddenSince = null;
+        }
+        if (parked) {
+          parked = false;
+          timer = window.setTimeout(check, 0);
+        }
+      }
+    };
+    const check = () => {
+      timer = 0;
+      // Charge the OPEN hidden stretch here, not only at the visibility edge:
+      // the timer can fire mid-stretch (throttled, but it fires), and at that
+      // moment hiddenTotal still reads 0 because no edge has happened — an
+      // uncharged deadline would clear the strike while the animations sit
+      // paused. This is the case "close the panel, come back later".
+      if (hiddenSince != null) {
+        hiddenTotal += performance.now() - hiddenSince;
+        hiddenSince = document.hidden ? performance.now() : null;
+      }
+      if (document.hidden) {
+        parked = true; // nothing is animating; the visibility edge resumes
+        return;
+      }
+      const remaining = STRIKE_MS + hiddenTotal - (performance.now() - start);
+      if (remaining > 0) {
+        // +100 slack errs late — and under coarsened timer clocks the initial
+        // timer can land a hair early, so the never-hidden path may take one
+        // extra hop through here. Both in the safe direction.
+        timer = window.setTimeout(check, remaining + 100);
+        return;
+      }
+      document.removeEventListener("visibilitychange", onVisibility);
+      setEpoch(0);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    timer = window.setTimeout(check, STRIKE_MS);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.clearTimeout(timer);
+    };
   }, [sats, unconfirmed, ready, arming]);
   return epoch;
 }

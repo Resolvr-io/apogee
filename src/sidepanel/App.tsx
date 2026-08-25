@@ -3,7 +3,7 @@ import { Compass, Lock, RotateCcw, Settings } from "lucide-react";
 import type { KeystoreState } from "@/keystore/keystore";
 import { DEBUG_ENTERPRISE_BUILD } from "@/lib/debug";
 import { useDemoFunds } from "@/lib/demo-funds";
-import { armBalanceStrike } from "@/sidepanel/balance-warmup";
+import { armBalanceStrike } from "@/sidepanel/balance-strike";
 import { ErrorText, IconButton, LoadingPill } from "@/sidepanel/components/ui";
 import { ToastView, type ToastNotice } from "@/sidepanel/components/Toast";
 import { ConnectionBar } from "@/sidepanel/components/ConnectionBar";
