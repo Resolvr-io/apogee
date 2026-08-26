@@ -298,6 +298,14 @@ export function Wallet({
       setOfferDismissed(o[PASSKEY_OFFER_KEY] === true);
     });
   }, []);
+  // The Settings card enrolls through its own hook instance (this component
+  // persists across views, so that one never unmounts either). On returning
+  // home, re-read so an enrollment made in Settings can't leave a stale
+  // "no passkeys yet" list — and with it, a second-offer / double-ceremony trap.
+  useEffect(() => {
+    if (!homeActive) return;
+    void passkeyEnroll.refresh(); // stable callback; homeActive marks the return trip
+  }, [homeActive]);
   const hasLocalSeed = state.wallets.some((w) => (w.signer ?? "local") === "local");
   const showPasskeyOffer =
     homeActive &&
@@ -2313,10 +2321,14 @@ function SettingsBody({
     setDebugEnterprise(on);
     void browser.storage.local.set({ [DEBUG_ENTERPRISE_KEY]: on });
   }
-  // Passkeys (docs/passkey-unlock.md): shared with the home-screen offer.
+  // Passkeys (docs/passkey-unlock.md): a second hook instance from the home
+  // offer's (the home one never unmounts), so it refreshes on its own terms —
+  // the home instance re-reads when the home view comes back, keeping the
+  // two in step.
   const passkeyEnroll = usePasskeyEnroll();
   const {
     passkeys,
+    available: passkeyAvailable,
     supported: passkeySupported,
     busy: passkeyBusy,
     error: passkeyError,
@@ -2488,7 +2500,7 @@ function SettingsBody({
             }
           />
           <Row label="Fingerprint" value={info.fingerprint.toUpperCase()} console />
-          <Row label="Version" value={`v${APP_VERSION_DISPLAY}`} console />
+          <Row label="Version" value={`v${APP_VERSION_DISPLAY}`} console copy={APP_VERSION_DISPLAY} />
         </dl>
       </Card>
 
@@ -2573,13 +2585,13 @@ function SettingsBody({
             ))}
           </select>
         </Field>
-        {(passkeySupported || passkeys.length > 0) && (
+        {(passkeyAvailable || passkeySupported || passkeys.length > 0) && (
           <div className="mt-3 flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-[color:var(--text-secondary)]">
                 Passkeys
               </span>
-              {passkeySupported && (
+              {(passkeyAvailable || passkeySupported) && (
                 <button
                   type="button"
                   onClick={() => void addPasskey()}
@@ -3335,22 +3347,30 @@ function Row({
   value,
   mono,
   console: consoleValue,
+  copy,
 }: {
   label: string;
   value: string;
   mono?: boolean;
   console?: boolean; // telemetry-face readout (fingerprint, version)
+  /** When set, a ghost copy icon rides beside the value (txid/asset-id
+   *  idiom). The version row uses it so a build string can be pasted into
+   *  a bug report verbatim. */
+  copy?: string;
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
       <dt className="text-[color:var(--text-subtle)]">{label}</dt>
       <dd
         className={cn(
-          "truncate text-[color:var(--text-primary)]",
+          "flex min-w-0 items-center gap-1.5 truncate text-[color:var(--text-primary)]",
           mono && "font-mono",
           consoleValue && "console-value text-[13px]",
         )}
       >
+        {/* Icon leads when present: the numbers keep their ragged right edge,
+            and the control sits at a fixed offset instead of trailing it. */}
+        {copy && <CopyIconButton value={copy} label={`Copy ${label.toLowerCase()}`} />}
         {value}
       </dd>
     </div>
