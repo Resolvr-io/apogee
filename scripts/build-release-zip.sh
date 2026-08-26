@@ -28,24 +28,31 @@ rm -f "$OUT_ABS"
 if ! TOUCH_TS="$(date -u -d "@${EPOCH}" +%Y%m%d%H%M.%S 2>/dev/null)"; then
   TOUCH_TS="$(date -u -r "${EPOCH}" +%Y%m%d%H%M.%S)"
 fi
-find dist -exec touch -t "$TOUCH_TS" {} +
+
+# A Vite dist/ has no symlinks. If one ever appears, fail loudly rather than
+# silently omit it: `find -type f` skips symlinks, where the old `zip -rX`
+# dereferenced and stored their contents. This check MUST precede the touch
+# below: touch without -h dereferences, so stamping first would rewrite the
+# mtime of a target OUTSIDE dist/ and only then refuse to build.
+if find dist -type l -print -quit | grep -q .; then
+  echo "refusing to zip: dist/ contains a symlink" >&2
+  exit 1
+fi
+
+# -type f, not the whole tree: only files are archived, so directories never
+# needed stamping — and an unfiltered stamp is one more thing that could act
+# outside its lane.
+find dist -type f -exec touch -t "$TOUCH_TS" {} +
 
 # Same reason as the touch: zip records st_mode in the central directory's
 # external attributes, and -X only drops the *extra* fields (UT timestamps, Ux
 # uid/gid). A builder whose umask is 002 gets 664 files and therefore a
 # different digest from CI's 644 — from byte-identical inputs, which is exactly
 # the "looks like tampering" failure this script exists to prevent. Verify with
-# `unzip -Z <zip>`: every entry should read -rw-r--r--.
+# `unzip -Z <zip>`: every entry should read -rw-r--r--. (With modes pinned,
+# umask is no longer an input, which is why BUILD-ENV.txt doesn't record it.)
 find dist -type f -exec chmod 644 {} +
 find dist -type d -exec chmod 755 {} +
-
-# A Vite dist/ has no symlinks. If one ever appears, fail loudly rather than
-# silently omit it: `find -type f` skips symlinks, where the old `zip -rX`
-# dereferenced and stored their contents.
-if find dist -type l -print -quit | grep -q .; then
-  echo "refusing to zip: dist/ contains a symlink" >&2
-  exit 1
-fi
 
 # A sorted file list, not `zip -r`: -r walks in filesystem order, which is not
 # stable across machines. `find -type f` also emits no directory entries, so

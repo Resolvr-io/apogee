@@ -69,11 +69,18 @@ jobs:
             echo "runner: ${RUNNER_OS} ${RUNNER_ARCH}"
             echo "node: $(node -v)"
             echo "pnpm: $(pnpm -v)"
-            zip -v | head -2 | tr -s ' \n' ' '; echo
-            echo "umask: $(umask)"
+            # The distro's package revision is the identifier that actually
+            # distinguishes builds whose deflate streams could drift across a
+            # release series — bare "Zip 3.0" has been universal since 2008.
+            # Both probes tolerate failure: this file is informational, and
+            # under Actions' default `-eo pipefail` a fragility here could kill
+            # the release AFTER build and BEFORE gh release create. (The grep,
+            # not a head-slice: Info-ZIP leads with a banner line.)
+            echo "zip: $(zip -v 2>&1 | grep -m1 -i 'this is zip' || echo unknown)"
+            echo "zip-pkg: $(dpkg-query -W zip 2>/dev/null || echo unknown)"
             echo "recipe: scripts/build-release-zip.sh (mtimes pinned to the tag's commit time, modes 644, sorted entries, deflate -6)"
-          } > BUILD-ENV.txt
-          cat BUILD-ENV.txt
+          } > BUILD-ENV.txt || true
+          cat BUILD-ENV.txt || true
 
       # Release notes come from the README's section for this version, so the
       # changelog has ONE source: the GitHub Release, the landing site's
