@@ -2,11 +2,19 @@ import type { LiquidExecuteTxManifestResult } from "@/provider/liquid-rpc";
 import type { Enc } from "@/keystore/crypto";
 import type { LiquidNetwork } from "@/keystore/keystore";
 
+/**
+ * L-9 (2026-08 scan): the terminal record persists ONLY the txid. The rest of
+ * the result shape — requestId, chainId, accountIdentifier, bundleHash, action
+ * — is reconstructible from the replayed invocation, which the digest check at
+ * the top of execute() has already proven identical to the original, and
+ * storing it made this table a readable lending/counterparty log for 7 days.
+ * Legacy records that still carry a `result` field are trimmed on load.
+ */
 export type TxManifestTerminalRecord = {
   key: string;
   invocationDigest: `sha256:${string}`;
   completedAt: number;
-  result: LiquidExecuteTxManifestResult;
+  txid: string;
 };
 
 /**
@@ -74,6 +82,7 @@ export class TxManifestIdempotency {
   async execute(
     key: string,
     invocationDigest: `sha256:${string}`,
+    rehydrate: (txid: string) => LiquidExecuteTxManifestResult,
     operation: (
       generation: TxManifestExecutionGeneration,
     ) => Promise<LiquidExecuteTxManifestResult>,
@@ -87,7 +96,7 @@ export class TxManifestIdempotency {
     if (existing) {
       this.requireSameInvocation(existing.invocationDigest, invocationDigest);
       if (isFailed(existing)) throw new Error(existing.message);
-      if (!isCheckpoint(existing)) return existing.result;
+      if (!isCheckpoint(existing)) return rehydrate(existing.txid);
       if (!resume) throw new Error("This TX Manifest execution must be resumed from its checkpoint.");
     }
     const running = this.inFlight.get(key);
@@ -106,7 +115,7 @@ export class TxManifestIdempotency {
         : await operation(generation);
       this.assertActive(generation);
       await this.persistTerminal(
-        { key, invocationDigest, completedAt: this.now(), result },
+        { key, invocationDigest, completedAt: this.now(), txid: result.txid },
         generation,
       );
       return result;
@@ -131,7 +140,7 @@ export class TxManifestIdempotency {
       checkpointedAt: this.now(),
     };
     return this.queueGenerationWrite(generation, async () => {
-      const records = await this.store.load();
+      const records = await this.loadNormalized();
       this.assertActive(generation);
       const cutoff = this.now() - RETENTION_MS;
       const existing = records.find(
@@ -170,7 +179,7 @@ export class TxManifestIdempotency {
       message: `This saved TX Manifest transaction is no longer valid. Submit the action again with a new requestId. ${details}`,
     };
     return this.queueGenerationWrite(generation, async () => {
-      const records = await this.store.load();
+      const records = await this.loadNormalized();
       this.assertActive(generation);
       const existing = records.find((candidate) => candidate.key === key);
       if (!existing || !isCheckpoint(existing)) {
@@ -180,6 +189,22 @@ export class TxManifestIdempotency {
       await this.store.save(
         records.filter((candidate) => candidate.key !== key).concat(failure),
       );
+    });
+  }
+
+  /** Load with legacy terminal records trimmed to the L-9 shape, so a store
+   *  written before the trim converges on its next write. */
+  private async loadNormalized(): Promise<TxManifestExecutionRecord[]> {
+    const records = await this.store.load();
+    return records.map((record) => {
+      if (!("result" in record)) return record;
+      const legacy = record as { key: string; invocationDigest: `sha256:${string}`; completedAt: number; result: { txid: string } };
+      return {
+        key: legacy.key,
+        invocationDigest: legacy.invocationDigest,
+        completedAt: legacy.completedAt,
+        txid: legacy.result.txid,
+      };
     });
   }
 
@@ -231,7 +256,7 @@ export class TxManifestIdempotency {
     this.assertActive(generation);
     this.assertStorageReady();
     const cutoff = this.now() - RETENTION_MS;
-    const records = await this.store.load();
+    const records = await this.loadNormalized();
     this.assertActive(generation);
     this.assertStorageReady();
     return records.find(
@@ -248,7 +273,7 @@ export class TxManifestIdempotency {
   ): Promise<void> {
     return this.queueGenerationWrite(generation, async () => {
       const cutoff = this.now() - RETENTION_MS;
-      const current = await this.store.load();
+      const current = await this.loadNormalized();
       this.assertActive(generation);
       const checkpoints = current.filter(
         (candidate) => isCheckpoint(candidate) && candidate.key !== record.key,

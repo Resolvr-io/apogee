@@ -2145,6 +2145,19 @@ async function executeProviderTxManifest(
         return txManifestIdempotency.execute(
           key,
           invocationDigest,
+          // Terminal-replay rehydration (L-9): only the txid is persisted, and
+          // the digest check above has already proven the replayed invocation
+          // identical to the original — so the rest of the result shape is
+          // rebuilt from the request in hand, not from stored metadata.
+          (txid) => ({
+            requestId: invocation.requestId,
+            chainId: invocation.chainId,
+            accountIdentifier: invocation.accountIdentifier,
+            bundleHash: invocation.manifest.bundleHash,
+            action: invocation.action,
+            status: "broadcast",
+            txid,
+          }),
           async (idempotencyGeneration) => {
             const plan = await engine<TxManifestRequirementPlan>({
               kind: "resolveTxManifestRequirements",
