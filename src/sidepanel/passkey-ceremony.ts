@@ -54,6 +54,46 @@ export async function webAuthnAvailable(): Promise<boolean> {
   return typeof window !== "undefined" && "PublicKeyCredential" in window;
 }
 
+/**
+ * Why the ceremony can't run here, or null if nothing rules it out.
+ *
+ * `isUserVerifyingPlatformAuthenticatorAvailable()` is not enough on its own:
+ * it answers "is there a biometric" and returns true in profiles where the
+ * ceremony then never dispatches at all. A MANAGED browser is the case that
+ * cost this feature days — enterprise policy can leave Chrome with nowhere to
+ * save a passkey, and the request is accepted and then simply never surfaced,
+ * so the user watches a spinner with no prompt and no error. The same build in
+ * an unmanaged profile prompts immediately.
+ *
+ * `getClientCapabilities()` is the only pre-gesture signal that speaks to what
+ * the CLIENT will actually do rather than what the hardware has. Chrome reports
+ * `extension:prf` there, which is exactly the capability this feature stands on
+ * — a client that will not serve PRF cannot open the vault no matter what the
+ * authenticator can do. Absent (older Chrome) means "unknown", and unknown must
+ * not block: the ceremony itself is still the real test, and the abort below is
+ * what keeps an unknown from becoming an indefinite wait.
+ */
+export async function passkeyPreflightBlocker(): Promise<string | null> {
+  if (!(await webAuthnAvailable())) return "This browser can’t create passkeys.";
+  const pkc = (window as { PublicKeyCredential?: typeof PublicKeyCredential }).PublicKeyCredential;
+  if (!pkc?.getClientCapabilities) return null; // older Chrome: unknown, not blocked
+  let caps: Record<string, boolean | undefined>;
+  try {
+    caps = (await pkc.getClientCapabilities()) as unknown as Record<string, boolean | undefined>;
+  } catch {
+    return null; // unknown again — let the ceremony decide
+  }
+  // Only treat an EXPLICIT false as a blocker. A missing key is a capability
+  // this Chrome doesn't report, not a capability it lacks.
+  if (caps["extension:prf"] === false) {
+    return "This browser can’t use passkeys to unlock. Your password still works.";
+  }
+  if (caps.userVerifyingPlatformAuthenticator === false && caps.hybridTransport === false) {
+    return "No passkey device available here. Your password still works.";
+  }
+  return null;
+}
+
 /** Can THIS device offer the biometric door? Kept separate from
  *  webAuthnAvailable because only the discoverability offer promises "your
  *  fingerprint" — a machine with no platform authenticator still sees Settings
@@ -90,6 +130,102 @@ export async function passkeyCapable(): Promise<boolean> {
  * last minute of patience.) Pinned by passkey-rp-contract.test.ts.
  */
 export const CEREMONY_TIMEOUT_MS = 180_000;
+
+/** The ceremony bound we ENFORCE, as opposed to the one we request.
+ *
+ * `timeout` in the publicKey options is a request to the client, and a client
+ * that never dispatches the ceremony is under no obligation to honor it — which
+ * is precisely the case this feature keeps hitting (a managed profile with
+ * nowhere to save a passkey). An AbortController is ours, fires regardless, and
+ * is the only thing that can turn "spinner forever" into a message. It also
+ * gives the UI a real Cancel: the OS sheet's own cancel does not always
+ * propagate back when no sheet ever appeared.
+ *
+ * Shorter than CEREMONY_TIMEOUT_MS would cut off a legitimate cross-device
+ * errand, so they match; the difference is that this one actually happens. */
+export class PasskeyUnresponsive extends Error {
+  constructor() {
+    super("PASSKEY_UNRESPONSIVE");
+  }
+}
+
+/**
+ * How long to wait for the OS sheet to appear before concluding it never will.
+ *
+ * The full ceremony bound has to stay long enough for a cross-device errand
+ * (fetch the phone, scan, approve), but a client that will never surface a
+ * prompt at all should not cost the user three minutes to discover. These are
+ * distinguishable, and cheaply: **a native passkey sheet takes focus.** When one
+ * appears the panel blurs; in a profile where the ceremony is accepted and never
+ * dispatched, focus never moves.
+ *
+ * So focus-still-here after this grace period means no sheet was ever shown.
+ * Deliberately conservative in three ways: it only arms when the document HAS
+ * focus at the start (otherwise "never lost it" infers nothing, which is also
+ * what keeps headless automation unaffected), any blur at all disarms it
+ * permanently, and 15s is far past the sub-second a platform sheet actually
+ * takes — so a slow authenticator is not mistaken for a blocked one.
+ */
+const NO_SHEET_GRACE_MS = 15_000;
+
+/** Watch for the sheet that takes focus. Returns a disarm function. */
+function armNoSheetWatchdog(controller: AbortController, say: (msg: string) => void): () => void {
+  if (typeof document === "undefined" || typeof window === "undefined") return () => {};
+  // No focus to lose — cannot infer anything, so stay out of the way.
+  if (!document.hasFocus()) return () => {};
+  let sheetAppeared = false;
+  const onBlur = () => {
+    sheetAppeared = true;
+    say("native sheet took focus");
+  };
+  window.addEventListener("blur", onBlur, { once: true });
+  const timer = setTimeout(() => {
+    if (sheetAppeared) return;
+    say("no sheet after grace period — the client never surfaced one");
+    controller.abort(new DOMException("PASSKEY_UNRESPONSIVE", "TimeoutError"));
+  }, NO_SHEET_GRACE_MS);
+  return () => {
+    clearTimeout(timer);
+    window.removeEventListener("blur", onBlur);
+  };
+}
+
+/** Bound a ceremony with a signal we control, and fold in a caller's own
+ *  (an in-app Cancel button) so either can end the wait. */
+function boundedSignal(
+  external?: AbortSignal,
+  say: (msg: string) => void = () => {},
+): { signal: AbortSignal; done: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new DOMException("PASSKEY_UNRESPONSIVE", "TimeoutError")),
+    CEREMONY_TIMEOUT_MS,
+  );
+  const disarmWatchdog = armNoSheetWatchdog(controller, say);
+  const onExternal = () =>
+    controller.abort(external?.reason ?? new DOMException("Canceled", "AbortError"));
+  if (external) {
+    if (external.aborted) onExternal();
+    else external.addEventListener("abort", onExternal, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    done: () => {
+      clearTimeout(timer);
+      disarmWatchdog();
+      external?.removeEventListener("abort", onExternal);
+    },
+  };
+}
+
+/** Map an abort back to which side ended it: our bound (no prompt ever came)
+ *  or the user (a deliberate cancel, which stays silent). */
+function abortKind(err: unknown): "unresponsive" | "cancelled" | null {
+  if (!(err instanceof DOMException)) return null;
+  if (err.name === "TimeoutError" || err.message === "PASSKEY_UNRESPONSIVE") return "unresponsive";
+  if (err.name === "AbortError") return "cancelled";
+  return null;
+}
 
 /** Which authenticators a ceremony will talk to, expressed the way the UI
  *  means it rather than the way WebAuthn spells it:
@@ -219,6 +355,9 @@ export async function enrollPasskeyCeremony(
    *  the Settings card renders the lines until we know why the native
    *  prompt never appears outside automation. */
   trace?: (msg: string) => void,
+  /** An in-app Cancel. Folded in alongside our own bound, so the user is never
+   *  stuck watching a ceremony no sheet ever appeared for. */
+  externalSignal?: AbortSignal,
 ): Promise<{
   prf: Uint8Array<ArrayBuffer>;
   credentialId: string;
@@ -235,9 +374,12 @@ export async function enrollPasskeyCeremony(
   // make enrolling a second passkey silently destroy the first.
   const userId = crypto.getRandomValues(new Uint8Array(16));
   let result: PublicKeyCredential;
+  const bound = boundedSignal(externalSignal, say);
   try {
     say("credentials.create() called");
     result = (await navigator.credentials.create({
+      // Ours, and it fires whether or not the client honors `timeout` below.
+      signal: bound.signal,
       publicKey: {
         // No `id`: see the RP ID note above. WebAuthn defaults it to the
         // caller's origin, which is what makes this work in a side panel.
@@ -276,8 +418,13 @@ export async function enrollPasskeyCeremony(
     // Order matters: "already pending" arrives AS a NotAllowedError, so the
     // cancellation branch below would swallow it into silence.
     if (isRequestPending(err)) throw new PasskeyRequestPending();
+    const aborted = abortKind(err);
+    if (aborted === "unresponsive") throw new PasskeyUnresponsive();
+    if (aborted === "cancelled") throw new PasskeyCancelled();
     if (err instanceof DOMException && err.name === "NotAllowedError") throw new PasskeyCancelled();
     throw err;
+  } finally {
+    bound.done();
   }
 
   const response = result.response as AuthenticatorAttestationResponse;
@@ -326,22 +473,26 @@ export function describeWebAuthnError(err: unknown): string {
 export async function unlockPasskeyCeremony(
   prfSalt: string,
   credentials: PasskeyCredentialRef[],
+  externalSignal?: AbortSignal,
 ): Promise<Uint8Array<ArrayBuffer>> {
-  return evaluatePrf(b64ToB64Url(prfSalt), descriptorsFor(credentials));
+  return evaluatePrf(b64ToB64Url(prfSalt), descriptorsFor(credentials), undefined, externalSignal);
 }
 
 async function evaluatePrf(
   b64UrlSalt: string,
   allow: PublicKeyCredentialDescriptor[],
   trace?: (msg: string) => void,
+  externalSignal?: AbortSignal,
 ): Promise<Uint8Array<ArrayBuffer>> {
   const t0 = performance.now();
   const say = (msg: string) => trace?.(`${msg} (${((performance.now() - t0) / 1000).toFixed(1)}s)`);
   const challenge = crypto.getRandomValues(new Uint8Array(32));
   let result: PublicKeyCredential;
+  const bound = boundedSignal(externalSignal, say);
   try {
     say("credentials.get() called");
     result = (await navigator.credentials.get({
+      signal: bound.signal,
       publicKey: {
         // No `rpId`, matching create() — see the RP ID note above.
         challenge,
@@ -360,8 +511,13 @@ async function evaluatePrf(
   } catch (err) {
     say(`credentials.get() threw ${describeWebAuthnError(err)}`);
     if (isRequestPending(err)) throw new PasskeyRequestPending();
+    const aborted = abortKind(err);
+    if (aborted === "unresponsive") throw new PasskeyUnresponsive();
+    if (aborted === "cancelled") throw new PasskeyCancelled();
     if (err instanceof DOMException && err.name === "NotAllowedError") throw new PasskeyCancelled();
     throw err;
+  } finally {
+    bound.done();
   }
   const prf = prfResults(result.getClientExtensionResults());
   if (!prf) throw new Error("PASSKEY_NO_PRF"); // supported, but this credential/store won't evaluate

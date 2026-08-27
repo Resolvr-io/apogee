@@ -238,3 +238,201 @@ describe("the one-request-at-a-time refusal", () => {
     await expect(ceremony.enrollPasskeyCeremony(SALT, [])).rejects.toThrow("PASSKEY_CANCELLED");
   });
 });
+
+// The failure that made this feature look broken for two days: in a MANAGED
+// Chrome profile the ceremony is accepted and no prompt is ever surfaced. The
+// same build in an unmanaged profile prompts immediately. `timeout` in the
+// publicKey options is a request to the client and buys nothing when the client
+// never dispatches, so the bound has to be one we enforce.
+describe("a ceremony the client never surfaces", () => {
+  /** create() that never settles, as a managed profile produces. */
+  function stubNeverSettles() {
+    const api = {
+      create: vi.fn(
+        (opts: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            opts.signal?.addEventListener("abort", () => reject(opts.signal!.reason));
+          }),
+      ),
+      get: vi.fn(
+        (opts: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            opts.signal?.addEventListener("abort", () => reject(opts.signal!.reason));
+          }),
+      ),
+    };
+    vi.stubGlobal("navigator", { credentials: api });
+    return api;
+  }
+
+  it("passes a signal the ceremony can actually be ended with", async () => {
+    const api = stubNeverSettles();
+    const ac = new AbortController();
+    const pending = ceremony.enrollPasskeyCeremony(SALT, [], "any", undefined, ac.signal);
+    // The signal reaching navigator IS the contract: without it, nothing the UI
+    // does can settle this promise.
+    expect(api.create.mock.calls[0][0].signal).toBeInstanceOf(AbortSignal);
+    ac.abort(new DOMException("Canceled", "AbortError"));
+    // A user-initiated abort reads as a cancellation, which stays silent.
+    await expect(pending).rejects.toThrow("PASSKEY_CANCELLED");
+  });
+
+  it("reports our own bound as unresponsive, not as a cancellation", async () => {
+    vi.useFakeTimers();
+    try {
+      stubNeverSettles();
+      const pending = ceremony.enrollPasskeyCeremony(SALT, []);
+      const assertion = expect(pending).rejects.toThrow("PASSKEY_UNRESPONSIVE");
+      await vi.advanceTimersByTimeAsync(ceremony.CEREMONY_TIMEOUT_MS + 1_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds unlock the same way", async () => {
+    vi.useFakeTimers();
+    try {
+      stubNeverSettles();
+      const pending = ceremony.unlockPasskeyCeremony(SALT, [{ id: "AQIDBA" }]);
+      const assertion = expect(pending).rejects.toThrow("PASSKEY_UNRESPONSIVE");
+      await vi.advanceTimersByTimeAsync(ceremony.CEREMONY_TIMEOUT_MS + 1_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("preflight, before any user gesture is spent", () => {
+  function stubCapabilities(caps: Record<string, boolean> | null) {
+    vi.stubGlobal("navigator", { credentials: {} });
+    vi.stubGlobal("window", {
+      PublicKeyCredential: caps
+        ? { getClientCapabilities: async () => caps }
+        : {},
+    });
+  }
+
+  it("declines when the client says it will not serve PRF", async () => {
+    stubCapabilities({ "extension:prf": false });
+    // Loose on wording, strict on which blocker fired: copy gets tuned, and a
+    // test that breaks on every rephrase gets loosened carelessly instead.
+    expect(await ceremony.passkeyPreflightBlocker()).toMatch(/passkeys to unlock/);
+  });
+
+  it("declines when there is no authenticator of any kind", async () => {
+    stubCapabilities({ userVerifyingPlatformAuthenticator: false, hybridTransport: false });
+    expect(await ceremony.passkeyPreflightBlocker()).toMatch(/passkey device/i);
+  });
+
+  it("does not block when the client reports PRF support", async () => {
+    stubCapabilities({ "extension:prf": true, userVerifyingPlatformAuthenticator: true });
+    expect(await ceremony.passkeyPreflightBlocker()).toBeNull();
+  });
+
+  it("treats an unreported capability as unknown, not as absent", async () => {
+    // Older Chrome has no getClientCapabilities at all, and a Chrome that has
+    // it may still omit keys. Blocking on silence would disable the feature for
+    // clients that work fine; the enforced bound is what covers the unknown.
+    stubCapabilities(null);
+    expect(await ceremony.passkeyPreflightBlocker()).toBeNull();
+    stubCapabilities({});
+    expect(await ceremony.passkeyPreflightBlocker()).toBeNull();
+  });
+});
+
+// The watchdog that turns a three-minute dead wait into a fifteen-second
+// explanation. Premise, taken from observed behavior: a native passkey sheet
+// TAKES FOCUS. If focus never moves, no sheet was ever shown.
+describe("no-sheet watchdog", () => {
+  function stubFocusedDocument(hasFocus: boolean) {
+    const listeners: Record<string, (() => void)[]> = {};
+    vi.stubGlobal("document", { hasFocus: () => hasFocus });
+    vi.stubGlobal("window", {
+      PublicKeyCredential: {},
+      addEventListener: (type: string, fn: () => void) => {
+        (listeners[type] ??= []).push(fn);
+      },
+      removeEventListener: () => {},
+    });
+    return { blur: () => listeners.blur?.forEach((fn) => fn()) };
+  }
+
+  function stubNeverSettles() {
+    const api = {
+      create: vi.fn(
+        (opts: { signal?: AbortSignal }) =>
+          new Promise((_r, reject) => {
+            opts.signal?.addEventListener("abort", () => reject(opts.signal!.reason));
+          }),
+      ),
+    };
+    vi.stubGlobal("navigator", { credentials: api });
+    return api;
+  }
+
+  it("gives up early when focus never moves", async () => {
+    vi.useFakeTimers();
+    try {
+      stubFocusedDocument(true);
+      stubNeverSettles();
+      const pending = ceremony.enrollPasskeyCeremony(SALT, []);
+      const assertion = expect(pending).rejects.toThrow("PASSKEY_UNRESPONSIVE");
+      // Well short of the full ceremony bound.
+      await vi.advanceTimersByTimeAsync(20_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stands down once a sheet takes focus, leaving the full bound to run", async () => {
+    vi.useFakeTimers();
+    try {
+      const doc = stubFocusedDocument(true);
+      stubNeverSettles();
+      const pending = ceremony.enrollPasskeyCeremony(SALT, []);
+      pending.catch(() => {}); // settled at the end of the test, not here
+      doc.blur(); // the OS sheet appeared
+      await vi.advanceTimersByTimeAsync(60_000);
+      // Still waiting: a real cross-device errand must not be cut off just
+      // because it takes longer than the grace period.
+      let settled = false;
+      void pending.then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(ceremony.CEREMONY_TIMEOUT_MS);
+      await expect(pending).rejects.toThrow("PASSKEY_UNRESPONSIVE");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stays out of the way when the document has no focus to lose", async () => {
+    vi.useFakeTimers();
+    try {
+      stubFocusedDocument(false); // headless automation looks like this
+      stubNeverSettles();
+      const pending = ceremony.enrollPasskeyCeremony(SALT, []);
+      pending.catch(() => {});
+      await vi.advanceTimersByTimeAsync(60_000);
+      let settled = false;
+      void pending.then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      // Never-lost-focus infers nothing when focus was never held, so the
+      // watchdog must not fire — otherwise it breaks every headless run.
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(ceremony.CEREMONY_TIMEOUT_MS);
+      await expect(pending).rejects.toThrow("PASSKEY_UNRESPONSIVE");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

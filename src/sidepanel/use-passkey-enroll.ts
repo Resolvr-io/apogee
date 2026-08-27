@@ -10,9 +10,11 @@ import {
   PasskeyCancelled,
   PasskeyRequestPending,
   type PasskeyTarget,
+  PasskeyUnresponsive,
   describeWebAuthnError,
   enrollPasskeyCeremony,
   passkeyCapable,
+  passkeyPreflightBlocker,
   webAuthnAvailable,
 } from "@/sidepanel/passkey-ceremony";
 import { errMessage, wallet } from "@/sidepanel/wallet-client";
@@ -33,6 +35,10 @@ export function usePasskeyEnroll() {
   // diagnosed without opening DevTools. Strip once enrollment is proven on
   // real hardware.
   const [log, setLog] = useState<string[]>([]);
+  // The live ceremony's canceller. A ceremony that never gets a native sheet
+  // cannot be dismissed by the user any other way, which is the whole reason
+  // this exists rather than relying on the OS dialog's own cancel.
+  const aborter = useRef<AbortController | null>(null);
   const t0 = useRef(performance.now());
   const push = useCallback((msg: string) => {
     setLog((prev) => {
@@ -66,8 +72,17 @@ export function usePasskeyEnroll() {
     push(`— attempt started (${target}) —`);
     try {
       // No permission gate: ceremonies send no RP ID, so there is nothing to
-      // grant (docs/passkey-unlock.md §4). The click's gesture carries straight
-      // into create().
+      // grant (docs/passkey-unlock.md §4). What IS checked first is whether the
+      // client will serve this at all — a managed profile can accept the
+      // ceremony and never surface a prompt, and declining up front beats a
+      // three-minute spinner (docs/passkey-unlock.md §4, "when the client
+      // simply will not").
+      const blocker = await passkeyPreflightBlocker();
+      push(`preflight: ${blocker ?? "clear"}`);
+      if (blocker) {
+        setError(blocker);
+        return false;
+      }
       const challenge = await wallet.passkeyChallenge();
       const existing = challenge?.credentials ?? [];
       push(`challenge: ${existing.length} enrolled, ${challenge ? "vault salt" : "fresh salt"}`);
@@ -77,11 +92,13 @@ export function usePasskeyEnroll() {
       const prfSalt = challenge?.prfSalt ?? bytesToBase64(randomBytes(32));
       let created = false;
       try {
+        aborter.current = new AbortController();
         const { prf, credentialId, kind, transports } = await enrollPasskeyCeremony(
           prfSalt,
           existing,
           target,
           push,
+          aborter.current.signal,
         );
         // The moment create() returns, a resident credential exists whether or
         // not anything below succeeds (WebAuthn has no delete).
@@ -104,7 +121,7 @@ export function usePasskeyEnroll() {
             msg.includes("PASSKEY_BAD_PRF"))
         ) {
           setError(
-            "The passkey was created on your device but Apogee couldn’t finish enrolling it. You can remove it from your device’s password manager.",
+            "Created on your device, but Apogee couldn’t finish enrolling it. You can remove it from your password manager.",
           );
           void refresh();
           return false;
@@ -116,12 +133,17 @@ export function usePasskeyEnroll() {
       return true;
     } catch (err) {
       const msg = errMessage(err);
-      if (err instanceof PasskeyRequestPending) {
+      if (err instanceof PasskeyUnresponsive) {
+        // The ceremony was accepted and never surfaced. Overwhelmingly this is
+        // a browser-level restriction rather than anything about the device, so
+        // the copy points at the profile and leaves the password untouched.
+        setError(
+          "Your browser didn’t show a passkey prompt. Passkeys may be restricted here. Your password still works.",
+        );
+      } else if (err instanceof PasskeyRequestPending) {
         // Not a cancellation, however much it looks like one to the browser:
         // an earlier ceremony is still open and Chrome allows only one.
-        setError(
-          "Another passkey request is still open. Close the Apogee panel, reopen it, and try again.",
-        );
+        setError("Another passkey request is still open. Close and reopen the panel, then try again.");
       } else if (err instanceof PasskeyCancelled) {
         // A cancelled prompt enrolls nothing — a shrug, not an error.
         push("cancelled");
@@ -132,13 +154,13 @@ export function usePasskeyEnroll() {
         // somewhere instead of just saying no.
         setError(
           target === "another-device"
-            ? "That device already has a passkey for this wallet. Try a different phone or security key."
-            : "This device already has a passkey for this wallet. Use “Another device” to add a phone or security key.",
+            ? "That device already has one. Try a different phone or security key."
+            : "This device already has one. Use “Another device” for a phone or security key.",
         );
       } else if (msg.includes("PASSKEY_NO_PRF")) {
         setError(
           target === "another-device"
-            ? "That device’s passkeys can’t be used to unlock Apogee. Your password is unchanged."
+            ? "That device’s passkeys can’t unlock Apogee. Your password is unchanged."
             : "This device’s passkey can’t be used here. Your password is unchanged.",
         );
       } else {
@@ -146,9 +168,16 @@ export function usePasskeyEnroll() {
       }
       return false;
     } finally {
+      aborter.current = null;
       setBusy(false);
     }
   }, [push, refresh]);
+
+  /** Abandon the ceremony in flight. Resolves the spinner immediately and
+   *  silently, the way a dismissed OS sheet would if one had appeared. */
+  const cancel = useCallback(() => {
+    aborter.current?.abort(new DOMException("Canceled", "AbortError"));
+  }, []);
 
   const remove = useCallback(
     async (id: string) => {
@@ -166,5 +195,5 @@ export function usePasskeyEnroll() {
     [refresh],
   );
 
-  return { passkeys, available, supported, busy, error, log, enroll, remove, refresh };
+  return { passkeys, available, supported, busy, error, log, enroll, cancel, remove, refresh };
 }

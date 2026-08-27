@@ -276,9 +276,9 @@ test.describe.serial("Passkeys from more than one device", () => {
     await onlyAuthenticator(deviceAuth);
     await openSettings();
     await panel.getByRole("button", { name: "Add passkey" }).click();
-    await expect(panel.getByText(/Use .Another device. to add a phone or security key/)).toBeVisible({
-      timeout: 30_000,
-    });
+    // Loose on wording, strict on the thing that matters: the refusal has to
+    // name the route that actually works, or the user is back at a dead end.
+    await expect(panel.getByText(/Use .Another device./)).toBeVisible({ timeout: 30_000 });
     // Nothing was added, and nothing was lost.
     expect(await enrolledCredentialIds()).toHaveLength(2);
     expect(await credentialIdsOn(deviceAuth)).toEqual(deviceIds);

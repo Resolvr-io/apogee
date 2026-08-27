@@ -1101,6 +1101,19 @@ export function Wallet({
                 {passkeyEnroll.busy ? <Spinner className="size-4" /> : null}
                 Set up passkey
               </Button>
+              {/* While a ceremony is open this is the ONLY way out: if the
+                  browser never surfaces a prompt there is no OS sheet to
+                  dismiss, and the wait would otherwise run to the ceremony
+                  bound. */}
+              {passkeyEnroll.busy && (
+                <button
+                  type="button"
+                  onClick={passkeyEnroll.cancel}
+                  className="text-xs font-medium text-[color:var(--text-secondary)] hover:underline"
+                >
+                  Cancel
+                </button>
+              )}
               <button
                 type="button"
                 onClick={dismissPasskeyOffer}
@@ -1115,9 +1128,14 @@ export function Wallet({
                 hook instance, so without this its lines had nowhere to show
                 (spinner spun, trail invisible). See usePasskeyEnroll. */}
             {passkeyEnroll.log.length > 0 && (
-              <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-[color:var(--border-soft)] p-2 font-mono text-[10px] leading-snug text-[color:var(--text-subtle)]">
-                {passkeyEnroll.log.join("\n")}
-              </pre>
+              <details className="rounded-lg border border-[color:var(--border-soft)]">
+                <summary className="cursor-pointer select-none px-2 py-1.5 text-[10px] uppercase tracking-wide text-[color:var(--text-subtle)]">
+                  Diagnostics ({passkeyEnroll.log.length})
+                </summary>
+                <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap px-2 pb-2 font-mono text-[10px] leading-snug text-[color:var(--text-subtle)]">
+                  {passkeyEnroll.log.join("\n")}
+                </pre>
+              </details>
             )}
           </div>
         )}
@@ -1508,13 +1526,21 @@ function TxRow({
   } else {
     amountText = ""; // not used for swap rows
   }
+  // Three annotation states, and only ONE of them is a caution (see
+  // tx-manifest/history.ts). "unsupported" means the marker names a bundle this
+  // VERSION does not carry — a transaction made against a contract that shipped
+  // on another branch reads that way forever, with nothing wrong with it — so it
+  // gets neutral copy and neutral color. "unverified" is the real caution: the
+  // bundle IS known and the marker failed a check (ambiguous marker, no
+  // wallet-owned input, shape mismatch). Note neither state claims the
+  // transaction was authenticated, so the copy must not imply it either.
   const manifestLabel =
     tx.txManifest?.status === "verified"
       ? tx.txManifest.actionLabel
       : tx.txManifest?.status === "unsupported"
-        ? "Unsupported manifest action"
+        ? "Unrecognized contract"
         : tx.txManifest?.status === "unverified"
-          ? "Unverified manifest marker"
+          ? "Unverified contract marker"
           : null;
   const activityIdentity = (
     <span className="flex min-w-0 flex-1 flex-col">
@@ -1524,7 +1550,11 @@ function TxRow({
             "truncate text-sm",
             tx.txManifest?.status === "verified"
               ? "text-[color:var(--text-primary)]"
-              : "text-[color:var(--warning-text)]",
+              : tx.txManifest?.status === "unsupported"
+                ? // Quiet, not orange: an unknown bundle is missing information,
+                  // not a problem with the transaction.
+                  "text-[color:var(--text-secondary)]"
+                : "text-[color:var(--warning-text)]",
           )}
           title={manifestLabel}
         >
@@ -1640,7 +1670,16 @@ function TxRow({
           </>
         )}
         {tx.txManifest?.status === "unsupported" && (
-          <Row label="Manifest" value="Unsupported on-chain bundle" />
+          <>
+            <Row label="Manifest" value="Not supported in this version" />
+            {/* The bundle hash is the ONLY thing that identifies which contract
+                this was, and the annotation already carries it — withholding it
+                here left "unsupported" impossible to act on. */}
+            <Row
+              label="Bundle"
+              value={shortenHex(tx.txManifest.bundleHash.replace(/^sha256:/, ""), 6, 6)}
+            />
+          </>
         )}
         {tx.txManifest?.status === "unverified" && (
           <Row label="Manifest" value="Marker could not be verified" />
@@ -2629,6 +2668,17 @@ function SettingsBody({
                     <Smartphone size={12} />
                     Another device
                   </button>
+                  {/* See the offer card: with no native sheet there is nothing
+                      else to dismiss, so the ceremony needs an in-app exit. */}
+                  {passkeyBusy && (
+                    <button
+                      type="button"
+                      onClick={passkeyEnroll.cancel}
+                      className="text-xs font-medium text-[color:var(--text-subtle)] hover:underline"
+                    >
+                      Cancel
+                    </button>
+                  )}
                 </span>
               )}
             </div>
@@ -2698,9 +2748,14 @@ function SettingsBody({
                 prompt that never appears outside automation. Strip before
                 release. */}
             {passkeyLog.length > 0 && (
-              <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-[color:var(--border-soft)] p-2 font-mono text-[10px] leading-snug text-[color:var(--text-subtle)]">
-                {passkeyLog.join("\n")}
-              </pre>
+              <details className="rounded-lg border border-[color:var(--border-soft)]">
+                <summary className="cursor-pointer select-none px-2 py-1.5 text-[10px] uppercase tracking-wide text-[color:var(--text-subtle)]">
+                  Diagnostics ({passkeyLog.length})
+                </summary>
+                <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap px-2 pb-2 font-mono text-[10px] leading-snug text-[color:var(--text-subtle)]">
+                  {passkeyLog.join("\n")}
+                </pre>
+              </details>
             )}
           </div>
         )}

@@ -11,6 +11,7 @@ import { Button, ErrorText, Field, Input, Spinner, WelcomeShell } from "@/sidepa
 import {
   PasskeyCancelled,
   PasskeyRequestPending,
+  PasskeyUnresponsive,
   unlockPasskeyCeremony,
 } from "@/sidepanel/passkey-ceremony";
 import {
@@ -136,10 +137,12 @@ export function Unlock({
       onDone();
     } catch (err) {
       const msg = errMessage(err);
-      if (err instanceof PasskeyRequestPending) {
-        setError(
-          "Another passkey request is still open. Close the Apogee panel, reopen it, and try again.",
-        );
+      if (err instanceof PasskeyUnresponsive) {
+        // Was missing entirely, so an unlock in a profile that never surfaces a
+        // prompt fell through to the raw-message branch below.
+        setError("Your browser didn’t show a passkey prompt. Use your password.");
+      } else if (err instanceof PasskeyRequestPending) {
+        setError("Another passkey request is still open. Close and reopen the panel, then try again.");
       } else if (err instanceof PasskeyCancelled) {
         // A cancelled prompt is a shrug — no error, nothing spent.
       } else if (msg.includes("PASSKEY_UNLOCK_FAILED")) {
