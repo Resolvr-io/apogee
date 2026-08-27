@@ -46,7 +46,7 @@ import { KNOWN_ASSETS, policyAssetId } from "@/lib/asset-registry";
 import { type Denom, assetRows, heroSubtitle, portfolioTotal } from "@/lib/portfolio";
 import { DEBUG_ENTERPRISE_BUILD, DEBUG_ENTERPRISE_KEY } from "@/lib/debug";
 import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS, DEMO_UTXOS, useDemoFunds } from "@/lib/demo-funds";
-import { restrikeBalance } from "@/sidepanel/balance-strike";
+import { cancelBalanceStrike, restrikeBalance } from "@/sidepanel/balance-strike";
 import { useBalanceStrike } from "@/sidepanel/balance-warmup";
 import { useHeroCollapse } from "@/sidepanel/hero-collapse";
 import { moonRise, resetSceneScroll, setSceneScroll } from "@/sidepanel/scene-scroll";
@@ -189,17 +189,17 @@ function useDenomination(): [Denom, (d: Denom) => void, () => void] {
   const set = useCallback((d: Denom) => {
     setDenom(d);
     void browser.storage.local.set({ [DENOM_KEY]: d });
-    // The reshaped figure re-strikes (see restrikeBalance in balance-strike.ts):
-    // reconciled glyph spans would otherwise mix mid-flicker reuse with fresh
-    // mounts, and the figure changed — the sign relights. Also covers a toggle
-    // to fiat before the rate arrives: the arming is held until the figure is
-    // ready, and strikes when it is.
-    restrikeBalance();
+    // A denomination swap doesn't earn a flicker — the figure itself didn't
+    // move. If one is mid-flight it would smear across the reshaped string
+    // (reconciled glyph spans mixing reused animation progress with fresh
+    // mounts — see cancelBalanceStrike in balance-strike.ts), so a toggle
+    // stops the animation instead: whatever shows next is static.
+    cancelBalanceStrike();
   }, []);
   const cycle = useCallback(() => {
     // Outside the updater: side effects in a state updater run twice under
     // StrictMode's double-invoke.
-    restrikeBalance();
+    cancelBalanceStrike();
     setDenom((cur) => {
       const next = DENOM_ORDER[(DENOM_ORDER.indexOf(cur) + 1) % DENOM_ORDER.length];
       void browser.storage.local.set({ [DENOM_KEY]: next });
@@ -438,11 +438,11 @@ export function Wallet({
     hasUnconfirmed,
     // `ready` means "real numerals are ON SCREEN" — including the view. The
     // hook lives above the `view !== "home"` early return (hooks can't be
-    // conditional), so without this a denomination change from the Display
-    // dropdown in Settings would consume the re-strike arming on a hero that
-    // isn't rendered, and the ~1.3s window would lapse before the return
-    // home. Held here instead, the arming spends on the false→true edge when
-    // the home view remounts.
+    // conditional), so without this an arming could spend on a decision whose
+    // hero isn't rendered, or be consumed by stars, a spinner or the
+    // rate-failed dash, and the ~1.3s window would lapse before anything lit.
+    // Held here instead, the strike spends on the false→true edge when the
+    // home view remounts with figures actually showing.
     homeActive &&
       !(hidden || !sync) &&
       (denom !== "fiat" || rate != null) &&

@@ -18,6 +18,7 @@ import { MAX_DIGIT_STRIKE_MS } from "@/sidepanel/digit-cycle";
 import {
   STRIKE_MS,
   armBalanceStrike,
+  cancelBalanceStrike,
   getArmVersion,
   restrikeBalance,
   shouldStrike,
@@ -104,6 +105,63 @@ describe("balance strike", () => {
     // Retuning digit-cycle must carry the decision window with it.
     expect(STRIKE_MS).toBe(MAX_DIGIT_STRIKE_MS + 100);
   });
+
+  it("cancel stops a playing strike: the next read of the figure is static", () => {
+    expect(shouldStrike("2157431", false)).toBe(true); // strike latched, flicker live
+    cancelBalanceStrike(); // the denomination toggle
+    expect(shouldStrike("2157431", false)).toBe(false);
+  });
+
+  it("a real balance change after a cancellation still strikes", () => {
+    expect(shouldStrike("2157431", false)).toBe(true);
+    cancelBalanceStrike();
+    // Only the unit changed — the history the machine keeps is untouched, so a
+    // genuine change still reads as one.
+    expect(shouldStrike("3000000", false)).toBe(true);
+  });
+
+  it("cancel reaches a live strike past an orphaned memo timer (toggle, sync, toggle)", () => {
+    // Restrike and cancel both null the memo and let the same figure be
+    // re-derived, so timers from earlier generations keep ticking against a
+    // key they can still match. Timeline: strike (T1) → toggle → static
+    // re-derive (T2) → sync mid-window re-lights the figure (T3) → T1 expires
+    // harmlessly, then T2 lands DURING the live strike. Matching on key alone,
+    // T2 would kill that live memo and the toggle below would silently no-op —
+    // smearing again, which is exactly what this module exists to prevent.
+    expect(shouldStrike("2157431", false)).toBe(true); // gen 1, T1 armed
+    cancelBalanceStrike();
+    vi.advanceTimersByTime(500);
+    expect(shouldStrike("2157431", false)).toBe(false); // gen 2, T2 armed
+    vi.advanceTimersByTime(800); // t=1300: gen 1's timer fires on another generation
+    restrikeBalance(); // manual sync mid-window
+    expect(shouldStrike("2157431", false)).toBe(true); // gen 3, live
+    vi.advanceTimersByTime(500); // t=1800: gen 2's timer lands on the live strike
+    const before = getArmVersion();
+    cancelBalanceStrike();
+    expect(getArmVersion()).not.toBe(before); // notified — the hero remounts static
+    expect(shouldStrike("2157431", false)).toBe(false);
+  });
+
+  it("cancel is a no-op while nothing plays: no spurious notification", () => {
+    // With no strike decided yet (the stars phase), there is nothing to stop.
+    // The pending arming survives by construction — cancel never touches
+    // armed/last* — so what the early return actually buys is NOT telling the
+    // hero; that's the part this pins.
+    const before = getArmVersion();
+    cancelBalanceStrike();
+    expect(getArmVersion()).toBe(before);
+    expect(shouldStrike("2157431", false)).toBe(true); // rule 1 intact
+  });
+
+  it("cancel is a no-op while the figure is settling", () => {
+    // The memo exists here with strike=false — the other branch of the guard,
+    // the settling case the doc comment calls out.
+    expect(shouldStrike("2157431", true)).toBe(false);
+    const before = getArmVersion();
+    cancelBalanceStrike();
+    expect(getArmVersion()).toBe(before);
+    expect(shouldStrike("2500000", false)).toBe(true); // rule 2 intact
+  });
 });
 
 describe("arming notification", () => {
@@ -147,5 +205,21 @@ describe("arming notification", () => {
     unsubscribe(); // listeners are module scope — never leak a spy forward
     // ...but it still armed: the next figure shown is a first display again.
     expect(shouldStrike("2157431", false)).toBe(true);
+  });
+
+  it("delivers a notification when a playing strike is cancelled", () => {
+    // The epoch only drops if the hook hears about the cancellation — without
+    // this, cancelBalanceStrike could stop the machine while the flicker kept
+    // playing on screen. The second call has nothing left to stop and must
+    // stay quiet (the no-op pins live in the describe above).
+    expect(shouldStrike("2157431", false)).toBe(true);
+    const onChange = vi.fn();
+    const unsubscribe = subscribeToArming(onChange);
+    cancelBalanceStrike();
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    cancelBalanceStrike();
+    expect(onChange).toHaveBeenCalledTimes(1);
   });
 });
