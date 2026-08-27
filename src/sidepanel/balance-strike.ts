@@ -91,10 +91,29 @@ export function armBalanceStrike(): void {
 }
 
 /** Re-arm AND nudge a mounted hero, so its figure re-strikes even unchanged —
- *  the manual sync (see Wallet's `refresh`) and the denomination toggle: the
- *  figure reshapes either way, and the sign relights with it. */
+ *  the manual sync (see Wallet's `refresh`). */
 export function restrikeBalance(): void {
   arm(true);
+}
+
+/** Drop any live strike so what shows next is static — the denomination
+ *  toggle's path. A reshaped figure mid-flicker is the worst of both worlds
+ *  (reconciled glyph spans mix reused animation progress with fresh mounts
+ *  around the new digit string), and relighting on every unit swap read as
+ *  noise; a toggle kills an in-flight flicker outright instead. Only strikes
+ *  actually playing or still within their latch window count — a toggle in
+ *  the stars/settling phases must NOT spend the pending arming meant for the
+ *  numerals' arrival (a no-op there keeps rule 1 intact). `armed`,
+ *  `lastSats`, `lastUnconfirmed` are deliberately untouched: nothing about
+ *  the underlying balance changed, so its history stays the machine's, and a
+ *  real balance change afterward still strikes. The arm bump reruns the
+ *  hook's decision effect, whose fresh `shouldStrike` reads false and drops
+ *  the epoch — rendering plain numerals immediately. */
+export function cancelBalanceStrike(): void {
+  if (!memo?.strike) return; // idle: nothing is playing, nothing to stop
+  memo = null;
+  armVersion += 1;
+  for (const listener of listeners) listener();
 }
 
 /**

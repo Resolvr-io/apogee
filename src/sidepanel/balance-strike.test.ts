@@ -18,6 +18,7 @@ import { MAX_DIGIT_STRIKE_MS } from "@/sidepanel/digit-cycle";
 import {
   STRIKE_MS,
   armBalanceStrike,
+  cancelBalanceStrike,
   getArmVersion,
   restrikeBalance,
   shouldStrike,
@@ -103,6 +104,27 @@ describe("balance strike", () => {
   it("keeps the strike window derived from the digit timings", () => {
     // Retuning digit-cycle must carry the decision window with it.
     expect(STRIKE_MS).toBe(MAX_DIGIT_STRIKE_MS + 100);
+  });
+
+  it("cancel stops a playing strike: the next read of the figure is static", () => {
+    expect(shouldStrike("2157431", false)).toBe(true); // strike latched, flicker live
+    cancelBalanceStrike(); // the denomination toggle
+    expect(shouldStrike("2157431", false)).toBe(false);
+  });
+
+  it("a real balance change after a cancellation still strikes", () => {
+    expect(shouldStrike("2157431", false)).toBe(true);
+    cancelBalanceStrike();
+    // Only the unit changed — the history the machine keeps is untouched, so a
+    // genuine change still reads as one.
+    expect(shouldStrike("3000000", false)).toBe(true);
+  });
+
+  it("cancel is a no-op while nothing plays: the pending arming survives", () => {
+    // Toggling during the stars/settling phase (no strike decided yet) must not
+    // spend the arming waiting for the numerals' arrival — rule 1 still fires.
+    cancelBalanceStrike();
+    expect(shouldStrike("2157431", false)).toBe(true);
   });
 });
 
