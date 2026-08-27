@@ -42,7 +42,15 @@ let lastSats: string | null = null;
 // `lastSats` are NOT expired here: they're the actual state machine that
 // detects the next real change, and have to persist indefinitely for that to
 // work.
-let memo: { key: string; strike: boolean } | null = null;
+//
+// Since cancelBalanceStrike() arrived, losing the memo early is no longer
+// harmless — it decides whether a toggle stops a flicker. So a memo carries
+// its generation (`seq`): restrike and cancel both null it and let the SAME
+// key be re-derived, and each fresh computation schedules another expiry
+// timer. Matching on key alone would let an earlier generation's still-ticking
+// timer clear a newer, live decision for the very figure it once decided.
+let memo: { key: string; strike: boolean; seq: number } | null = null;
+let memoSeq = 0;
 
 // Arming is imperative — a lock, or the user pressing Sync — but the strike is
 // decided per render from the balance, so a re-arm that leaves the figure
@@ -101,14 +109,15 @@ export function restrikeBalance(): void {
  *  (reconciled glyph spans mix reused animation progress with fresh mounts
  *  around the new digit string), and relighting on every unit swap read as
  *  noise; a toggle kills an in-flight flicker outright instead. Only strikes
- *  actually playing or still within their latch window count — a toggle in
- *  the stars/settling phases must NOT spend the pending arming meant for the
- *  numerals' arrival (a no-op there keeps rule 1 intact). `armed`,
- *  `lastSats`, `lastUnconfirmed` are deliberately untouched: nothing about
- *  the underlying balance changed, so its history stays the machine's, and a
- *  real balance change afterward still strikes. The arm bump reruns the
- *  hook's decision effect, whose fresh `shouldStrike` reads false and drops
- *  the epoch — rendering plain numerals immediately. */
+ *  actually playing or still within their latch window count — during the
+ *  stars/settling phases nothing is playing, so cancel leaves without a
+ *  sound. `armed`, `lastSats`, `lastUnconfirmed` are deliberately untouched:
+ *  nothing about the underlying balance changed, so the arming meant for the
+ *  numerals' arrival survives regardless (rule 1) and so does the history a
+ *  real change later still strikes on. What a no-op avoids is only the
+ *  spurious arm bump. The bump reruns the hook's decision effect, whose fresh
+ *  `shouldStrike` reads false and drops the epoch — rendering plain numerals
+ *  immediately. */
 export function cancelBalanceStrike(): void {
   if (!memo?.strike) return; // idle: nothing is playing, nothing to stop
   memo = null;
@@ -142,26 +151,31 @@ export function shouldStrike(sats: string, unconfirmed: boolean): boolean {
 
   lastUnconfirmed = unconfirmed;
   lastSats = sats;
-  memo = { key, strike };
+  const seq = ++memoSeq;
+  memo = { key, strike, seq };
   // Only ever one live timer per fresh computation: a repeat call for the
-  // same key returns early above without scheduling another. The guard
-  // checks the memo still names THIS key before clearing it, so an unrelated
-  // later write (a different key) can't have its memo clobbered by an
-  // earlier key's stale expiry.
+  // same key returns early above without scheduling another. The guard is on
+  // GENERATION, not on the key: an earlier generation's timer must not clear
+  // a newer decision just because it landed on the same figure — that's the
+  // toggle → sync → toggle sequence cancelBalanceStrike exists to handle.
   //
   // While the document is hidden the expiry DEFERS, matching the visible-time
   // deadline the hook clears on: the animations are paused, so the strike the
   // memo decided is still playing, and letting the memo lapse would make a
   // remount in the tail (Receive and back) read `false` and yank the glow
-  // mid-flicker. One full window per re-check is enough — the tail can never
-  // exceed STRIKE_MS past an unhide. `document` is guarded for the test
-  // environment, where this module runs DOM-less.
+  // mid-flicker. One full window per re-check bounds the LATE side only — the
+  // tail can never exceed STRIKE_MS past an unhide. The hops run on wall clock
+  // while hidden while the hook tracks exact visible time, so shortly after an
+  // unhide this CAN lapse up to a window early; the worst case of that drift
+  // is a toggle in the sliver no-op'ing (the pre-cancel behavior), never a
+  // strike stuck on. `document` is guarded for the test environment, where
+  // this module runs DOM-less.
   const expire = () => {
     if (typeof document !== "undefined" && document.hidden) {
       setTimeout(expire, STRIKE_MS);
       return;
     }
-    if (memo?.key === key) memo = null;
+    if (memo?.seq === seq) memo = null;
   };
   setTimeout(expire, STRIKE_MS);
   return strike;
