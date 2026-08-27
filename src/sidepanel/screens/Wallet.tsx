@@ -1435,13 +1435,21 @@ function TxRow({
   } else {
     amountText = ""; // not used for swap rows
   }
+  // Three annotation states, and only ONE of them is a caution (see
+  // tx-manifest/history.ts). "unsupported" means the marker names a bundle this
+  // VERSION does not carry — a transaction made against a contract that shipped
+  // on another branch reads that way forever, with nothing wrong with it — so it
+  // gets neutral copy and neutral color. "unverified" is the real caution: the
+  // bundle IS known and the marker failed a check (ambiguous marker, no
+  // wallet-owned input, shape mismatch). Note neither state claims the
+  // transaction was authenticated, so the copy must not imply it either.
   const manifestLabel =
     tx.txManifest?.status === "verified"
       ? tx.txManifest.actionLabel
       : tx.txManifest?.status === "unsupported"
-        ? "Unsupported manifest action"
+        ? "Unrecognized contract"
         : tx.txManifest?.status === "unverified"
-          ? "Unverified manifest marker"
+          ? "Unverified contract marker"
           : null;
   const activityIdentity = (
     <span className="flex min-w-0 flex-1 flex-col">
@@ -1451,7 +1459,11 @@ function TxRow({
             "truncate text-sm",
             tx.txManifest?.status === "verified"
               ? "text-[color:var(--text-primary)]"
-              : "text-[color:var(--warning-text)]",
+              : tx.txManifest?.status === "unsupported"
+                ? // Quiet, not orange: an unknown bundle is missing information,
+                  // not a problem with the transaction.
+                  "text-[color:var(--text-secondary)]"
+                : "text-[color:var(--warning-text)]",
           )}
           title={manifestLabel}
         >
@@ -1567,7 +1579,16 @@ function TxRow({
           </>
         )}
         {tx.txManifest?.status === "unsupported" && (
-          <Row label="Manifest" value="Unsupported on-chain bundle" />
+          <>
+            <Row label="Manifest" value="Not supported in this version" />
+            {/* The bundle hash is the ONLY thing that identifies which contract
+                this was, and the annotation already carries it — withholding it
+                here left "unsupported" impossible to act on. */}
+            <Row
+              label="Bundle"
+              value={shortenHex(tx.txManifest.bundleHash.replace(/^sha256:/, ""), 6, 6)}
+            />
+          </>
         )}
         {tx.txManifest?.status === "unverified" && (
           <Row label="Manifest" value="Marker could not be verified" />
