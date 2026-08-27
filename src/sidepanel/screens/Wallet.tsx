@@ -438,11 +438,11 @@ export function Wallet({
     hasUnconfirmed,
     // `ready` means "real numerals are ON SCREEN" — including the view. The
     // hook lives above the `view !== "home"` early return (hooks can't be
-    // conditional), so without this a denomination change from the Display
-    // dropdown in Settings would consume the re-strike arming on a hero that
-    // isn't rendered, and the ~1.3s window would lapse before the return
-    // home. Held here instead, the arming spends on the false→true edge when
-    // the home view remounts.
+    // conditional), so without this an arming could spend on a decision whose
+    // hero isn't rendered, or be consumed by stars, a spinner or the
+    // rate-failed dash, and the ~1.3s window would lapse before anything lit.
+    // Held here instead, the strike spends on the false→true edge when the
+    // home view remounts with figures actually showing.
     homeActive &&
       !(hidden || !sync) &&
       (denom !== "fiat" || rate != null) &&
