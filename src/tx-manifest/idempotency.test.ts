@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LiquidExecuteTxManifestResult } from "@/provider/liquid-rpc";
 import {
+  migrateStoredTxManifestRecords,
   TxManifestIdempotency,
   txManifestIdempotencyKey,
   type TxManifestCheckpointRecord,
@@ -19,6 +20,10 @@ const RESULT: LiquidExecuteTxManifestResult = {
   status: "broadcast",
   txid: "66".repeat(32),
 };
+
+function reconstruct(txid: string): LiquidExecuteTxManifestResult {
+  return { ...RESULT, txid };
+}
 
 function memoryStore(): TxManifestExecutionStore & { records: TxManifestExecutionRecord[] } {
   return {
@@ -67,21 +72,21 @@ describe("TxManifestIdempotency", () => {
       await gate;
       return RESULT;
     });
-    const first = coordinator.execute("scope", DIGEST, operation);
-    const second = coordinator.execute("scope", DIGEST, operation);
+    const first = coordinator.execute("scope", DIGEST, operation, reconstruct);
+    const second = coordinator.execute("scope", DIGEST, operation, reconstruct);
     release();
     await expect(Promise.all([first, second])).resolves.toEqual([RESULT, RESULT]);
     expect(operation).toHaveBeenCalledTimes(1);
     expect(store.records).toHaveLength(1);
-    await expect(coordinator.execute("scope", DIGEST, operation)).resolves.toEqual(RESULT);
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct)).resolves.toEqual(RESULT);
     expect(operation).toHaveBeenCalledTimes(1);
   });
 
   it("rejects request-id reuse with different request data", async () => {
     const store = memoryStore();
-    store.records = [{ key: "scope", invocationDigest: DIGEST, completedAt: 1_000, result: RESULT }];
+    store.records = [{ key: "scope", invocationDigest: DIGEST, completedAt: 1_000, txid: RESULT.txid }];
     const coordinator = new TxManifestIdempotency(store, () => 1_000);
-    await expect(coordinator.execute("scope", OTHER_DIGEST, vi.fn())).rejects.toThrow(
+    await expect(coordinator.execute("scope", OTHER_DIGEST, vi.fn(), reconstruct)).rejects.toThrow(
       "already used",
     );
   });
@@ -97,8 +102,8 @@ describe("TxManifestIdempotency", () => {
       return RESULT;
     });
 
-    const running = coordinator.execute("scope", DIGEST, operation);
-    await expect(coordinator.execute("scope", OTHER_DIGEST, vi.fn())).rejects.toThrow(
+    const running = coordinator.execute("scope", DIGEST, operation, reconstruct);
+    await expect(coordinator.execute("scope", OTHER_DIGEST, vi.fn(), reconstruct)).rejects.toThrow(
       "already used",
     );
     release();
@@ -115,9 +120,9 @@ describe("TxManifestIdempotency", () => {
       .mockRejectedValueOnce(rejected)
       .mockResolvedValueOnce(RESULT);
 
-    await expect(coordinator.execute("scope", DIGEST, operation)).rejects.toBe(rejected);
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct)).rejects.toBe(rejected);
     expect(store.records).toEqual([]);
-    await expect(coordinator.execute("scope", DIGEST, operation)).resolves.toEqual(RESULT);
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct)).resolves.toEqual(RESULT);
     expect(operation).toHaveBeenCalledTimes(2);
     expect(store.records).toHaveLength(1);
   });
@@ -134,8 +139,8 @@ describe("TxManifestIdempotency", () => {
     const coordinator = new TxManifestIdempotency(store, () => 1_000);
     const operation = vi.fn(async () => RESULT);
 
-    await expect(coordinator.execute("scope", DIGEST, operation)).rejects.toBe(saveFailure);
-    await expect(coordinator.execute("scope", DIGEST, operation)).resolves.toEqual(RESULT);
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct)).rejects.toBe(saveFailure);
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct)).resolves.toEqual(RESULT);
     expect(operation).toHaveBeenCalledTimes(2);
     expect(save).toHaveBeenCalledTimes(2);
   });
@@ -147,11 +152,11 @@ describe("TxManifestIdempotency", () => {
     const operation = vi.fn(async () => RESULT);
     const resume = vi.fn(async () => RESULT);
 
-    await expect(coordinator.execute("scope", DIGEST, operation, resume)).resolves.toEqual(RESULT);
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct, resume)).resolves.toEqual(RESULT);
     expect(operation).not.toHaveBeenCalled();
     expect(resume).toHaveBeenCalledOnce();
     expect(store.records).toEqual([
-      { key: "scope", invocationDigest: DIGEST, completedAt: 2_000, result: RESULT },
+      { key: "scope", invocationDigest: DIGEST, completedAt: 2_000, txid: RESULT.txid },
     ]);
   });
 
@@ -170,12 +175,12 @@ describe("TxManifestIdempotency", () => {
           sealedPayload: { iv: "iv", ct: "ciphertext" },
         }, generation);
         throw interrupted;
-      }),
+      }, reconstruct),
     ).rejects.toBe(interrupted);
     expect(store.records).toEqual([checkpointRecord({ checkpointedAt: 2_000 })]);
 
     await expect(
-      coordinator.execute("scope", DIGEST, vi.fn(), async () => {
+      coordinator.execute("scope", DIGEST, vi.fn(), reconstruct, async () => {
         throw interrupted;
       }),
     ).rejects.toBe(interrupted);
@@ -204,16 +209,16 @@ describe("TxManifestIdempotency", () => {
     });
     const resume = vi.fn(async () => RESULT);
 
-    await expect(coordinator.execute("scope", DIGEST, operation, resume)).rejects.toBe(
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct, resume)).rejects.toBe(
       terminalFailure,
     );
     expect(store.records).toEqual([checkpointRecord({ checkpointedAt: 2_000 })]);
 
-    await expect(coordinator.execute("scope", DIGEST, operation, resume)).resolves.toEqual(RESULT);
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct, resume)).resolves.toEqual(RESULT);
     expect(operation).toHaveBeenCalledOnce();
     expect(resume).toHaveBeenCalledOnce();
     expect(store.records).toEqual([
-      { key: "scope", invocationDigest: DIGEST, completedAt: 2_000, result: RESULT },
+      { key: "scope", invocationDigest: DIGEST, completedAt: 2_000, txid: RESULT.txid },
     ]);
   });
 
@@ -234,7 +239,7 @@ describe("TxManifestIdempotency", () => {
         }, generation);
         broadcast();
         return RESULT;
-      }),
+      }, reconstruct),
     ).rejects.toThrow("storage unavailable");
     expect(broadcast).not.toHaveBeenCalled();
   });
@@ -245,12 +250,12 @@ describe("TxManifestIdempotency", () => {
     const coordinator = new TxManifestIdempotency(store, () => 2_000);
 
     await expect(
-      coordinator.execute("scope", DIGEST, vi.fn(), async (_checkpoint, generation) => {
+      coordinator.execute("scope", DIGEST, vi.fn(), reconstruct, async (_checkpoint, generation) => {
         await coordinator.failCheckpoint("scope", DIGEST, "inputs spent", generation);
         throw new Error("inputs spent");
       }),
     ).rejects.toThrow("inputs spent");
-    await expect(coordinator.execute("scope", DIGEST, vi.fn(), vi.fn())).rejects.toThrow(
+    await expect(coordinator.execute("scope", DIGEST, vi.fn(), reconstruct, vi.fn())).rejects.toThrow(
       "new requestId",
     );
     expect(store.records).toEqual([
@@ -272,7 +277,7 @@ describe("TxManifestIdempotency", () => {
       started.resolve();
       await release.promise;
       return RESULT;
-    });
+    }, reconstruct);
 
     await started.promise;
     await coordinator.clear();
@@ -285,7 +290,7 @@ describe("TxManifestIdempotency", () => {
   it("does not use a stale result loaded across a wallet reset", async () => {
     const store = memoryStore();
     store.records = [
-      { key: "scope", invocationDigest: DIGEST, completedAt: 1_000, result: RESULT },
+      { key: "scope", invocationDigest: DIGEST, completedAt: 1_000, txid: RESULT.txid },
     ];
     const loadStarted = deferred();
     const releaseLoad = deferred();
@@ -297,7 +302,7 @@ describe("TxManifestIdempotency", () => {
     });
     const coordinator = new TxManifestIdempotency(store, () => 2_000);
     const operation = vi.fn(async () => RESULT);
-    const running = coordinator.execute("scope", DIGEST, operation);
+    const running = coordinator.execute("scope", DIGEST, operation, reconstruct);
 
     await loadStarted.promise;
     await coordinator.clear();
@@ -311,7 +316,7 @@ describe("TxManifestIdempotency", () => {
   it("fails closed until checkpoint storage is successfully cleared", async () => {
     const store = memoryStore();
     store.records = [
-      { key: "scope", invocationDigest: DIGEST, completedAt: 1_000, result: RESULT },
+      { key: "scope", invocationDigest: DIGEST, completedAt: 1_000, txid: RESULT.txid },
     ];
     vi.spyOn(store, "save")
       .mockRejectedValueOnce(new Error("storage unavailable"))
@@ -322,13 +327,13 @@ describe("TxManifestIdempotency", () => {
 
     await expect(coordinator.clear()).rejects.toThrow("storage unavailable");
     const blocked = vi.fn(async () => RESULT);
-    await expect(coordinator.execute("scope", DIGEST, blocked)).rejects.toThrow(
+    await expect(coordinator.execute("scope", DIGEST, blocked, reconstruct)).rejects.toThrow(
       "checkpoint storage could not be cleared",
     );
     expect(blocked).not.toHaveBeenCalled();
 
     await coordinator.clear();
-    await expect(coordinator.execute("scope", DIGEST, blocked)).resolves.toEqual(RESULT);
+    await expect(coordinator.execute("scope", DIGEST, blocked, reconstruct)).resolves.toEqual(RESULT);
     expect(blocked).toHaveBeenCalledOnce();
   });
 
@@ -350,7 +355,7 @@ describe("TxManifestIdempotency", () => {
       }, generation);
       broadcast();
       return RESULT;
-    });
+    }, reconstruct);
 
     await started.promise;
     await coordinator.clear();
@@ -386,7 +391,7 @@ describe("TxManifestIdempotency", () => {
       }, generation);
       broadcast();
       return RESULT;
-    });
+    }, reconstruct);
 
     await saveStarted.promise;
     const clearing = coordinator.clear();
@@ -408,6 +413,7 @@ describe("TxManifestIdempotency", () => {
       "scope",
       DIGEST,
       vi.fn(),
+      reconstruct,
       async (_checkpoint, generation) => {
         resumeStarted.resolve();
         await releaseResume.promise;
@@ -433,19 +439,19 @@ describe("TxManifestIdempotency", () => {
       oldStarted.resolve();
       await releaseOld.promise;
       return RESULT;
-    });
+    }, reconstruct);
 
     await oldStarted.promise;
     await coordinator.clear();
     const replacement = { ...RESULT, txid: "77".repeat(32) };
     await expect(
-      coordinator.execute("scope", DIGEST, async () => replacement),
+      coordinator.execute("scope", DIGEST, async () => replacement, reconstruct),
     ).resolves.toEqual(replacement);
     releaseOld.resolve();
 
     await expect(old).rejects.toThrow("invalidated because the wallet was reset");
     expect(store.records).toEqual([
-      { key: "scope", invocationDigest: DIGEST, completedAt: 2_000, result: replacement },
+      { key: "scope", invocationDigest: DIGEST, completedAt: 2_000, txid: replacement.txid },
     ]);
   });
 
@@ -461,25 +467,55 @@ describe("TxManifestIdempotency", () => {
         ...RESULT,
         requestId: `request-${index}`,
         txid: index.toString(16).padStart(64, "0"),
-      }));
+      }), reconstruct);
     }
 
     expect(store.records).toHaveLength(101);
     expect(store.records).toContainEqual(checkpointRecord({ checkpointedAt: 1 }));
   });
 
+  it("refuses to reconstruct a result from a malformed txid", async () => {
+    // Not just missing — a truncated one must fail too, since this is the last
+    // check before the value reaches the dapp as status "broadcast".
+    const store = memoryStore();
+    store.records = [
+      { key: "scope", invocationDigest: DIGEST, completedAt: 1_000, txid: "deadbeef" },
+    ];
+    const coordinator = new TxManifestIdempotency(store, () => 1_000);
+    const operation = vi.fn(async () => RESULT);
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct)).rejects.toThrow(
+      "unreadable",
+    );
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it("refuses to reconstruct a result from an unusable txid", async () => {
+    // A record that survived an upgrade without its txid (or was truncated)
+    // must not be able to hand a dapp back "broadcast" with nothing to track.
+    const store = memoryStore();
+    store.records = [
+      { key: "scope", invocationDigest: DIGEST, completedAt: 1_000 } as never,
+    ];
+    const coordinator = new TxManifestIdempotency(store, () => 1_000);
+    const operation = vi.fn(async () => RESULT);
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct)).rejects.toThrow(
+      "unreadable",
+    );
+    expect(operation).not.toHaveBeenCalled();
+  });
+
   it("expires stale terminal results and retries the operation", async () => {
     const store = memoryStore();
-    store.records = [{ key: "scope", invocationDigest: DIGEST, completedAt: 1_000, result: RESULT }];
+    store.records = [{ key: "scope", invocationDigest: DIGEST, completedAt: 1_000, txid: RESULT.txid }];
     const now = 1_000 + 7 * 24 * 60 * 60_000 + 1;
     const coordinator = new TxManifestIdempotency(store, () => now);
     const replacement = { ...RESULT, txid: "77".repeat(32) };
     const operation = vi.fn(async () => replacement);
 
-    await expect(coordinator.execute("scope", DIGEST, operation)).resolves.toEqual(replacement);
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct)).resolves.toEqual(replacement);
     expect(operation).toHaveBeenCalledOnce();
     expect(store.records).toEqual([
-      { key: "scope", invocationDigest: DIGEST, completedAt: now, result: replacement },
+      { key: "scope", invocationDigest: DIGEST, completedAt: now, txid: replacement.txid },
     ]);
   });
 
@@ -494,12 +530,83 @@ describe("TxManifestIdempotency", () => {
         ...RESULT,
         requestId: `request-${index}`,
         txid: index.toString(16).padStart(64, "0"),
-      }));
+      }), reconstruct);
     }
 
     expect(store.records).toHaveLength(100);
     expect(store.records[0]?.key).toBe("scope-100");
     expect(store.records.at(-1)?.key).toBe("scope-1");
+  });
+});
+
+describe("migrateStoredTxManifestRecords", () => {
+  const legacy = {
+    key: "scope",
+    invocationDigest: DIGEST,
+    completedAt: 1_000,
+    result: RESULT,
+  };
+
+  it("trims a pre-upgrade record down to its txid", () => {
+    // The upgrade path that mattered: without this, execute() reconstructs from
+    // an undefined txid and tells the dapp "broadcast" with nothing to track.
+    expect(migrateStoredTxManifestRecords([legacy])).toEqual([
+      { key: "scope", invocationDigest: DIGEST, completedAt: 1_000, txid: RESULT.txid },
+    ]);
+  });
+
+  it("keeps dedup working across the upgrade", async () => {
+    // Losing the record instead of migrating it would mean a second approval
+    // prompt and a second broadcast of the same manifest.
+    const store = memoryStore();
+    store.records = migrateStoredTxManifestRecords([legacy]);
+    const coordinator = new TxManifestIdempotency(store, () => 1_000);
+    const operation = vi.fn(async () => RESULT);
+    await expect(coordinator.execute("scope", DIGEST, operation, reconstruct)).resolves.toEqual(
+      RESULT,
+    );
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it("passes through already-trimmed, checkpoint and failed records", () => {
+    const trimmed = { key: "a", invocationDigest: DIGEST, completedAt: 1, txid: "ff" };
+    const failed = { state: "failed", key: "b", invocationDigest: DIGEST, failedAt: 1, message: "x" };
+    const records = [trimmed, checkpointRecord(), failed];
+    expect(migrateStoredTxManifestRecords(records)).toEqual(records);
+  });
+
+  it("leaves a malformed record alone rather than inventing a txid", () => {
+    // execute() fails closed on these; silently synthesizing one would be worse.
+    const noTxid = { key: "a", invocationDigest: DIGEST, completedAt: 1, result: {} };
+    expect(migrateStoredTxManifestRecords([noTxid])).toEqual([noTxid]);
+    expect(migrateStoredTxManifestRecords("not an array")).toEqual([]);
+    expect(migrateStoredTxManifestRecords(undefined)).toEqual([]);
+  });
+
+  it("drops non-objects instead of poisoning every later execution", () => {
+    expect(migrateStoredTxManifestRecords([null, "x", 7, undefined])).toEqual([]);
+    const valid = { key: "a", invocationDigest: DIGEST, completedAt: 1, txid: RESULT.txid };
+    expect(migrateStoredTxManifestRecords([null, valid, "junk"])).toEqual([valid]);
+  });
+
+  it("removes the cleartext metadata from disk on the next write", async () => {
+    // The point of the issue: trimming the type isn't enough if the old
+    // cleartext is still sitting in storage. A fresh execution under a new key
+    // rewrites the whole array, so the legacy record must come back trimmed.
+    const store = memoryStore();
+    store.records = migrateStoredTxManifestRecords([
+      { key: "legacy", invocationDigest: DIGEST, completedAt: 1_000, result: RESULT },
+    ]);
+    const coordinator = new TxManifestIdempotency(store, () => 1_000);
+    await coordinator.execute("fresh", DIGEST, async () => RESULT, reconstruct);
+
+    const serialized = JSON.stringify(store.records);
+    expect(serialized).not.toContain("accountIdentifier");
+    expect(serialized).not.toContain("AcceptOffer");
+    expect(serialized).not.toContain("offer-3");
+    for (const record of store.records) {
+      expect(record).not.toHaveProperty("result");
+    }
   });
 });
 
