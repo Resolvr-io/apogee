@@ -16,6 +16,36 @@ export default defineManifest((env) => ({
   description: pkg.description,
   minimum_chrome_version: "116",
 
+  // The Chrome Web Store listing's own public key, which forces a build to load
+  // under the PUBLISHED extension id (lbepaaibhmjmloagoggjhocdkelogamo) rather
+  // than one derived from whatever directory it was loaded from.
+  //
+  // Load-bearing for passkeys, not cosmetic. Ceremonies send no RP ID
+  // (docs/passkey-unlock.md §4), so WebAuthn falls back to the caller's origin
+  // and every credential is baked to `chrome-extension://<this id>`. Lose this
+  // key from a shipped build and every enrolled passkey in the field orphans
+  // permanently — WebAuthn has no delete, so users cannot even clear the dead
+  // entries from their password manager. e2e/passkey-unlock.spec.ts asserts the
+  // literal below still derives the published id, because nothing else would
+  // notice: a fresh profile enrols and unlocks perfectly under a wrong id.
+  //
+  // Public half only — it is what determines the id, and it is already public in
+  // every copy of the extension Chrome has ever distributed.
+  //
+  // DEVELOPMENT BUILDS DELIBERATELY OMIT IT. An unpacked build carrying the
+  // store key loads under the store id, which means it shares
+  // `chrome.storage.local` with the user's real installed wallet — a
+  // wallet/reset or a restore-with-test-mnemonic in a dev build would then
+  // destroy real funds' access — and it collides with the installed copy on
+  // load. A dev build's path-derived id keeps its storage separate; the only
+  // cost is that passkeys enrolled in a dev build do not carry to the store
+  // build, which nothing needs.
+  ...(env.mode === "development"
+    ? {}
+    : {
+        key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvGe7xvLqXbkgKvJUjicNE0A0JYDcbEXPvM+2H2jcpGnDLhHtELaMk8lcK5SGkpxQGAyckmXHhFVBZA+ByktNZAGFbz0Gp+aOs/tfJoJbk3KiWYOf9L/bSk9b6xdCx1BKuW3jUPnCmieATS20fuj8ja5JBmrqlA15KFyv0c7A8IJTw2rcIjS4yMiDyTotc3VJexR70LZRH2Ua41Dk770bHpeaE+526Pm2b2esdwwMQCXQiLL0z3OhaVMB+qcKw3DRdbOxFClVGU+wHgZPjRpR7xNBEAUGnx/yWSPxi8dt1VS6oWOuZ8IOwDen6esmR2dr3y9RHXRSyC2uDY7eOHbNBQIDAQAB",
+      }),
+
   action: { default_title: "Open Apogee" },
 
   background: {

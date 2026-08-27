@@ -6,8 +6,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, ChevronLeft, Fingerprint, X } from "lucide-react";
 import type { UnlockThrottle } from "@/keystore/keystore";
+import type { PasskeyCredentialRef } from "@/keystore/slots";
 import { Button, ErrorText, Field, Input, Spinner, WelcomeShell } from "@/sidepanel/components/ui";
-import { PasskeyCancelled, unlockPasskeyCeremony } from "@/sidepanel/passkey-ceremony";
+import {
+  PasskeyCancelled,
+  PasskeyRequestPending,
+  unlockPasskeyCeremony,
+} from "@/sidepanel/passkey-ceremony";
 import {
   UNLOCK_BLOCKED_TEXT,
   errMessage,
@@ -35,11 +40,12 @@ export function Unlock({
   const [forgot, setForgot] = useState<null | "intro" | "reset">(null);
   const [confirmText, setConfirmText] = useState("");
   // The passkey door, offered only when the vault actually has one enrolled
-  // (the challenge carries the ids + salt the ceremony needs). Read once per
-  // mount — enrolling or removing happens behind an unlocked vault.
-  const [challenge, setChallenge] = useState<{ credentialIds: string[]; prfSalt: string } | null>(
-    null,
-  );
+  // (the challenge carries the credentials + salt the ceremony needs). Read
+  // once per mount — enrolling or removing happens behind an unlocked vault.
+  const [challenge, setChallenge] = useState<{
+    credentials: PasskeyCredentialRef[];
+    prfSalt: string;
+  } | null>(null);
   const [passkeyBusy, setPasskeyBusy] = useState(false);
   useEffect(() => {
     void wallet
@@ -123,12 +129,18 @@ export function Unlock({
     setPasskeyBusy(true);
     setError("");
     try {
-      const prf = await unlockPasskeyCeremony(challenge.prfSalt, challenge.credentialIds);
+      // No permission pre-check: the ceremony claims no domain, so there is no
+      // grant to lose (docs/passkey-unlock.md §4).
+      const prf = await unlockPasskeyCeremony(challenge.prfSalt, challenge.credentials);
       await wallet.unlockWithPasskey(prf);
       onDone();
     } catch (err) {
       const msg = errMessage(err);
-      if (err instanceof PasskeyCancelled) {
+      if (err instanceof PasskeyRequestPending) {
+        setError(
+          "Another passkey request is still open. Close the Apogee panel, reopen it, and try again.",
+        );
+      } else if (err instanceof PasskeyCancelled) {
         // A cancelled prompt is a shrug — no error, nothing spent.
       } else if (msg.includes("PASSKEY_UNLOCK_FAILED")) {
         setError("That passkey didn\u2019t unlock this vault. Try again, or use your password.");
@@ -143,7 +155,9 @@ export function Unlock({
   }
 
   return (
-    <WelcomeShell subtitle="Enter your password to unlock.">
+    <WelcomeShell
+      subtitle={challenge ? "Unlock with your fingerprint or face." : "Enter your password to unlock."}
+    >
       {challenge && (
         <div className="mb-4 flex flex-col gap-1.5">
           <Button variant="secondary" onClick={unlockWithPasskey} disabled={passkeyBusy}>

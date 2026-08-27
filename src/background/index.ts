@@ -640,7 +640,11 @@ async function handleUi(msg: UiRequest): Promise<unknown> {
       // output is exactly 32 bytes, and a truncated/oversized blob should fail
       // here, loudly, not as a subtly wrong key derivation.
       const prf = decodePrf(msg.prf);
-      return keystore.enrollPasskey(prf, { credentialId: msg.credentialId, kind: msg.kind }, msg.prfSalt);
+      return keystore.enrollPasskey(
+        prf,
+        { credentialId: msg.credentialId, kind: msg.kind, transports: msg.transports },
+        msg.prfSalt,
+      );
     }
 
     case "wallet/unlockWithPasskey": {

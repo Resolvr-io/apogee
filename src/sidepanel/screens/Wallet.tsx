@@ -26,6 +26,7 @@ import {
   Lock,
   QrCode,
   RefreshCw,
+  Smartphone,
   Telescope,
   Unplug,
 } from "lucide-react";
@@ -53,6 +54,7 @@ import { restrikeBalance } from "@/sidepanel/balance-strike";
 import { useBalanceStrike } from "@/sidepanel/balance-warmup";
 import { useHeroCollapse } from "@/sidepanel/hero-collapse";
 import type { PasskeyKind } from "@/keystore/slots";
+import { PASSKEY_OFFER_KEY } from "@/lib/passkey-offer";
 import { usePasskeyEnroll } from "@/sidepanel/use-passkey-enroll";
 import { moonRise, resetSceneScroll, setSceneScroll } from "@/sidepanel/scene-scroll";
 import { cn, shortenHex } from "@/lib/utils";
@@ -162,18 +164,18 @@ function usableRate(r: number | null): number | null {
 type SyncKind = "initial" | "manual" | "background";
 
 /** Settings copy for where a passkey lives — captured at enrollment, because
- *  it can never be fetched retroactively without another ceremony. */
+ *  it can never be fetched retroactively without another ceremony. Named for
+ *  the thing the user is holding rather than for the WebAuthn attachment:
+ *  someone who enrolled their phone looks for their phone in this list. */
 const PASSKEY_KIND_LABEL: Record<PasskeyKind, string> = {
   device: "This device",
-  "cross-device": "Cross-device",
+  "cross-device": "Phone or tablet",
   "security-key": "Security key",
 };
 
 // Tap-to-cycle order — matches the Display settings dropdown (Sats > LBTC > Fiat).
 const DENOM_ORDER: Denom[] = ["sats", "btc", "fiat"];
 const DENOM_KEY = "apogee:denomination";
-// Dismissing the one-time passkey offer is forever — "not now" means now.
-const PASSKEY_OFFER_KEY = "apogee:passkeyOfferDismissed";
 const FIAT_KEY = "apogee:fiat";
 const FIAT_OPTIONS = ["USD", "EUR", "GBP", "CAD", "AUD", "CHF", "JPY"];
 
@@ -1108,6 +1110,15 @@ export function Wallet({
               </button>
             </div>
             {passkeyEnroll.error && <ErrorText>{passkeyEnroll.error}</ErrorText>}
+            {/* TEMPORARY device-pass diagnostics — same rendered enrollment
+                trace as the Settings passkeys card; this offer runs its own
+                hook instance, so without this its lines had nowhere to show
+                (spinner spun, trail invisible). See usePasskeyEnroll. */}
+            {passkeyEnroll.log.length > 0 && (
+              <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-[color:var(--border-soft)] p-2 font-mono text-[10px] leading-snug text-[color:var(--text-subtle)]">
+                {passkeyEnroll.log.join("\n")}
+              </pre>
+            )}
           </div>
         )}
         <Tokens
@@ -2332,6 +2343,7 @@ function SettingsBody({
     supported: passkeySupported,
     busy: passkeyBusy,
     error: passkeyError,
+    log: passkeyLog,
     enroll: addPasskey,
     remove: removePasskeyById,
   } = passkeyEnroll;
@@ -2592,15 +2604,32 @@ function SettingsBody({
                 Passkeys
               </span>
               {(passkeyAvailable || passkeySupported) && (
-                <button
-                  type="button"
-                  onClick={() => void addPasskey()}
-                  disabled={passkeyBusy}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-[color:var(--accent)] hover:underline disabled:opacity-50"
-                >
-                  <Plus size={12} />
-                  Add passkey
-                </button>
+                <span className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void addPasskey("any")}
+                    disabled={passkeyBusy}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-[color:var(--accent)] hover:underline disabled:opacity-50"
+                  >
+                    <Plus size={12} />
+                    Add passkey
+                  </button>
+                  {/* The second device's only reliable door. Left to itself,
+                      a machine with a platform authenticator answers with that
+                      authenticator — and once it holds this vault's passkey,
+                      excludeCredentials refuses the attempt, so there is no
+                      route to a phone or a key at all. Pinning cross-platform
+                      is what opens one (see PasskeyTarget). */}
+                  <button
+                    type="button"
+                    onClick={() => void addPasskey("another-device")}
+                    disabled={passkeyBusy}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-[color:var(--text-secondary)] hover:underline disabled:opacity-50"
+                  >
+                    <Smartphone size={12} />
+                    Another device
+                  </button>
+                </span>
               )}
             </div>
             {passkeys.map((pk) => (
@@ -2612,8 +2641,16 @@ function SettingsBody({
                   <span className="text-xs text-[color:var(--text-strong)]">
                     {PASSKEY_KIND_LABEL[pk.kind]}
                   </span>
+                  {/* Date AND time: with more than one device enrolled the
+                      kind label alone can repeat (two security keys, or a
+                      second platform passkey), and a row you cannot tell apart
+                      makes Remove a coin flip. */}
                   <span className="text-[11px] text-[color:var(--text-subtle)]">
-                    Added {new Date(pk.addedAt).toLocaleDateString()}
+                    Added{" "}
+                    {new Date(pk.addedAt).toLocaleString(undefined, {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    })}
                   </span>
                 </span>
                 {confirmRemovePasskey === pk.id ? (
@@ -2651,10 +2688,20 @@ function SettingsBody({
             {passkeys.length === 0 && (
               <p className="text-[11px] text-[color:var(--text-subtle)]">
                 Unlock with a fingerprint, face, or security key instead of typing your password.
-                Your password always works.
+                Add as many as you like — this device, a phone, a security key. Your password
+                always works.
               </p>
             )}
             <ErrorText>{passkeyError}</ErrorText>
+            {/* TEMPORARY device-pass diagnostics (see usePasskeyEnroll):
+                rendered enrollment trace for diagnosing a native WebAuthn
+                prompt that never appears outside automation. Strip before
+                release. */}
+            {passkeyLog.length > 0 && (
+              <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-[color:var(--border-soft)] p-2 font-mono text-[10px] leading-snug text-[color:var(--text-subtle)]">
+                {passkeyLog.join("\n")}
+              </pre>
+            )}
           </div>
         )}
       </Card>

@@ -30,6 +30,7 @@ import type {
 } from "@/keystore/keystore";
 import { bytesToBase64 } from "@/keystore/crypto";
 import type { PasskeyInfo } from "@/keystore/keystore";
+import type { PasskeyCredentialRef, PasskeyKind } from "@/keystore/slots";
 import { browser } from "@/lib/ext";
 import type { UpdateCheck } from "@/lib/version-check";
 
@@ -80,18 +81,20 @@ export const wallet = {
    *  as a plain object and would silently derive the wrong key. */
   listPasskeys: () => call<PasskeyInfo[]>({ type: "wallet/listPasskeys" }),
   passkeyChallenge: () =>
-    call<{ credentialIds: string[]; prfSalt: string } | null>({ type: "wallet/passkeyChallenge" }),
+    call<{ credentials: PasskeyCredentialRef[]; prfSalt: string } | null>({
+      type: "wallet/passkeyChallenge",
+    }),
   enrollPasskey: (
     prf: Uint8Array<ArrayBuffer>,
-    credentialId: string,
-    kind: "device" | "cross-device" | "security-key",
+    credential: { credentialId: string; kind: PasskeyKind; transports?: string[] },
     prfSalt: string,
   ) =>
     call<PasskeyInfo>({
       type: "wallet/enrollPasskey",
       prf: bytesToBase64(prf),
-      credentialId,
-      kind,
+      credentialId: credential.credentialId,
+      kind: credential.kind,
+      transports: credential.transports,
       prfSalt,
     }),
   unlockWithPasskey: (prf: Uint8Array<ArrayBuffer>) =>

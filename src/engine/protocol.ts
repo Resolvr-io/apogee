@@ -610,12 +610,18 @@ export type WalletRequest =
   // Uint8Array in a runtime message arrives as a plain object and would
   // silently derive the wrong key — the router decodes and length-checks.
   | { type: "wallet/listPasskeys" }
-  | { type: "wallet/passkeyChallenge" } // enrolled ids + vault PRF salt, or null
+  | { type: "wallet/passkeyChallenge" } // enrolled credentials + vault PRF salt, or null
   | {
       type: "wallet/enrollPasskey";
       prf: string;
       credentialId: string;
       kind: PasskeyKind;
+      /** The authenticator's transport hints from the create() that just ran.
+       *  Recorded so a later ceremony can name this credential the way the
+       *  browser needs to reach it — `hybrid` is what makes Chrome offer the
+       *  phone instead of only looking locally. Optional: some authenticators
+       *  report none, and none is a valid answer. */
+      transports?: string[];
       // The salt the ceremony evaluated. For the vault's FIRST passkey there
       // is nothing stored to hand the ceremony, so the panel mints it and the
       // SW adopts it; once a passkey exists the stored salt is authoritative

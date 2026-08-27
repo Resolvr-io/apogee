@@ -13,18 +13,17 @@ const hasEnterprise = (mode: string): boolean => {
   return Boolean(e.VITE_BS_ENTERPRISE_CLIENT_ID && e.VITE_BS_ENTERPRISE_CLIENT_SECRET);
 };
 
+// NOTE: passkeys need no host permission at all. Ceremonies send no RP ID, so
+// WebAuthn binds credentials to the extension's own origin — nothing is being
+// claimed that needs granting (docs/passkey-unlock.md §4). An earlier design
+// claimed resolvr.io via an optional host permission; on Chrome that claim is
+// accepted and then never dispatched from a side panel, which is the whole
+// reason this is gone. Do not reintroduce it without reading §4.
+
 // Esplora endpoints (extension-origin fetch is CORS-exempt) + the localhost
 // gateway for contract reads during dev. Identical across targets.
 export function hostPermissions(mode: string): string[] {
   return [
-    // WebAuthn RP ID for passkey unlock (docs/passkey-unlock.md §4): an
-    // extension origin cannot be a registrable domain, so the extension claims
-    // this first-party one (Chrome 122+). Permanent once SHIPPED — every
-    // credential ever enrolled is baked to it — and it costs a one-time
-    // re-confirmation prompt for existing users on update, which the release
-    // notes must call out. This branch adds it for testing; the ship/no-ship
-    // call stays with the release decision.
-    "https://apogee.resolvr.io/*",
     ...(hasEnterprise(mode)
       ? ["https://enterprise.blockstream.info/*", "https://login.blockstream.com/*"]
       : []),

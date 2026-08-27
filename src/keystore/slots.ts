@@ -52,12 +52,29 @@ export type PasskeyKind = "device" | "cross-device" | "security-key";
 export interface PasskeySlot {
   type: "passkey";
   id: string;
-  credentialId: string; // base64 WebAuthn credential id
+  credentialId: string; // base64URL WebAuthn credential id (the wire's form)
   prfSalt: string; // base64, shared by every passkey slot of this vault
   hkdfSalt: string; // base64, this slot's HKDF salt
   kind: PasskeyKind;
+  /** The authenticator's own transport hints, as `getTransports()` reported
+   *  them at enrollment. Optional because slots written before this field
+   *  existed have none, and because an authenticator may report nothing —
+   *  both cases degrade to an unhinted descriptor, which is what shipped.
+   *  Not decoration: a later ceremony hands these back to the browser, and
+   *  `hybrid` is how Chrome knows to offer the phone rather than only looking
+   *  for something plugged in (docs/passkey-unlock.md §2). */
+  transports?: string[];
   addedAt: number;
   wrappedDek: Enc;
+}
+
+/** How one enrolled passkey is named to a later ceremony: the credential
+ *  handle plus whatever transport hints came with it. The shape
+ *  `allowCredentials` and `excludeCredentials` both want, and the reason
+ *  passkeyChallenge() returns records rather than a list of ids. */
+export interface PasskeyCredentialRef {
+  id: string;
+  transports?: string[];
 }
 
 export type KeySlot = PasswordSlot | PasskeySlot;
@@ -73,8 +90,15 @@ export function dekCheckAad(version: number): string {
   return `apogee:verifier-dek:v${version}`;
 }
 
-/** The AAD scheme version this module's wraps write today. */
-const SLOT_AAD_VERSION = 3;
+/** The AAD scheme version this module's wraps write today. Exported because
+ *  keystore.ts pins it against STORE_VERSION at compile time (see there): two
+ *  dials that must never disagree, since initialize()/migration writes seal
+ *  `dekCheck` under one number and openPasskeyDek() verifies under it too —
+ *  a divergence would keep password unlock working while every passkey unlock
+ *  silently returned null. At a bump, change BOTH together (or thread the
+ *  version through wrapDek/unwrapDek/openPasskeyDek consciously) in the same
+ *  commit as the migrations.ts entry, per its "pure AAD-scheme bump" note. */
+export const SLOT_AAD_VERSION = 3;
 
 /** HKDF `info` — domain-separates this derivation from any other use the same
  *  credential's PRF output might ever be put to. */
@@ -157,7 +181,13 @@ export async function makePasswordSlotWithKey(
 export async function makePasskeySlot(
   kek: CryptoKey,
   dek: CryptoKey,
-  meta: { credentialId: string; prfSalt: string; hkdfSalt: string; kind: PasskeyKind },
+  meta: {
+    credentialId: string;
+    prfSalt: string;
+    hkdfSalt: string;
+    kind: PasskeyKind;
+    transports?: string[];
+  },
 ): Promise<PasskeySlot> {
   const id = newSlotId();
   return {
@@ -182,7 +212,7 @@ function newSlotId(): string {
 export async function enrollPasskeySlot(
   dek: CryptoKey,
   prfOutput: Uint8Array<ArrayBuffer>,
-  meta: { credentialId: string; kind: PasskeyKind },
+  meta: { credentialId: string; kind: PasskeyKind; transports?: string[] },
   prfSalt: string,
 ): Promise<PasskeySlot> {
   const hkdfSalt = bytesToBase64(randomBytes(32));
@@ -192,6 +222,10 @@ export async function enrollPasskeySlot(
     prfSalt,
     hkdfSalt,
     kind: meta.kind,
+    // Absent stays absent rather than becoming []: an empty transports array
+    // is a positive claim of "no transports" to some clients, where a missing
+    // one means "no hint, try everything".
+    ...(meta.transports?.length ? { transports: meta.transports } : {}),
   });
   if (!(await sameKey(dek, await unwrapDek(kek, slot)))) {
     throw new Error("passkey enrollment verify failed: slot does not unwrap to the DEK");
@@ -241,7 +275,6 @@ export async function openPasskeyDek(
   }
   return null;
 }
-
 
 /** Whether two keys are the same bytes — used by the v2→v3 migration's
  *  byte-verify (the DEK that comes back out of the new slot must be the DEK

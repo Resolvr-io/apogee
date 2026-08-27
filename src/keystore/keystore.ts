@@ -13,6 +13,7 @@
 // the keystore unlocked across service-worker eviction.
 
 import { browser } from "@/lib/ext";
+import { PASSKEY_OFFER_KEY } from "@/lib/passkey-offer";
 import {
   type Enc,
   checkVerifier,
@@ -37,6 +38,7 @@ import {
 } from "./migrations";
 import {
   type KeySlot,
+  type PasskeyCredentialRef,
   type PasskeyKind,
   type PasskeySlot,
   type PasswordSlot,
@@ -45,6 +47,7 @@ import {
   generateDek,
   makePasswordSlotWithKey,
   openPasskeyDek,
+  SLOT_AAD_VERSION,
   unwrapDek,
   vaultPrfSalt,
   wrapDek,
@@ -73,6 +76,12 @@ const THROTTLE_KEY = "apogee_unlock_throttle";
 // migrate in place while unlocked (see migrations.ts) — v1 predates public
 // release and has no registered path, so those still require a reset.
 const STORE_VERSION = 3;
+// Compile-time pin: the slot AAD scheme (slots.ts) and the store version write
+// the same envelopes today. TS breaks here at any unequal bump — the failure
+// it prevents is silent: password unlock would keep working while passkey
+// unlock verified dekCheck under the other version and returned null forever.
+const _slotAadMustTrackStoreVersion: typeof STORE_VERSION = SLOT_AAD_VERSION;
+void _slotAadMustTrackStoreVersion;
 
 /** A wallet record as persisted (mnemonic encrypted, descriptor cleartext). */
 export interface WalletRecord {
@@ -481,7 +490,10 @@ export async function reset(): Promise<void> {
   await sessionClear(SESSION_KEY);
   // THROTTLE_KEY goes too: the counter guards the vault being destroyed, and a
   // survivor would lock the user out of the NEXT vault they create/restore.
-  await browser.storage.local.remove([STORE_KEY, ACTIVE_KEY, THROTTLE_KEY]);
+  // PASSKEY_OFFER_KEY for the same class of reason — a dismissal that outlives
+  // its vault hides passkey enrollment from the next one entirely (the offer is
+  // the only discoverable entry point; Settings is where people don't look).
+  await browser.storage.local.remove([STORE_KEY, ACTIVE_KEY, THROTTLE_KEY, PASSKEY_OFFER_KEY]);
 }
 
 /**
@@ -735,11 +747,12 @@ export async function listPasskeys(): Promise<PasskeyInfo[]> {
 }
 
 /** What the unlock ceremony needs BEFORE any user gesture: the enrolled
- *  credential ids (so the prompt offers exactly this vault's passkeys) and the
- *  vault-wide PRF salt. Null when no passkey is enrolled or the store is not
- *  current — the caller treats that as "no passkey door". */
+ *  credentials — each id with the transport hints it was enrolled with, so the
+ *  prompt offers exactly this vault's passkeys AND knows a phone is one of
+ *  them — plus the vault-wide PRF salt. Null when no passkey is enrolled or
+ *  the store is not current; the caller treats that as "no passkey door". */
 export async function passkeyChallenge(): Promise<{
-  credentialIds: string[];
+  credentials: PasskeyCredentialRef[];
   prfSalt: string;
 } | null> {
   const store = await loadStore();
@@ -748,7 +761,15 @@ export async function passkeyChallenge(): Promise<{
   if (slots.length === 0) return null;
   // Every passkey slot carries the same vault salt by construction (see
   // enrollPasskey); reading the first is reading the salt.
-  return { credentialIds: slots.map((s) => s.credentialId), prfSalt: slots[0].prfSalt };
+  return {
+    credentials: slots.map(({ credentialId, transports }) => ({
+      id: credentialId,
+      // Slots enrolled before transports were recorded simply carry no hint,
+      // which is the pre-existing behavior rather than a regression.
+      ...(transports?.length ? { transports } : {}),
+    })),
+    prfSalt: slots[0].prfSalt,
+  };
 }
 
 /**
@@ -760,7 +781,7 @@ export async function passkeyChallenge(): Promise<{
  */
 export async function enrollPasskey(
   prfOutput: Uint8Array<ArrayBuffer>,
-  meta: { credentialId: string; kind: PasskeyKind },
+  meta: { credentialId: string; kind: PasskeyKind; transports?: string[] },
   /** The salt the panel's ceremony evaluated: adopted for the vault's first
    *  passkey (nothing stored could have supplied it), cross-checked against
    *  the stored one afterwards — a slot sealed under a salt the unlock
