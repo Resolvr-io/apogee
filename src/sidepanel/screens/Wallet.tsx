@@ -1226,6 +1226,15 @@ function Tokens({
    * sats because they are *input* fields and fiat entry is not supported, a
    * constraint a display list does not have.
    */
+  // The unit rides on the figure in sats mode, and only there. This row is the
+  // one place in the list where the label and the unit disagree: a token's label
+  // IS its unit, and in the other two denominations the figure describes itself
+  // (an LBTC decimal under an LBTC label, or a currency symbol). Sats under an
+  // "LBTC" label reads as 989,411 LBTC, which is what it looked like.
+  //
+  // The unit goes on the figure rather than into the label because the label's
+  // job is to name the asset, which is also how the hero already handles this:
+  // it captions TOTAL SATS beneath the number instead of renaming L-BTC.
   const policyAmount = (amt: number): string =>
     denom === "btc"
       ? formatBtc(amt)
@@ -1233,7 +1242,7 @@ function Tokens({
         ? rate != null
           ? formatFiat(satsToFiat(amt, rate), fiat)
           : "—"
-        : formatSats(amt);
+        : `${formatSats(amt)} sats`;
   return (
     <div className="mt-1">
       {/* "Assets", not "Tokens": L-BTC is the policy asset rather than a token,
