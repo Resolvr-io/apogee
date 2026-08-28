@@ -92,7 +92,41 @@ Assembled by `walletExportFields()`, all derived from the stored descriptor:
 refusing to show a user a descriptor they already own because a derived
 convenience failed to parse would be the worst possible moment to fail closed.
 The CT descriptor is always present; derived fields are best-effort and simply
-absent when the shape is unfamiliar.
+absent when the shape is unfamiliar. That includes the created-at timestamp,
+whose `toISOString()` is the one line that could have raised, during render.
+
+Three descriptor shapes get this wrong if the derived fields are extracted
+naively, and none of them is malformed — all three came out of the #158 review:
+
+- **A private key.** The extended-key pattern matches `xprv`/`tprv` as readily
+  as `xpub`, and everything derived from it is presented under "cannot spend".
+  `assertNoPrivateSpendKeysIn` (exported from the engine for this) runs first and
+  drops the whole derived group when it trips. The engine already declined to
+  rely on lwk rejecting such a descriptor; the export must not decide otherwise.
+- **More than one key.** A 2-of-3 watch-only import parses cleanly — the inner
+  commas sit below depth 0 — and a first-match extraction reports ONE cosigner's
+  key as "Account xpub" and ONE cosigner's path as "Derivation" with nothing
+  saying others exist. The patterns are global and the fields are set only when
+  there is exactly one match, so the group degrades together the way
+  `scriptType` already did for an unrecognized script.
+- **A non-canonical descriptor.** `publicWalletDescriptor` documents that its
+  caller must canonicalize with `WolletDescriptor` first, and the stored value
+  for `signer: "watch"` was the user's paste.
+
+  Measured rather than assumed: lwk **rejects** whitespace around the top-level
+  comma (`Not an elements descriptor`), so that shape never reached storage. What
+  it does accept and silently normalize is the `h` spelling of hardened
+  components and a missing BIP-380 checksum — so an `h`-form paste and a
+  `'`-form paste of the same wallet were stored as two different strings, which
+  also made the dedupe in `addHardwareWallet` compare typing habits rather than
+  wallets.
+
+  Fixed at the source: `descriptorInfo` now returns `wd.toString()` and the
+  import persists that, reading the fingerprint off the same serialization so
+  the two cannot disagree (and freeing `wd`, which it did not). The export keeps
+  a whitespace check as defence in depth for records written before that change,
+  and for any future path that persists without constructing a
+  `WolletDescriptor` first.
 
 ## 4. Surfaces
 

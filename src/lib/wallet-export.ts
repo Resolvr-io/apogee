@@ -15,7 +15,8 @@
 //   • The public descriptor has that key removed (see
 //     engine/public-wallet-descriptor.ts, which exists for exactly this reason
 //     when disclosing to a dapp). It can derive scripts but cannot see amounts.
-//     Safe to hand out, and correspondingly less useful on a confidential chain.
+//     Safer to hand out, and correspondingly less useful on a confidential
+//     chain. Safer, not safe: see the paragraph below.
 //
 // Callers must present those as different things. Collapsing them into one
 // "export" button is how a user shares total transaction visibility while
@@ -31,8 +32,10 @@
 // public descriptor "safe to share" without qualification is wrong.
 
 import {
+  assertNoPrivateSpendKeysIn,
   parseOuterCtDescriptor,
   publicWalletDescriptor,
+  slip77KeyOf,
   stripDescriptorChecksum,
 } from "@/engine/public-wallet-descriptor";
 import type { WalletInfo } from "@/keystore/keystore";
@@ -54,13 +57,14 @@ export interface WalletExportFields {
   createdAt: string;
   /** Full SLIP-77 CT descriptor: derives addresses AND unblinds amounts. */
   ctDescriptor: string;
-  /** Blinding key removed. Absent when the blinding policy is not SLIP-77 —
-   *  see publicWalletDescriptor, which fails closed rather than guessing, since
-   *  some other policies are themselves view-capable. */
+  /** Blinding key removed. Absent when the blinding policy is not SLIP-77 (see
+   *  publicWalletDescriptor, which fails closed rather than guessing, since some
+   *  other policies are themselves view-capable), and absent when the projection
+   *  came back non-canonical. Still reveals every address: see the header. */
   publicDescriptor?: string;
   /** Why the public projection is unavailable, when it is. Surfaced rather than
-   *  swallowed: "this wallet cannot produce a safe-to-share form" is
-   *  information the user needs, not an internal detail. */
+   *  swallowed: "this wallet cannot produce a shareable form" is information the
+   *  user needs, not an internal detail. */
   publicDescriptorUnavailable?: string;
   standardsUsed?: string[];
   /** The SLIP-77 master blinding key on its own. Some tools take it separately
@@ -77,16 +81,38 @@ export interface WalletExportFields {
   scriptType?: string;
 }
 
-/** Match a SLIP-77 blinding policy and capture its key. */
-const SLIP77 = /^slip77\(([0-9a-f]{64})\)$/;
 /** BIP-380 key origin at the head of a key expression. Accepts both hardened
  *  spellings: lwk canonicalizes to `'` (verified against a live derivation in
  *  wallet-export.test.ts), while descriptors pasted in by hand or produced by
  *  other tools often use `h`. Parsing only one of them would silently drop the
  *  derivation path for imported watch-only wallets. */
-const KEY_ORIGIN = /\[([0-9a-fA-F]{8})((?:\/\d+[h']?)*)\]/;
-/** The xpub/tpub (or other version-byte prefix) following the key origin. */
-const EXTENDED_KEY = /\]([a-zA-Z0-9]{100,120})/;
+const KEY_ORIGIN = /\[([0-9a-fA-F]{8})((?:\/\d+[h']?)*)\]/g;
+/** The extended key following a key origin. Note this matches xprv/tprv as
+ *  readily as xpub/tpub, which is why assertNoPrivateSpendKeysIn runs first. */
+const EXTENDED_KEY = /\]([a-zA-Z0-9]{100,120})/g;
+
+/** Every match of a global pattern, so the caller can tell "one key" from
+ *  "several". A single-shot exec silently reports the first cosigner of a
+ *  multisig as though it were the whole wallet. */
+function allMatches(pattern: RegExp, text: string): RegExpExecArray[] {
+  pattern.lastIndex = 0;
+  const found: RegExpExecArray[] = [];
+  let match = pattern.exec(text);
+  while (match) {
+    found.push(match);
+    match = pattern.exec(text);
+  }
+  return found;
+}
+
+function isoOrEmpty(createdAt: number): string {
+  try {
+    const iso = new Date(createdAt).toISOString();
+    return iso;
+  } catch {
+    return "";
+  }
+}
 
 function scriptTypeOf(descriptor: string): string | undefined {
   if (descriptor.startsWith("elsh(elwpkh(")) return "sh(wpkh)";
@@ -111,35 +137,71 @@ export function walletExportFields(info: WalletInfo): WalletExportFields {
     signer: info.signer,
     signerLabel: SIGNER_LABEL[info.signer] ?? info.signer,
     fingerprint: info.fingerprint,
-    createdAt: new Date(info.createdAt).toISOString(),
+    // Outside a try block, and the one field that could break the never-throws
+    // contract: toISOString() raises RangeError on an invalid date, and this
+    // runs during render, so a corrupt record would take the panel down rather
+    // than degrade.
+    createdAt: isoOrEmpty(info.createdAt),
     ctDescriptor: info.descriptor,
   };
 
   try {
     const projected = publicWalletDescriptor(info.descriptor);
+    // publicWalletDescriptor documents that its caller must canonicalize with
+    // WolletDescriptor first, and this caller cannot: for an imported watch-only
+    // wallet the stored value is the user's paste.
+    //
+    // Measured, not assumed: lwk REJECTS a descriptor with whitespace around the
+    // top-level comma ("Not an elements descriptor"), so the import path already
+    // refuses that shape and it cannot reach storage. This check is therefore
+    // defence in depth against a future path that persists a descriptor without
+    // constructing a WolletDescriptor first, not a live defect.
+    //
+    // The reachable case — the `h` spelling of hardened components, a missing
+    // checksum — is now fixed at the source: the watch-only import persists
+    // lwk's serialization rather than the paste (#160). This check still earns
+    // its keep for records written BEFORE that change, which keep their paste.
+    if (/\s/.test(projected.descriptor)) {
+      throw new Error("This wallet's stored descriptor is not in canonical form.");
+    }
     fields.publicDescriptor = projected.descriptor;
     fields.standardsUsed = projected.standardsUsed;
   } catch (err) {
     fields.publicDescriptorUnavailable =
-      err instanceof Error ? err.message : "This wallet has no safe-to-share descriptor form.";
+      err instanceof Error ? err.message : "This wallet has no shareable descriptor form.";
   }
 
   try {
     const [policy, inner] = parseOuterCtDescriptor(stripDescriptorChecksum(info.descriptor));
-    const blinding = SLIP77.exec(policy);
-    if (blinding) fields.masterBlindingKey = blinding[1];
-    const origin = KEY_ORIGIN.exec(inner);
-    if (origin) {
-      fields.keyOrigin = origin[0];
-      // origin[2] is the path with a leading slash, or "" for a bare origin.
-      fields.derivationPath = `m${origin[2]}`;
+    const blinding = slip77KeyOf(policy);
+    if (blinding) fields.masterBlindingKey = blinding;
+
+    // Before extracting anything key-shaped: EXTENDED_KEY matches xprv/tprv as
+    // readily as xpub, and everything derived below is presented under "cannot
+    // spend". The engine already decided not to rely on lwk rejecting a
+    // descriptor that carries a private key; reusing its parsing without this
+    // check would put the most dangerous possible value in the least-marked
+    // place on the screen.
+    assertNoPrivateSpendKeysIn(inner);
+
+    // Exactly one, or none. A 2-of-3 watch-only import parses perfectly well and
+    // a first-match extraction would show ONE cosigner's key as "Account xpub"
+    // and ONE cosigner's path as "Derivation" with nothing saying others exist.
+    // Degrading the whole group together matches what scriptType already does
+    // for an unrecognized script.
+    const origins = allMatches(KEY_ORIGIN, inner);
+    if (origins.length === 1) {
+      fields.keyOrigin = origins[0][0];
+      // origins[0][2] is the path with a leading slash, or "" for a bare origin.
+      fields.derivationPath = `m${origins[0][2]}`;
     }
-    const extended = EXTENDED_KEY.exec(inner);
-    if (extended) fields.extendedPublicKey = extended[1];
+    const extended = allMatches(EXTENDED_KEY, inner);
+    if (extended.length === 1) fields.extendedPublicKey = extended[0][1];
     fields.scriptType = scriptTypeOf(inner);
   } catch {
-    // Unparseable inner shape — the CT descriptor above is still the payload
-    // that matters, so say nothing and let the caller show it.
+    // Unparseable inner shape, or a private key present. Either way the derived
+    // niceties are dropped and the CT descriptor above is still the payload that
+    // matters, so say nothing and let the caller show it.
   }
 
   return fields;
@@ -188,8 +250,11 @@ export function walletsExportJson(wallets: WalletInfo[]): string {
       format: "apogee.wallet-export",
       version: 1,
       exportedAt: new Date().toISOString(),
+      // "Each" was false for exactly the non-SLIP-77 wallet the rest of this
+      // module is careful about. Erring toward over-warning is cheap; being
+      // provably wrong in a file someone forwards is not.
       warning:
-        "Each ctDescriptor contains a SLIP-77 master blinding key. Anyone holding it can see every address and amount for that wallet, permanently. It cannot sign or spend.",
+        "A ctDescriptor that carries a SLIP-77 master blinding key lets anyone holding it see every address and amount for that wallet, permanently. Check masterBlindingKey per wallet below. Nothing here can sign or spend.",
       wallets: wallets.map(walletExportFields),
     },
     null,

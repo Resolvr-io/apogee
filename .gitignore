@@ -33,5 +33,9 @@ releases/
 # put there. Filenames are matched by pattern so a new document is covered on
 # arrival instead of after someone remembers to add it.
 docs/local/
+# Both depths: `*` does not cross `/`, so the single-star form alone would miss
+# docs/planning/PRD.md.
 docs/*PRD*
 docs/*prd*
+docs/**/*PRD*
+docs/**/*prd*

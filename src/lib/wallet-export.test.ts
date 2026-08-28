@@ -184,7 +184,7 @@ describe("wallet export json", () => {
     // Anyone reading this file back needs to know what it is before they
     // forward it somewhere.
     expect(parsed.warning).toMatch(/master blinding key/i);
-    expect(parsed.warning).toMatch(/cannot sign or spend/i);
+    expect(parsed.warning).toMatch(/nothing here can sign or spend/i);
     expect(parsed.wallets.map((w) => w.label)).toEqual(["My Wallet", "Jade"]);
     expect(parsed.wallets[1].signerLabel).toBe("Blockstream Jade hardware signer");
   });
@@ -207,5 +207,91 @@ describe("export filenames", () => {
 
   it("dates the all-wallets file", () => {
     expect(walletsExportFilename()).toMatch(/^apogee-wallets-\d{4}-\d{2}-\d{2}\.json$/);
+  });
+});
+
+// Cases from the PR #158 review. All three parse perfectly well and would have
+// rendered a truncated or actively wrong value under a heading promising the
+// opposite, which is worse than failing.
+describe("descriptor shapes the first pass got wrong", () => {
+  function watchOnly(descriptor: string): WalletInfo {
+    return {
+      id: "w",
+      label: "Imported",
+      network: "liquid",
+      signer: "watch",
+      descriptor,
+      fingerprint: "a1b2c3d4",
+      createdAt: 0,
+    };
+  }
+
+  it("drops every derived key field when the descriptor carries a private key", () => {
+    // EXTENDED_KEY matches tprv as readily as tpub, and everything derived from
+    // it is presented under "cannot spend". The engine already refuses to rely
+    // on lwk rejecting this.
+    const fields = walletExportFields(
+      watchOnly(
+        "ct(slip77(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa),elwpkh([a1b2c3d4/84'/1'/0']tprv8ZgxMBicQKsPeDgjzdC36fs6bMjGApWDNLR9erAXMs5skhMv36j9MV5ecvfavji5khqjWaWSFhN3YcCUUdiKH6isR4Pwy3U5y5egddBr16m/<0;1>/*))",
+      ),
+    );
+    expect(fields.extendedPublicKey).toBeUndefined();
+    expect(fields.keyOrigin).toBeUndefined();
+    expect(fields.derivationPath).toBeUndefined();
+    // The raw descriptor is still the payload, and the public projection still
+    // fails closed on its own.
+    expect(fields.ctDescriptor).toContain("tprv");
+    expect(fields.publicDescriptor).toBeUndefined();
+  });
+
+  it("shows no single key for a multi-key descriptor rather than one cosigner's", () => {
+    // A plain 2-of-2 watch-only import. Nothing malformed: the inner commas sit
+    // below depth 0, so the outer parse and the projection both succeed.
+    const fields = walletExportFields(
+      watchOnly(
+        "ct(slip77(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa),elwsh(multi(2,[a1b2c3d4/48'/0'/0'/2']xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8/<0;1>/*,[e5f6a7b8/48'/0'/0'/2']xpub69H7F5d8KSRgmmdJg2KhpAK8SR3DjMwAdkxj3ZuxV27CprR9LgpeyGmXUbC6wb7ERfvrnKZjXAeYc7aeMzD1w1CtvVWiPzs7VZ2Wr8Wr8Wr/<0;1>/*)))",
+      ),
+    );
+    // One cosigner's key presented as "Account xpub" was the bug.
+    expect(fields.extendedPublicKey).toBeUndefined();
+    expect(fields.keyOrigin).toBeUndefined();
+    expect(fields.derivationPath).toBeUndefined();
+    // Degrades as a group, the way scriptType already did for elwsh.
+    expect(fields.scriptType).toBeUndefined();
+  });
+
+  it("refuses a public projection built from a non-canonical descriptor", () => {
+    // A space after the top-level comma survives the projection and gets a
+    // checksum computed over it, so the output looks right and another wallet
+    // may reject it.
+    const fields = walletExportFields(
+      watchOnly(
+        "ct(slip77(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa), elwpkh([a1b2c3d4/84'/1'/0']xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8/<0;1>/*))",
+      ),
+    );
+    expect(fields.publicDescriptor).toBeUndefined();
+    expect(fields.publicDescriptorUnavailable).toMatch(/canonical/i);
+    expect(fields.ctDescriptor).toContain("ct(slip77(");
+  });
+
+  it("never throws on an unusable createdAt", () => {
+    // The one line that sat outside a try, and it runs during render.
+    const fields = walletExportFields({
+      ...watchOnly("not-a-descriptor"),
+      createdAt: Number.NaN,
+    });
+    expect(fields.createdAt).toBe("");
+    expect(fields.ctDescriptor).toBe("not-a-descriptor");
+  });
+});
+
+describe("the all-wallets warning", () => {
+  it("does not claim every wallet has a blinding key", async () => {
+    const { info } = await realWallet();
+    const parsed = JSON.parse(walletsExportJson([info])) as { warning: string };
+    // False for exactly the non-SLIP-77 wallet the module is careful about.
+    expect(parsed.warning).not.toMatch(/each ctDescriptor/i);
+    expect(parsed.warning).toMatch(/masterBlindingKey/);
+    expect(parsed.warning).toMatch(/nothing here can sign or spend/i);
   });
 });
