@@ -1936,11 +1936,20 @@ export async function handle(req: EngineRequest): Promise<unknown> {
       } catch {
         throw new Error("That doesn't look like a valid Liquid descriptor.");
       }
-      const originFp = descriptor.match(/\[([0-9a-fA-F]{8})[/\]]/);
+      // Read the fingerprint and the canonical form off the SAME serialization,
+      // so what is stored and what was inspected cannot disagree.
+      const canonical = wd.toString();
+      const mainnet = wd.isMainnet();
+      wd.free();
+      const originFp = canonical.match(/\[([0-9a-fA-F]{8})[/\]]/);
       if (!originFp) {
         throw new Error("Descriptor is missing a key fingerprint, e.g. [a1b2c3d4/84h/...].");
       }
-      const info: DescriptorInfo = { fingerprint: originFp[1].toLowerCase(), mainnet: wd.isMainnet() };
+      const info: DescriptorInfo = {
+        fingerprint: originFp[1].toLowerCase(),
+        mainnet,
+        canonical,
+      };
       return info;
     }
 

@@ -1110,10 +1110,14 @@ async function handleUi(msg: UiRequest): Promise<unknown> {
           `This descriptor is for ${info.mainnet ? "mainnet (Liquid)" : "testnet/regtest"}. Pick the matching network.`,
         );
       }
+      // Persist what lwk serializes, NOT the paste. lwk accepts `84h` and a
+      // missing checksum and normalizes both, so storing the paste would leave
+      // the record diverging from lwk's canonical form and make the dedupe in
+      // addHardwareWallet compare typing habits rather than wallets.
       // Persisted like a hardware wallet: watch-only descriptor + signer, no seed.
       return keystore.addHardwareWallet({
         signer: "watch",
-        descriptor,
+        descriptor: info.canonical,
         fingerprint: info.fingerprint,
         label: msg.label,
         network: msg.network,

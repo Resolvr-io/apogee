@@ -482,6 +482,12 @@ export type ProviderPsetSignResultDTO =
 export interface DescriptorInfo {
   fingerprint: string;
   mainnet: boolean;
+  /** The descriptor as lwk serializes it, which is what callers should PERSIST
+   *  rather than the paste they were given. lwk accepts spellings it then
+   *  normalizes — `84h` becomes `84'`, a missing BIP-380 checksum is added — so
+   *  storing the paste leaves the record and lwk's own canonical form diverging,
+   *  and makes duplicate detection compare typing habits instead of wallets. */
+  canonical: string;
 }
 
 export interface WalletIdentity {
