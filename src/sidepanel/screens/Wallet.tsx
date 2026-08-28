@@ -23,6 +23,7 @@ import {
   Lock,
   QrCode,
   RefreshCw,
+  Share,
   Telescope,
   Unplug,
 } from "lucide-react";
@@ -2572,7 +2573,23 @@ function SettingsBody({
           else in a 400px column. */}
       <Card>
         <button type="button" onClick={() => onView("export")} className="settings-row">
-          <span className="console-overline">Export wallet data</span>
+          {/* Share: a tray with an arrow leaving it, which is what this row does
+              — hand wallet data to something outside Apogee.
+
+              Two shapes were ruled out on the way here. A key reads as spending
+              authority, which is the one thing none of this grants, so it would
+              contradict every line of copy on the screen it opens. A
+              box-with-arrow-out (LogOut) reads as sign out, and the app header
+              directly above already carries a Lock, so the two would compete.
+
+              A leading icon here and not on the Coins row above is the rule
+              rather than an inconsistency: an icon marks rows that disclose
+              something, the way Eye marks "Reveal seed phrase" below. Coins is
+              navigation to a list and discloses nothing new. */}
+          <span className="flex items-center gap-1.5 console-overline">
+            <Share size={13} />
+            Export wallet data
+          </span>
           <ChevronRight size={16} className="text-[color:var(--text-subtle)]" />
         </button>
       </Card>
