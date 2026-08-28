@@ -185,6 +185,63 @@ underneath the rest of Settings.
   not be a backup, which is why the card takes the whole list.
 - Downloads go through a blob URL and a detached anchor. No host page, no server.
 
+## 4a. Transaction history CSV (#156)
+
+The same screen carries a third card, **Transaction history**, in its own card
+because the payload is a different kind of thing: history, not key material.
+
+The copy deliberately does **not** say "no keys". The descriptor cards above earn
+that phrasing because what they disclose is key material and the limit is worth
+stating; a CSV of transactions obviously carries none, so the clause spends words
+on the reassuring obvious and dilutes the line that matters: this is a complete
+record of your balances, and it should be stored like the files above.
+
+Three format decisions are load-bearing, and each guards a way the file could be
+quietly wrong rather than obviously broken:
+
+- **One row per asset moved, not per transaction.** A swap moves two assets, and
+  a row holding both cannot be summed or filtered by asset. Rows share a txid, so
+  they regroup.
+- **The fee appears on exactly one row per transaction.** Repeat it per asset row
+  and every swap doubles the total the moment anyone sums the column. Pinned by a
+  test that sums it.
+- **No locale formatting.** `formatAssetAmountExact` and `formatBaseUnits` group
+  thousands with commas, which would break the columns. `plainDecimal` in
+  `src/lib/tx-csv.ts` exists solely to avoid reusing them.
+
+And one security property: **asset tickers and names come from the Liquid asset
+registry**, where anyone can register an asset with any name, and those strings
+land in a file the user opens in Excel or Sheets. `csvCell` neutralizes values
+that would start a formula. Signed amounts deliberately bypass that path, since
+prefixing a leading minus would turn every outgoing amount into text no
+spreadsheet can add.
+
+Unconfirmed transactions are included with a `status` column and an empty
+`block_height` and `date_utc`; excluding them would silently drop the most recent
+activity. Full history, no date range. `asset_id` is always present, because a
+ticker can be missing or duplicated across assets and the id cannot.
+
+The action waits for `policyAssetHex` from the sync snapshot. Without it the
+export cannot tell L-BTC from a token, and mislabelling a column is worse than
+omitting an action.
+
+### This is NOT a tax-import format, on purpose
+
+There is no open standard; every tax tool has its own template. The closest to a
+lingua franca is Koinly's universal CSV, and our shape is structurally
+incompatible with it rather than merely differently named: it wants **one row per
+transaction** with Sent and Received as separate positive columns, so a swap
+exported our way arrives as two unrelated transfers and the tool computes the
+wrong cost basis. Dates differ too (`YYYY-MM-DD HH:MM:SS`, not ISO 8601 with a
+`Z`).
+
+Do not "fix" this file by reshaping it. A tax-importable export is tracked
+separately in **#159**, and the two formats are both wanted: neither is a superset,
+since this one carries raw asset ids, precision and manifest annotations that the
+tax shape has nowhere to put. Note also that tax software keys on a recognized
+currency symbol, so on Liquid only L-BTC and USDt map cleanly and everything else
+needs manual mapping.
+
 ## 5. The programmatic path (already shipped)
 
 Manual export is not the only route and is not the preferred one for a site.
@@ -250,6 +307,12 @@ non-SLIP-77 descriptor degrading to "no public form, and here is why" while stil
 exporting the CT descriptor, an entirely unparseable descriptor still exporting,
 the JSON envelope's format/version/warning, and filename slugging including the
 label that slugs to nothing.
+
+`src/lib/tx-csv.test.ts`, 17 cases. The ones that matter are the ones a
+spreadsheet would expose and a screenshot never would: the fee column summing to
+the real total across a multi-asset transaction, amounts carrying no grouping
+separators, a hostile registry asset name arriving as text rather than a formula,
+and signed amounts NOT being neutralized so they stay summable.
 
 There is no React component test harness in this repo, so the UI copy is verified
 by grepping the built bundle.
