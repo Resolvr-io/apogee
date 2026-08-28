@@ -42,12 +42,14 @@ Apogee never asks for your recovery phrase outside of setup. Keep your phrase an
 
 Apogee is a self-custodial wallet, not a custodian, exchange, or financial service.
 
-WHAT'S NEW IN 0.6.0
-• Swap LBTC and USDt without leaving the wallet — get a quote from the SideSwap dealer and settle it as a single atomic Liquid transaction, so both sides move at once and your funds are never held by anyone. Swap in either direction, naming either the amount you want to spend or the amount you want to receive.
-• Every swap is verified before it's signed — Apogee checks the dealer's proposed transaction against the quote you approved before signing it, and states the fees and guaranteed minimum you'll receive up front.
-• Bitcoin price chart under the balance, covering 24 hours through all time, with hover to read the price at a point in time.
-• Import a wallet by scanning its seed-phrase QR — the counterpart to the QR Apogee already exports.
-• Faster, steadier fiat prices with a fourth price source.
+WHAT'S NEW IN 0.8.0
+• Export your wallet's descriptor and public data — the account key, the watch-only descriptor that recreates the wallet elsewhere, the master blinding key, and a public descriptor with that key removed. Grouped by what each one discloses, because one group reveals which addresses are yours and the other reveals every amount you hold. Nothing exported can sign or spend, and your seed phrase is never included. Works for seed, Jade and watch-only wallets.
+• Trusted Simplicity Lending transactions — a connected Liquid app can request any of eight lending lifecycle actions, and Apogee independently resolves chain state, builds and dry-runs the covenant transaction, shows the exact effects for approval, then signs and broadcasts. Restricted to Liquid testnet software wallets in this release.
+• The balance behaves like an instrument — the numerals strike when a figure changes, the balance folds away as your history scrolls, and an Animations switch turns the motion off.
+• A seed QR a Jade can read — the export now carries a brightness control, so moving a wallet onto a Jade no longer depends on your screen.
+• Your transaction history as a CSV — every transaction with its date, txid, amounts, assets and fee, one row per asset moved so a swap reads as the two sides it actually is. Amounts in both base units and scaled, so a spreadsheet adds them up without losing precision.
+• Connect a hardware wallet is a button again, and the L-BTC row in Assets now names the unit its number is in.
+• Fixes — a consolidation in flight survives leaving the Coins screen, an implausible fee estimate is refused rather than paid, and a completed contract execution keeps only its txid instead of a week of readable detail.
 
 ## Single purpose
 
