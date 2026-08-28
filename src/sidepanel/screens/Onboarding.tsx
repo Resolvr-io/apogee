@@ -284,9 +284,16 @@ export function Onboarding({
           <Button variant="secondary" onClick={() => setStep("restore")}>
             Restore from seed phrase
           </Button>
-          {/* Secondary text links — de-emphasized alternatives to the primary
-              flows. Hardware wallets are a less common (cold-wallet) path, and
-              pairing happens in the hardware-connect step over Web Serial. */}
+          {/* A real button again. This was demoted to a text link only so the
+              chooser could look the same on Firefox, which cannot do Web Serial
+              and so opened a not-supported modal instead of pairing. Firefox is
+              gone, so pairing a Jade is a first-class path on the only browser
+              Apogee ships to, and it reads as one. */}
+          <Button variant="secondary" onClick={() => setStep("hardware-connect")}>
+            Connect hardware wallet
+          </Button>
+          {/* Watch-only stays a de-emphasized link: it was one before the
+              Firefox unification too, and it genuinely is the rarer path. */}
           <div className="mt-3 flex flex-col items-center gap-2 text-sm">
             <button
               type="button"
@@ -294,13 +301,6 @@ export function Onboarding({
               className="text-[color:var(--text-secondary)] underline-offset-4 transition-colors hover:text-[color:var(--text-strong)] hover:underline"
             >
               Import watch-only wallet
-            </button>
-            <button
-              type="button"
-              onClick={() => setStep("hardware-connect")}
-              className="text-[color:var(--text-secondary)] underline-offset-4 transition-colors hover:text-[color:var(--text-strong)] hover:underline"
-            >
-              Use a hardware wallet
             </button>
           </div>
         </div>
