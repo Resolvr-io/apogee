@@ -188,9 +188,13 @@ underneath the rest of Settings.
 ## 4a. Transaction history CSV (#156)
 
 The same screen carries a third card, **Transaction history**, in its own card
-because the payload is a different kind of thing: history, not key material. The
-copy says "No keys, but it is a full record of your balances" rather than
-stopping after the reassuring half.
+because the payload is a different kind of thing: history, not key material.
+
+The copy deliberately does **not** say "no keys". The descriptor cards above earn
+that phrasing because what they disclose is key material and the limit is worth
+stating; a CSV of transactions obviously carries none, so the clause spends words
+on the reassuring obvious and dilutes the line that matters: this is a complete
+record of your balances, and it should be stored like the files above.
 
 Three format decisions are load-bearing, and each guards a way the file could be
 quietly wrong rather than obviously broken:

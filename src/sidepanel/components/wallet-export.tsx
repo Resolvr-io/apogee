@@ -270,14 +270,16 @@ export function WalletExport({
       </Card>
 
       {/* Its own card because it is a different kind of payload: history rather
-          than key material. Saying "no keys" without also saying it is a full
-          financial record would be the reassuring half of the truth. */}
+          than key material. The copy does NOT say "no keys" — a CSV of
+          transactions obviously carries none, and spending a clause on the
+          reassuring obvious dilutes the part that is worth reading, which is
+          that this is a complete financial record. */}
       {canExportCsv && (
         <Card>
           <p className="console-overline text-[color:var(--text-secondary)]">Transaction history</p>
           <p className="mt-1 text-pretty text-[11px] text-[color:var(--text-subtle)]">
             {noOrphan(
-              "Every transaction with dates, amounts, assets and txids, one row per asset moved. No keys, but it is a full record of your balances, so store it like the files above.",
+              "Every transaction with dates, amounts, assets and txids, one row per asset moved. A full record of your balances, so store it like the files above.",
             )}
           </p>
           <div className="mt-2.5">
