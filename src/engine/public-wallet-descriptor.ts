@@ -6,6 +6,9 @@ import type { PublicWalletDescriptorDTO } from "./protocol";
 const INPUT_CHARSET =
   "0123456789()[],'/*abcdefgh@:$%{}IJKLMNOPQRSTUVWXYZ&+-.;<=>?!^_|~ijklmnopqrstuvwxyzABCDEFGH`#\"\\ ";
 const CHECKSUM_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+/** The only blinding policy this module will project, and the single source for
+ *  that predicate (see slip77KeyOf). */
+const SLIP77_POLICY = /^slip77\(([0-9a-f]{64})\)$/;
 const GENERATOR = [
   0xf5dee51989n,
   0xa9fdca3312n,
@@ -30,7 +33,7 @@ export function publicWalletDescriptor(
   const payload = descriptorPayload(canonicalCtDescriptor);
   const [blindingPolicy, ordinaryDescriptor] = parseOuterCt(payload);
 
-  if (!/^slip77\([0-9a-f]{64}\)$/.test(blindingPolicy)) {
+  if (!SLIP77_POLICY.test(blindingPolicy)) {
     throw new Error("This wallet's blinding policy cannot be safely disclosed as a public descriptor.");
   }
   if (ordinaryDescriptor.includes("ct(")) {
@@ -65,6 +68,44 @@ function descriptorPayload(descriptor: string): string {
     throw new Error("The canonical descriptor has a malformed checksum.");
   }
   return descriptor.slice(0, separator);
+}
+
+/** Split `ct(<blinding policy>,<descriptor>)` at its top-level comma.
+ *  Exported for the user-facing wallet export (src/lib/wallet-export.ts),
+ *  which needs the same split to surface the blinding policy and the inner
+ *  descriptor separately. Deliberately shared rather than reimplemented:
+ *  descriptor projection is a security boundary, and a second parser that
+ *  disagreed with this one is exactly how a blinding key leaks into a payload
+ *  that promised not to carry it. */
+export function parseOuterCtDescriptor(
+  payload: string,
+): [blindingPolicy: string, descriptor: string] {
+  return parseOuterCt(payload);
+}
+
+/** The descriptor body with any BIP-380 checksum removed. Exported for the
+ *  same caller and the same reason. */
+export function stripDescriptorChecksum(descriptor: string): string {
+  return descriptorPayload(descriptor);
+}
+
+/** The SLIP-77 master blinding key, or null for any other blinding policy.
+ *
+ *  Exported so no caller has to restate the predicate. It was briefly written
+ *  twice — here and in the wallet export — and while a divergence could not leak
+ *  the key (the split is what protects it), it would desync "this wallet has a
+ *  master blinding key" from "this wallet has a public descriptor", which are
+ *  the same fact. */
+export function slip77KeyOf(blindingPolicy: string): string | null {
+  return SLIP77_POLICY.exec(blindingPolicy)?.[1] ?? null;
+}
+
+/** Reject a descriptor carrying an extended private key. Exported alongside the
+ *  split because a caller that reuses the parsing and not this check gets the
+ *  most dangerous possible value with none of the defence: see the wallet
+ *  export, which surfaces the extended key as a separate field. */
+export function assertNoPrivateSpendKeysIn(descriptor: string): void {
+  assertNoPrivateSpendKeys(descriptor);
 }
 
 function parseOuterCt(payload: string): [blindingPolicy: string, descriptor: string] {

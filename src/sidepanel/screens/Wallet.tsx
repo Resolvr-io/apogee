@@ -23,10 +23,12 @@ import {
   Lock,
   QrCode,
   RefreshCw,
+  Share,
   Telescope,
   Unplug,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
+import { WalletExport } from "@/sidepanel/components/wallet-export";
 import type {
   AssetInfo,
   ChainServerHealth,
@@ -49,7 +51,12 @@ import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS, DEMO_UTXOS, useDemoFunds } from "@
 import { cancelBalanceStrike, restrikeBalance } from "@/sidepanel/balance-strike";
 import { useBalanceStrike } from "@/sidepanel/balance-warmup";
 import { useHeroCollapse } from "@/sidepanel/hero-collapse";
-import { moonRise, resetSceneScroll, setSceneScroll } from "@/sidepanel/scene-scroll";
+import {
+  moonRise,
+  parkSceneMoon,
+  resetSceneScroll,
+  setSceneScroll,
+} from "@/sidepanel/scene-scroll";
 import { cn, shortenHex } from "@/lib/utils";
 import { browser } from "@/lib/ext";
 import { encodeStandardSeedQr } from "@/lib/seed-qr";
@@ -95,7 +102,7 @@ import { Send } from "@/sidepanel/screens/Send";
 import { Swap } from "@/sidepanel/screens/Swap";
 import type { ToastNotice } from "@/sidepanel/components/Toast";
 
-export type View = "home" | "receive" | "send" | "swap" | "settings" | "coins";
+export type View = "home" | "receive" | "send" | "swap" | "settings" | "coins" | "export";
 
 const HIDE_KEY = "apogee:hideBalance";
 const TX_PAGE = 25; // transactions rendered per lazy-load page
@@ -323,9 +330,36 @@ export function Wallet({
     return () => {
       el.removeEventListener("scroll", report);
       if (raf) cancelAnimationFrame(raf);
+      // Only the LOCK case wants the moon walked back down here. Leaving home
+      // for a sub-view is handled by the park effect below, which raises it
+      // instead — a reset would drop the moon straight onto that view's back
+      // button. Parking is idempotent and cancels this, but doing both would
+      // still ease the moon down and back up for no reason.
       resetSceneScroll();
     };
   }, [homeActive]);
+
+  // Every view but home stacks a second header (back button + title) beneath the
+  // app header, and the moon's resting position is behind exactly that band. So
+  // the moon animates up and out for the whole time a sub-view is showing, and
+  // back down on the way home. Unconditional by design — see parkSceneMoon,
+  // which honors prefers-reduced-motion by cutting the animation rather than the
+  // move, because this is layout and not decoration.
+  useEffect(() => {
+    parkSceneMoon(!homeActive);
+  }, [homeActive]);
+
+  // Release on unmount, separately, because neither effect above does. The
+  // scroll effect returns early while a sub-view is showing so it registers no
+  // cleanup in that state, and the park effect has none.
+  //
+  // Both lock paths happen to be safe: App.tsx calls setView("home") BEFORE
+  // awaiting refresh(), so the park eases down while still mounted. A factory
+  // reset does not — onReset only clears recovery and refreshes, leaving
+  // view === "settings", so <Wallet> unmounts from a sub-view. Without this,
+  // --moon-rise and --scene-recede stay at 1 for the whole onboarding flow that
+  // follows: moon parked off-screen, horizon glow dead, water dimmed.
+  useEffect(() => () => parkSceneMoon(false), []);
 
   // The logo click's "home" — scroll the list back to the newest transactions,
   // expanding the hero on the way past the sentinel. Smooth for the same
@@ -754,6 +788,7 @@ export function Wallet({
             onView={onView}
           />
         )}
+        {view === "export" && <WalletExport wallet={active} wallets={state.wallets} />}
         {view === "coins" && (
           <Coins
             walletId={active.id}
@@ -2542,6 +2577,35 @@ function SettingsBody({
         </button>
       </Card>
 
+      {/* OUTSIDE the local-signer gate below on purpose: a Jade and a
+          watch-only wallet have exactly the same public data to export, and
+          they are the cases where an export matters most, since there is no
+          seed phrase to fall back on. A row rather than a drawer: four values
+          each needing a tag, a reveal and a copy do not fit under everything
+          else in a 400px column. */}
+      <Card>
+        <button type="button" onClick={() => onView("export")} className="settings-row">
+          {/* Share: a tray with an arrow leaving it, which is what this row does
+              — hand wallet data to something outside Apogee.
+
+              Two shapes were ruled out on the way here. A key reads as spending
+              authority, which is the one thing none of this grants, so it would
+              contradict every line of copy on the screen it opens. A
+              box-with-arrow-out (LogOut) reads as sign out, and the app header
+              directly above already carries a Lock, so the two would compete.
+
+              A leading icon here and not on the Coins row above is the rule
+              rather than an inconsistency: an icon marks rows that disclose
+              something, the way Eye marks "Reveal seed phrase" below. Coins is
+              navigation to a list and discloses nothing new. */}
+          <span className="flex items-center gap-1.5 console-overline">
+            <Share size={13} />
+            Export wallet data
+          </span>
+          <ChevronRight size={16} className="text-[color:var(--text-subtle)]" />
+        </button>
+      </Card>
+
       {info.signer === "local" && (
         <Card>
           {/* Collapsed by default to save space. Closing the drawer clears any
@@ -3238,5 +3302,5 @@ function Row({
 }
 
 function titleFor(view: View): string {
-  return view === "receive" ? "Receive" : view === "send" ? "Send" : view === "swap" ? "Swap" : view === "coins" ? "Coins" : "Settings";
+  return view === "receive" ? "Receive" : view === "send" ? "Send" : view === "swap" ? "Swap" : view === "coins" ? "Coins" : view === "export" ? "Export wallet data" : "Settings";
 }
