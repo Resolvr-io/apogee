@@ -33,8 +33,17 @@ const MOON_DEAD_ZONE_PX = COLLAPSE_THRESHOLD_PX;
  *  list has fully taken the frame's space. */
 const MOON_RANGE_PX = 240;
 
-/** How long the reset (see resetSceneScroll) takes to walk the scene home. */
+/** How long a scene transition (reset, park) takes to walk to its target. */
 const RESET_MS = 260;
+
+/** The list scroll offset at which the moon has fully cleared the panel.
+ *
+ *  Parking eases the starfield TO this value rather than leaving it where it
+ *  was, because the starfield's parallax is driven by the scroll offset and the
+ *  moon by the progress. Move one without the other and the moon slides away
+ *  over a frozen sky, which reads as broken next to the scroll gesture where
+ *  they travel together. */
+const MOON_CLEARED_SCROLL_PX = MOON_DEAD_ZONE_PX + MOON_RANGE_PX;
 
 /**
  * The moon's exit progress for a list scroll offset: 0 while the scroll is
@@ -67,27 +76,47 @@ export function setSceneScroll(progress: number, scrollY: number): void {
   writeScene(progress, scrollY);
 }
 
-/** Walk the scene back to rest — moon at apogee, water lit — eased, because
- *  every other motion in this gesture is eased and a hard cut would snap the
- *  whole backdrop. Called when the wallet view goes away (sub-view, lock): the
- *  scene stays on screen behind those, so the walk is visible by design. */
-export function resetSceneScroll(): void {
-  if (prefersReducedMotion()) return;
+/**
+ * Ease the whole scene to a target, moon and starfield together.
+ *
+ * Both values have to travel or the scene comes apart: `--moon-rise` moves the
+ * moon, while the starfield subscribes to the scroll offset for its depth
+ * parallax. Writing one and pinning the other at 0 is what made the moon slide
+ * out of a motionless sky on entering a sub-view, when the same moon travelling
+ * under a scroll gesture carries the stars with it.
+ *
+ * Eases from wherever the scene actually is, so a user who had scrolled partway
+ * before navigating does not get a jump.
+ */
+function easeSceneTo(toProgress: number, toScrollY: number): void {
   if (resetRaf) cancelAnimationFrame(resetRaf);
-  const from = lastProgress;
-  if (from <= 0) {
+  const fromProgress = lastProgress;
+  const fromScrollY = lastScrollY;
+  if (fromProgress === toProgress && fromScrollY === toScrollY) {
     resetRaf = 0;
-    writeScene(0, 0);
+    writeScene(toProgress, toScrollY);
     return;
   }
   const start = performance.now();
   const step = (now: number) => {
     const k = Math.min(1, (now - start) / RESET_MS);
     const eased = 1 - (1 - k) ** 3;
-    writeScene(from * (1 - eased), 0);
+    writeScene(
+      fromProgress + (toProgress - fromProgress) * eased,
+      fromScrollY + (toScrollY - fromScrollY) * eased,
+    );
     resetRaf = k < 1 ? requestAnimationFrame(step) : 0;
   };
   resetRaf = requestAnimationFrame(step);
+}
+
+/** Walk the scene back to rest — moon at apogee, sky home, water lit — eased,
+ *  because every other motion in this gesture is eased and a hard cut would snap
+ *  the whole backdrop. Called when the wallet view goes away (lock): the scene
+ *  stays on screen behind that, so the walk is visible by design. */
+export function resetSceneScroll(): void {
+  if (prefersReducedMotion()) return;
+  easeSceneTo(0, 0);
 }
 
 /**
@@ -111,38 +140,31 @@ export function resetSceneScroll(): void {
  * (that function's cleanup, then this), and whichever runs last must win rather
  * than the two easing against each other.
  *
- * Note the blast radius, because it is wider than the name suggests: writeScene
- * couples `--moon-rise` and `--scene-recede`, so parking also dims the water and
- * kills the horizon glow for as long as a sub-view is showing. That reads as
- * intentional — a sub-view wants a quieter backdrop behind its content — but it
- * means reduced-motion users, for whom setSceneScroll returns early and who
- * therefore never saw either value move before, now get the dimmed scene too.
- * Decoupling would need a second write path; leaving them coupled is the
- * deliberate choice, not an oversight.
+ * Note the blast radius, because it is wider than the name suggests. Parking
+ * moves the whole scene, not just the moon: writeScene couples `--moon-rise`
+ * with `--scene-recede`, so the water dims and the horizon glow dies, and the
+ * starfield is eased to the scroll offset at which the moon has cleared so the
+ * sky travels with it. That last part is not decoration — the moon sliding out
+ * over a frozen starfield is visibly wrong beside the scroll gesture, where the
+ * two move together.
+ *
+ * The consequence for reduced motion: those users, for whom setSceneScroll
+ * returns early and who therefore never saw any of this move, now get the
+ * parked scene on every sub-view. Applied as a jump rather than an animation,
+ * which is the preference honored correctly, but it is a change for them.
  */
 export function parkSceneMoon(parked: boolean): void {
-  const target = parked ? 1 : 0;
-  if (resetRaf) {
-    cancelAnimationFrame(resetRaf);
-    resetRaf = 0;
-  }
+  const progress = parked ? 1 : 0;
+  const scrollY = parked ? MOON_CLEARED_SCROLL_PX : 0;
   if (prefersReducedMotion()) {
-    writeScene(target, 0);
+    if (resetRaf) {
+      cancelAnimationFrame(resetRaf);
+      resetRaf = 0;
+    }
+    writeScene(progress, scrollY);
     return;
   }
-  const from = lastProgress;
-  if (from === target) {
-    writeScene(target, 0);
-    return;
-  }
-  const start = performance.now();
-  const step = (now: number) => {
-    const k = Math.min(1, (now - start) / RESET_MS);
-    const eased = 1 - (1 - k) ** 3;
-    writeScene(from + (target - from) * eased, 0);
-    resetRaf = k < 1 ? requestAnimationFrame(step) : 0;
-  };
-  resetRaf = requestAnimationFrame(step);
+  easeSceneTo(progress, scrollY);
 }
 
 export function subscribeScene(listener: Listener): () => void {
