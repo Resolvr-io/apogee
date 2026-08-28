@@ -90,6 +90,52 @@ export function resetSceneScroll(): void {
   resetRaf = requestAnimationFrame(step);
 }
 
+/**
+ * Park the moon above the panel, or release it, easing either way.
+ *
+ * Why this exists: every view but home stacks a second header (back button +
+ * title) under the app header, and the moon's resting position sits behind
+ * exactly that band — the app header is 56px tall, the sub-view header is
+ * another 56, and the moon spans roughly 40 to 96. Leaving home used to call
+ * resetSceneScroll(), which walks the moon back DOWN into that band; correct
+ * for the lock screen, which has no second header, and wrong for a sub-view.
+ *
+ * Deliberately NOT gated on prefers-reduced-motion the way setSceneScroll and
+ * resetSceneScroll are. Those two are pure decoration, so declining to run them
+ * costs nothing. This one is load-bearing layout: skipping it would leave the
+ * moon sitting on top of the back button for exactly the users who asked for
+ * less motion. The preference is honored by cutting the ANIMATION, not the
+ * move — reduced motion jumps straight to the parked position.
+ *
+ * Shares `resetRaf` with resetSceneScroll on purpose: leaving home fires both
+ * (that function's cleanup, then this), and whichever runs last must win rather
+ * than the two easing against each other.
+ */
+export function parkSceneMoon(parked: boolean): void {
+  const target = parked ? 1 : 0;
+  if (resetRaf) {
+    cancelAnimationFrame(resetRaf);
+    resetRaf = 0;
+  }
+  if (prefersReducedMotion()) {
+    writeScene(target, 0);
+    return;
+  }
+  const from = lastProgress;
+  if (from === target) {
+    writeScene(target, 0);
+    return;
+  }
+  const start = performance.now();
+  const step = (now: number) => {
+    const k = Math.min(1, (now - start) / RESET_MS);
+    const eased = 1 - (1 - k) ** 3;
+    writeScene(from + (target - from) * eased, 0);
+    resetRaf = k < 1 ? requestAnimationFrame(step) : 0;
+  };
+  resetRaf = requestAnimationFrame(step);
+}
+
 export function subscribeScene(listener: Listener): () => void {
   listeners.add(listener);
   listener(lastScrollY);

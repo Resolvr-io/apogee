@@ -49,7 +49,12 @@ import { DEMO_FUNDS_KEY, DEMO_SYNC, DEMO_TXS, DEMO_UTXOS, useDemoFunds } from "@
 import { cancelBalanceStrike, restrikeBalance } from "@/sidepanel/balance-strike";
 import { useBalanceStrike } from "@/sidepanel/balance-warmup";
 import { useHeroCollapse } from "@/sidepanel/hero-collapse";
-import { moonRise, resetSceneScroll, setSceneScroll } from "@/sidepanel/scene-scroll";
+import {
+  moonRise,
+  parkSceneMoon,
+  resetSceneScroll,
+  setSceneScroll,
+} from "@/sidepanel/scene-scroll";
 import { cn, shortenHex } from "@/lib/utils";
 import { browser } from "@/lib/ext";
 import { encodeStandardSeedQr } from "@/lib/seed-qr";
@@ -323,8 +328,23 @@ export function Wallet({
     return () => {
       el.removeEventListener("scroll", report);
       if (raf) cancelAnimationFrame(raf);
+      // Only the LOCK case wants the moon walked back down here. Leaving home
+      // for a sub-view is handled by the park effect below, which raises it
+      // instead — a reset would drop the moon straight onto that view's back
+      // button. Parking is idempotent and cancels this, but doing both would
+      // still ease the moon down and back up for no reason.
       resetSceneScroll();
     };
+  }, [homeActive]);
+
+  // Every view but home stacks a second header (back button + title) beneath the
+  // app header, and the moon's resting position is behind exactly that band. So
+  // the moon animates up and out for the whole time a sub-view is showing, and
+  // back down on the way home. Unconditional by design — see parkSceneMoon,
+  // which honors prefers-reduced-motion by cutting the animation rather than the
+  // move, because this is layout and not decoration.
+  useEffect(() => {
+    parkSceneMoon(!homeActive);
   }, [homeActive]);
 
   // The logo click's "home" — scroll the list back to the newest transactions,
