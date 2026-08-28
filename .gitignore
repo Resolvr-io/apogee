@@ -24,3 +24,14 @@ releases/
 # while testing rarely gets one of those.
 .temp-*
 *.key
+
+# Local-only planning material. This repo is PUBLIC, and product/commercial
+# documents live in the working tree while they are being worked on, so the
+# rules below are committed rather than left in .git/info/exclude — an exclude
+# file is per-machine and does not survive a fresh clone, which is precisely
+# when someone else would run `git add -A` over a docs/ directory they did not
+# put there. Filenames are matched by pattern so a new document is covered on
+# arrival instead of after someone remembers to add it.
+docs/local/
+docs/*PRD*
+docs/*prd*

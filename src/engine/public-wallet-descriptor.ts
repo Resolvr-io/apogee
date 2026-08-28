@@ -67,6 +67,25 @@ function descriptorPayload(descriptor: string): string {
   return descriptor.slice(0, separator);
 }
 
+/** Split `ct(<blinding policy>,<descriptor>)` at its top-level comma.
+ *  Exported for the user-facing wallet export (src/lib/wallet-export.ts),
+ *  which needs the same split to surface the blinding policy and the inner
+ *  descriptor separately. Deliberately shared rather than reimplemented:
+ *  descriptor projection is a security boundary, and a second parser that
+ *  disagreed with this one is exactly how a blinding key leaks into a payload
+ *  that promised not to carry it. */
+export function parseOuterCtDescriptor(
+  payload: string,
+): [blindingPolicy: string, descriptor: string] {
+  return parseOuterCt(payload);
+}
+
+/** The descriptor body with any BIP-380 checksum removed. Exported for the
+ *  same caller and the same reason. */
+export function stripDescriptorChecksum(descriptor: string): string {
+  return descriptorPayload(descriptor);
+}
+
 function parseOuterCt(payload: string): [blindingPolicy: string, descriptor: string] {
   if (!payload.startsWith("ct(") || !payload.endsWith(")")) {
     throw new Error("Expected a confidential wallet descriptor.");

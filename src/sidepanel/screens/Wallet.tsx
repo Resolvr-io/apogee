@@ -27,6 +27,7 @@ import {
   Unplug,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
+import { WalletExport } from "@/sidepanel/components/wallet-export";
 import type {
   AssetInfo,
   ChainServerHealth,
@@ -100,7 +101,7 @@ import { Send } from "@/sidepanel/screens/Send";
 import { Swap } from "@/sidepanel/screens/Swap";
 import type { ToastNotice } from "@/sidepanel/components/Toast";
 
-export type View = "home" | "receive" | "send" | "swap" | "settings" | "coins";
+export type View = "home" | "receive" | "send" | "swap" | "settings" | "coins" | "export";
 
 const HIDE_KEY = "apogee:hideBalance";
 const TX_PAGE = 25; // transactions rendered per lazy-load page
@@ -774,6 +775,7 @@ export function Wallet({
             onView={onView}
           />
         )}
+        {view === "export" && <WalletExport wallet={active} wallets={state.wallets} />}
         {view === "coins" && (
           <Coins
             walletId={active.id}
@@ -2562,6 +2564,19 @@ function SettingsBody({
         </button>
       </Card>
 
+      {/* OUTSIDE the local-signer gate below on purpose: a Jade and a
+          watch-only wallet have exactly the same public data to export, and
+          they are the cases where an export matters most, since there is no
+          seed phrase to fall back on. A row rather than a drawer: four values
+          each needing a tag, a reveal and a copy do not fit under everything
+          else in a 400px column. */}
+      <Card>
+        <button type="button" onClick={() => onView("export")} className="settings-row">
+          <span className="console-overline">Export wallet data</span>
+          <ChevronRight size={16} className="text-[color:var(--text-subtle)]" />
+        </button>
+      </Card>
+
       {info.signer === "local" && (
         <Card>
           {/* Collapsed by default to save space. Closing the drawer clears any
@@ -3258,5 +3273,5 @@ function Row({
 }
 
 function titleFor(view: View): string {
-  return view === "receive" ? "Receive" : view === "send" ? "Send" : view === "swap" ? "Swap" : view === "coins" ? "Coins" : "Settings";
+  return view === "receive" ? "Receive" : view === "send" ? "Send" : view === "swap" ? "Swap" : view === "coins" ? "Coins" : view === "export" ? "Export wallet data" : "Settings";
 }
