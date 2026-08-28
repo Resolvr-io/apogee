@@ -47,6 +47,8 @@ WHAT'S NEW IN 0.8.0
 • Trusted Simplicity Lending transactions — a connected Liquid app can request any of eight lending lifecycle actions, and Apogee independently resolves chain state, builds and dry-runs the covenant transaction, shows the exact effects for approval, then signs and broadcasts. Restricted to Liquid testnet software wallets in this release.
 • The balance behaves like an instrument — the numerals strike when a figure changes, the balance folds away as your history scrolls, and an Animations switch turns the motion off.
 • A seed QR a Jade can read — the export now carries a brightness control, so moving a wallet onto a Jade no longer depends on your screen.
+• Your transaction history as a CSV — every transaction with its date, txid, amounts, assets and fee, one row per asset moved so a swap reads as the two sides it actually is. Amounts in both base units and scaled, so a spreadsheet adds them up without losing precision.
+• Connect a hardware wallet is a button again, and the L-BTC row in Assets now names the unit its number is in.
 • Fixes — a consolidation in flight survives leaving the Coins screen, an implausible fee estimate is refused rather than paid, and a completed contract execution keeps only its txid instead of a week of readable detail.
 
 ## Single purpose

@@ -153,6 +153,19 @@ result includes both the signed PSET and its transaction id.
   activity from the seed. This first release is deliberately restricted to
   Liquid testnet software wallets; Jade, mainnet, partial repayment, and remotely
   installed manifests remain follow-up work.
+- **Your transaction history as a CSV.** Every transaction with its date, txid,
+  amounts, assets and fee, one row per asset moved so a swap reads as the two
+  sides it actually is. Amounts appear both in base units and scaled, so a
+  spreadsheet can add them up without losing precision, and the raw asset id is
+  always present because a ticker can be missing or repeated. Confirmed and
+  pending transactions both, marked as such.
+- **Connect a hardware wallet is a button again.** It had been demoted to a text
+  link so the onboarding chooser could look the same on Firefox, which cannot
+  talk to a Jade at all. Firefox is gone, so pairing a Jade is a first-class path
+  on the only browser Apogee ships to and now reads as one.
+- **The L-BTC row says what its number is.** In the Assets list an L-BTC balance
+  shown in sats sat under a label reading "LBTC", so 989,411 sats could be read
+  as 989,411 LBTC. The figure now names its unit.
 - **A seed QR that a Jade can actually read.** Exported seed QR codes were
   rendered too bright for the device's camera to lock onto. The export now
   carries a brightness control, so moving a wallet onto a Jade no longer depends
