@@ -6,7 +6,7 @@
 // pure enough to test directly.
 
 import { describe, expect, it } from "vitest";
-import { moonRise } from "./scene-scroll";
+import { MOON_CLEARED_SCROLL_PX, moonRise } from "./scene-scroll";
 
 describe("moonRise", () => {
   it("holds the apogee inside the dead zone", () => {
@@ -28,5 +28,18 @@ describe("moonRise", () => {
     // ease-out: at the halfway scroll the moon is more than halfway out —
     // a linear map would sit at exactly 0.5.
     expect(half).toBeGreaterThan(0.5);
+  });
+});
+
+// The whole scene transition rests on 329 being the same number as
+// MOON_DEAD_ZONE_PX + MOON_RANGE_PX: parking eases the scroll offset to it and
+// derives the moon from moonRise, so if that constant and moonRise's saturation
+// point ever drift, a park would stop landing on a fully cleared moon and the
+// starfield would stop agreeing with it. The literal 329 above cannot catch that.
+describe("MOON_CLEARED_SCROLL_PX", () => {
+  it("is exactly where moonRise saturates", () => {
+    expect(moonRise(MOON_CLEARED_SCROLL_PX)).toBe(1);
+    // Least such offset, not merely one of them: a pixel earlier is not done.
+    expect(moonRise(MOON_CLEARED_SCROLL_PX - 1)).toBeLessThan(1);
   });
 });

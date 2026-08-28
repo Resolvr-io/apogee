@@ -16,7 +16,6 @@ type Listener = (scrollY: number) => void;
 
 const listeners = new Set<Listener>();
 let lastScrollY = 0;
-let lastProgress = 0;
 let resetRaf = 0;
 
 const prefersReducedMotion = () =>
@@ -43,7 +42,7 @@ const RESET_MS = 260;
  *  moon by the progress. Move one without the other and the moon slides away
  *  over a frozen sky, which reads as broken next to the scroll gesture where
  *  they travel together. */
-const MOON_CLEARED_SCROLL_PX = MOON_DEAD_ZONE_PX + MOON_RANGE_PX;
+export const MOON_CLEARED_SCROLL_PX = MOON_DEAD_ZONE_PX + MOON_RANGE_PX;
 
 /**
  * The moon's exit progress for a list scroll offset: 0 while the scroll is
@@ -57,8 +56,10 @@ export function moonRise(scrollTop: number): number {
 }
 
 function writeScene(progress: number, scrollY: number): void {
+  // Only the offset is retained. Nothing needs the progress back, because it is
+  // derivable from the offset — see easeSceneTo. That it fell out unused when the
+  // ease stopped lerping the two independently is the invariant proving itself.
   lastScrollY = scrollY;
-  lastProgress = progress;
   document.documentElement.style.setProperty("--moon-rise", progress.toFixed(4));
   document.documentElement.style.setProperty("--scene-recede", progress.toFixed(4));
   for (const l of listeners) l(scrollY);
@@ -85,26 +86,33 @@ export function setSceneScroll(progress: number, scrollY: number): void {
  * out of a motionless sky on entering a sub-view, when the same moon travelling
  * under a scroll gesture carries the stars with it.
  *
+ * Eases ONE value, the scroll offset, and derives the moon from it with
+ * moonRise. The scene's state is genuinely one-dimensional: every write the
+ * scroll gesture makes satisfies `progress === moonRise(scrollY)`. Easing the two
+ * independently against a shared factor breaks that invariant mid-flight — for
+ * the first quarter of the transition the sky is still inside the dead zone
+ * while the moon is already a quarter gone, then they cross and the sky runs
+ * ahead — which is a smaller version of the defect this fix exists to remove.
+ * Deriving instead of lerping makes every intermediate frame a state the gesture
+ * could actually produce, and drops a parameter.
+ *
  * Eases from wherever the scene actually is, so a user who had scrolled partway
  * before navigating does not get a jump.
  */
-function easeSceneTo(toProgress: number, toScrollY: number): void {
+function easeSceneTo(toScrollY: number): void {
   if (resetRaf) cancelAnimationFrame(resetRaf);
-  const fromProgress = lastProgress;
   const fromScrollY = lastScrollY;
-  if (fromProgress === toProgress && fromScrollY === toScrollY) {
+  if (fromScrollY === toScrollY) {
     resetRaf = 0;
-    writeScene(toProgress, toScrollY);
+    writeScene(moonRise(toScrollY), toScrollY);
     return;
   }
   const start = performance.now();
   const step = (now: number) => {
     const k = Math.min(1, (now - start) / RESET_MS);
     const eased = 1 - (1 - k) ** 3;
-    writeScene(
-      fromProgress + (toProgress - fromProgress) * eased,
-      fromScrollY + (toScrollY - fromScrollY) * eased,
-    );
+    const scrollY = fromScrollY + (toScrollY - fromScrollY) * eased;
+    writeScene(moonRise(scrollY), scrollY);
     resetRaf = k < 1 ? requestAnimationFrame(step) : 0;
   };
   resetRaf = requestAnimationFrame(step);
@@ -115,8 +123,17 @@ function easeSceneTo(toProgress: number, toScrollY: number): void {
  *  the whole backdrop. Called when the wallet view goes away (lock): the scene
  *  stays on screen behind that, so the walk is visible by design. */
 export function resetSceneScroll(): void {
-  if (prefersReducedMotion()) return;
-  easeSceneTo(0, 0);
+  if (prefersReducedMotion()) {
+    // Cancel anyway. Only reachable if the preference is flipped mid-ease, and
+    // the callers happen to cancel on every path that matters, but relying on
+    // that is safety by call-site rather than by construction.
+    if (resetRaf) {
+      cancelAnimationFrame(resetRaf);
+      resetRaf = 0;
+    }
+    return;
+  }
+  easeSceneTo(0);
 }
 
 /**
@@ -154,17 +171,22 @@ export function resetSceneScroll(): void {
  * which is the preference honored correctly, but it is a change for them.
  */
 export function parkSceneMoon(parked: boolean): void {
-  const progress = parked ? 1 : 0;
-  const scrollY = parked ? MOON_CLEARED_SCROLL_PX : 0;
+  // MOON_CLEARED_SCROLL_PX is the LEAST offset that clears the moon, not the
+  // only one. A user who scrolled the history well past it already has the moon
+  // at 1, so easing the offset back down to 329 would hold the moon still and
+  // sweep the sky hundreds of pixels — the exact mirror of the bug being fixed,
+  // and worse than the snap it replaced. Clamping keeps the two agreeing: if the
+  // moon has nowhere to go, neither do the stars.
+  const scrollY = parked ? Math.max(lastScrollY, MOON_CLEARED_SCROLL_PX) : 0;
   if (prefersReducedMotion()) {
     if (resetRaf) {
       cancelAnimationFrame(resetRaf);
       resetRaf = 0;
     }
-    writeScene(progress, scrollY);
+    writeScene(moonRise(scrollY), scrollY);
     return;
   }
-  easeSceneTo(progress, scrollY);
+  easeSceneTo(scrollY);
 }
 
 export function subscribeScene(listener: Listener): () => void {
