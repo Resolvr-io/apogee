@@ -2,6 +2,7 @@ name: Lending regtest lifecycle
 
 on:
   pull_request:
+  merge_group:
   push:
     branches: [main]
 
@@ -23,6 +24,8 @@ env:
 
 jobs:
   chromium:
+    # Required checks are keyed by job name, so keep this unique and stable.
+    name: Simplicity lending regtest
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:

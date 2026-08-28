@@ -800,7 +800,7 @@ async function exerciseManifestRetryReliability(
   const rejectedRequest = settledDiscoveredProviderRequest(page, request);
   const rejectedApproval = await rejectedApprovalPromise;
   await expect(rejectedApproval.getByText("Enable borrowing", { exact: true })).toBeVisible();
-  await rejectedApproval.getByRole("button", { name: "Reject", exact: true }).click();
+  await clickPopupButtonAndWaitForClose(rejectedApproval, "Reject");
   await expect(rejectedRequest).resolves.toMatchObject({
     ok: false,
     error: { code: 4001, data: { reason: "user_rejected" } },
@@ -1291,6 +1291,19 @@ function openApprovalPages(context: BrowserContext) {
     (candidate) =>
       !candidate.isClosed() && candidate.url().includes("/src/prompt/prompt.html"),
   );
+}
+
+async function clickPopupButtonAndWaitForClose(page: Page, buttonName: string): Promise<void> {
+  const closed = page.waitForEvent("close");
+  try {
+    await page.getByRole("button", { name: buttonName, exact: true }).click();
+  } catch (error) {
+    // Chromium can report TargetClosed after the click handler has completed:
+    // rejecting an approval intentionally closes its own popup. Only suppress
+    // that race when the expected close actually happened.
+    if (!page.isClosed()) throw error;
+  }
+  await closed;
 }
 
 async function discoveredProviderRequest(page: import("@playwright/test").Page, request: unknown) {
