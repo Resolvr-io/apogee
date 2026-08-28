@@ -110,6 +110,15 @@ export function resetSceneScroll(): void {
  * Shares `resetRaf` with resetSceneScroll on purpose: leaving home fires both
  * (that function's cleanup, then this), and whichever runs last must win rather
  * than the two easing against each other.
+ *
+ * Note the blast radius, because it is wider than the name suggests: writeScene
+ * couples `--moon-rise` and `--scene-recede`, so parking also dims the water and
+ * kills the horizon glow for as long as a sub-view is showing. That reads as
+ * intentional — a sub-view wants a quieter backdrop behind its content — but it
+ * means reduced-motion users, for whom setSceneScroll returns early and who
+ * therefore never saw either value move before, now get the dimmed scene too.
+ * Decoupling would need a second write path; leaving them coupled is the
+ * deliberate choice, not an oversight.
  */
 export function parkSceneMoon(parked: boolean): void {
   const target = parked ? 1 : 0;

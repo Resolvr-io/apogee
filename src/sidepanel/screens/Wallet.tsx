@@ -349,6 +349,18 @@ export function Wallet({
     parkSceneMoon(!homeActive);
   }, [homeActive]);
 
+  // Release on unmount, separately, because neither effect above does. The
+  // scroll effect returns early while a sub-view is showing so it registers no
+  // cleanup in that state, and the park effect has none.
+  //
+  // Both lock paths happen to be safe: App.tsx calls setView("home") BEFORE
+  // awaiting refresh(), so the park eases down while still mounted. A factory
+  // reset does not — onReset only clears recovery and refreshes, leaving
+  // view === "settings", so <Wallet> unmounts from a sub-view. Without this,
+  // --moon-rise and --scene-recede stay at 1 for the whole onboarding flow that
+  // follows: moon parked off-screen, horizon glow dead, water dimmed.
+  useEffect(() => () => parkSceneMoon(false), []);
+
   // The logo click's "home" — scroll the list back to the newest transactions,
   // expanding the hero on the way past the sentinel. Smooth for the same
   // reason the settings drawer scroll is; instant under reduced motion.
