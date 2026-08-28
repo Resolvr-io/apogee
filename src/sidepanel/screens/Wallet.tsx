@@ -788,7 +788,15 @@ export function Wallet({
             onView={onView}
           />
         )}
-        {view === "export" && <WalletExport wallet={active} wallets={state.wallets} />}
+        {view === "export" && (
+          <WalletExport
+            wallet={active}
+            wallets={state.wallets}
+            txs={txs}
+            assets={assets}
+            policyAssetHex={sync?.policyAssetHex}
+          />
+        )}
         {view === "coins" && (
           <Coins
             walletId={active.id}

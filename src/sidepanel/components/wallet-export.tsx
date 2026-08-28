@@ -32,7 +32,10 @@
 
 import { useState } from "react";
 import { Download, Eye, EyeOff } from "lucide-react";
+import type { AssetInfo, WalletTxDTO } from "@/engine/protocol";
 import type { WalletInfo } from "@/keystore/keystore";
+import { downloadText } from "@/lib/download";
+import { toCsv, txCsvFilename, txCsvRows } from "@/lib/tx-csv";
 import {
   type WalletExportFields,
   walletExportFields,
@@ -42,19 +45,6 @@ import {
   walletsExportJson,
 } from "@/lib/wallet-export";
 import { Card, CopyButton } from "@/sidepanel/components/ui";
-
-/** Hand the user a file without a host page or a server: a blob URL clicked
- *  through a detached anchor, revoked immediately after. */
-function downloadText(filename: string, contents: string): void {
-  const url = URL.createObjectURL(new Blob([contents], { type: "text/plain;charset=utf-8" }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  // Safe synchronously after click(): the download is already handed to the
-  // browser, and leaving it would pin the blob for the panel's lifetime.
-  URL.revokeObjectURL(url);
-}
 
 /**
  * Bind the final two words with a non-breaking space, so a wrapped paragraph can
@@ -181,9 +171,25 @@ function valueGroups(fields: WalletExportFields) {
  * every wallet, for the all-wallets file — a backup that skipped whichever
  * wallet was not active would not be a backup.
  */
-export function WalletExport({ wallet, wallets }: { wallet: WalletInfo; wallets: WalletInfo[] }) {
+export function WalletExport({
+  wallet,
+  wallets,
+  txs,
+  assets,
+  policyAssetHex,
+}: {
+  wallet: WalletInfo;
+  wallets: WalletInfo[];
+  txs: WalletTxDTO[];
+  assets: Record<string, AssetInfo>;
+  /** From the sync snapshot. Absent until the first sync lands, which is why the
+   *  CSV action waits for it: without the policy asset id the export cannot tell
+   *  L-BTC from a token, and would mislabel a column rather than omit one. */
+  policyAssetHex?: string;
+}) {
   const fields = walletExportFields(wallet);
   const groups = valueGroups(fields);
+  const canExportCsv = txs.length > 0 && !!policyAssetHex;
   return (
     <div className="flex flex-col gap-3">
       <Card>
@@ -262,6 +268,49 @@ export function WalletExport({ wallet, wallets }: { wallet: WalletInfo; wallets:
           )}
         </div>
       </Card>
+
+      {/* Its own card because it is a different kind of payload: history rather
+          than key material. Saying "no keys" without also saying it is a full
+          financial record would be the reassuring half of the truth. */}
+      {canExportCsv && (
+        <Card>
+          <p className="console-overline text-[color:var(--text-secondary)]">Transaction history</p>
+          <p className="mt-1 text-pretty text-[11px] text-[color:var(--text-subtle)]">
+            {noOrphan(
+              "Every transaction with dates, amounts, assets and txids, one row per asset moved. No keys, but it is a full record of your balances, so store it like the files above.",
+            )}
+          </p>
+          <div className="mt-2.5">
+            <button
+              type="button"
+              onClick={() =>
+                downloadText(
+                  txCsvFilename(wallet.label, wallet.network),
+                  toCsv(
+                    txCsvRows(txs, assets, {
+                      id: policyAssetHex,
+                      // The registry usually carries L-BTC; the network-derived
+                      // fallback keeps the column labelled when it does not.
+                      ticker:
+                        assets[policyAssetHex]?.ticker ??
+                        (wallet.network === "liquid" ? "L-BTC" : "tL-BTC"),
+                      // A chain fact, not a lookup: the policy asset is always
+                      // 8 decimals, and a registry miss must not silently
+                      // rescale every amount in the file.
+                      precision: 8,
+                    }),
+                  ),
+                  "text/csv;charset=utf-8",
+                )
+              }
+              className="inline-flex items-center gap-1 text-xs font-medium text-[color:var(--accent)] hover:underline"
+            >
+              <Download size={12} />
+              Transactions ({txs.length}) (.csv)
+            </button>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
