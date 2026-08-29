@@ -10,6 +10,7 @@
 // flips the preference mid-session shouldn't have one half of the scene still
 // scrubbing.
 
+import { ANIMATIONS_KEY } from "@/lib/animations-pref";
 import { COLLAPSE_THRESHOLD_PX } from "@/sidepanel/hero-collapse";
 
 type Listener = (scrollY: number) => void;
@@ -20,6 +21,66 @@ let resetRaf = 0;
 
 const prefersReducedMotion = () =>
   typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/**
+ * Settings → Animations, mirrored here.
+ *
+ * The switch promises to turn the app's decorative motion off, and until now it
+ * did not reach the scene at all: someone who flipped it still got the full
+ * starfield parallax and the moon travelling on every scroll. That is a promise
+ * the switch was not keeping, and worse than the OS preference being ignored
+ * would be, because it is an explicit action rather than an inference.
+ *
+ * Cached rather than read per call because this module is synchronous and the
+ * preference lives in async storage. Optimistic `true` matches useAnimations, so
+ * the scene behaves normally until storage says otherwise; the seed and the
+ * subscription below correct it within a tick. Both are guarded so importing
+ * this module outside an extension page (the node test environment) is safe.
+ */
+let animationsEnabled = true;
+
+// Reached through globalThis rather than @/lib/ext on purpose: that module
+// evaluates the `chrome` global at import time, and scene-scroll is imported by
+// node-environment unit tests where it does not exist.
+const extensionStorage = (
+  globalThis as {
+    chrome?: {
+      storage?: {
+        local?: { get(key: string): Promise<Record<string, unknown>> };
+        onChanged?: {
+          addListener(
+            listener: (changes: Record<string, { newValue?: unknown }>, area: string) => void,
+          ): void;
+        };
+      };
+    };
+  }
+).chrome?.storage;
+
+if (extensionStorage?.local) {
+  void extensionStorage.local
+    .get(ANIMATIONS_KEY)
+    .then((stored) => {
+      if (ANIMATIONS_KEY in stored) animationsEnabled = Boolean(stored[ANIMATIONS_KEY]);
+    })
+    .catch(() => {
+      /* the optimistic default stands */
+    });
+  extensionStorage.onChanged?.addListener((changes, area) => {
+    if (area !== "local" || !(ANIMATIONS_KEY in changes)) return;
+    animationsEnabled = Boolean(changes[ANIMATIONS_KEY]?.newValue ?? true);
+  });
+}
+
+/**
+ * Whether the scene may move at all.
+ *
+ * Either signal suppresses it: the OS preference, and the app's own switch.
+ * Note this governs the DECORATIVE axes only — the starfield's parallax and the
+ * water dim. The moon is layout, not decoration (parked it clears the sub-view
+ * header), so parkSceneMoon still moves it either way, just without travel.
+ */
+const sceneMayMove = () => animationsEnabled && !prefersReducedMotion();
 
 /** How far the list must scroll before the moon starts to move: exactly the
  *  hero collapse's engagement point (see hero-collapse.ts), so the moon and
@@ -69,7 +130,7 @@ function writeScene(progress: number, scrollY: number): void {
  *  drives the moon and the water dim; `scrollY` (px) drives the star parallax.
  *  Cancels any reset in flight — the user's scroll always wins. */
 export function setSceneScroll(progress: number, scrollY: number): void {
-  if (prefersReducedMotion()) return;
+  if (!sceneMayMove()) return;
   if (resetRaf) {
     cancelAnimationFrame(resetRaf);
     resetRaf = 0;
@@ -123,7 +184,7 @@ function easeSceneTo(toScrollY: number): void {
  *  the whole backdrop. Called when the wallet view goes away (lock): the scene
  *  stays on screen behind that, so the walk is visible by design. */
 export function resetSceneScroll(): void {
-  if (prefersReducedMotion()) {
+  if (!sceneMayMove()) {
     // Cancel anyway. Only reachable if the preference is flipped mid-ease, and
     // the callers happen to cancel on every path that matters, but relying on
     // that is safety by call-site rather than by construction.
@@ -165,11 +226,22 @@ export function resetSceneScroll(): void {
  * over a frozen starfield is visibly wrong beside the scroll gesture, where the
  * two move together.
  *
- * The consequence for reduced motion: those users, for whom setSceneScroll
- * returns early and who therefore never saw any of this move, now get the
- * parked scene on every sub-view. Applied as a jump rather than an animation,
- * which is the preference honored correctly, but it is a change for them.
+ * With motion off — the OS preference or Settings → Animations — none of that
+ * applies. Only the moon is written, and without travel, because it is the one
+ * piece here that is layout rather than decoration: parked, it clears the
+ * sub-view header. The sky and the water stay where that user always sees them.
  */
+/** Move the moon and nothing else.
+ *
+ *  The path for a user who has motion off. The moon still has to clear the
+ *  sub-view header, so it is written; the starfield offset and the water dim
+ *  are decoration and are left exactly where that user always sees them.
+ *  Deliberately does not touch `lastScrollY` or notify listeners, so the sky
+ *  cannot be dragged along by a transition. */
+function writeMoonOnly(progress: number): void {
+  document.documentElement.style.setProperty("--moon-rise", progress.toFixed(4));
+}
+
 export function parkSceneMoon(parked: boolean): void {
   // MOON_CLEARED_SCROLL_PX is the LEAST offset that clears the moon, not the
   // only one. A user who scrolled the history well past it already has the moon
@@ -178,12 +250,16 @@ export function parkSceneMoon(parked: boolean): void {
   // and worse than the snap it replaced. Clamping keeps the two agreeing: if the
   // moon has nowhere to go, neither do the stars.
   const scrollY = parked ? Math.max(lastScrollY, MOON_CLEARED_SCROLL_PX) : 0;
-  if (prefersReducedMotion()) {
+  if (!sceneMayMove()) {
     if (resetRaf) {
       cancelAnimationFrame(resetRaf);
       resetRaf = 0;
     }
-    writeScene(moonRise(scrollY), scrollY);
+    // Moon only. Writing the whole scene here used to move the starfield and
+    // dim the water on a transition for users whose sky never moves anywhere
+    // else in the app, since setSceneScroll returns early for them — motion in
+    // exactly the one place they had asked for none.
+    writeMoonOnly(parked ? 1 : 0);
     return;
   }
   easeSceneTo(scrollY);
