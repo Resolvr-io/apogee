@@ -18,11 +18,17 @@ const FADE_MS = 1_000; // matches duration-1000 below
  * The panel's transient bottom chrome: visible on arrival, then faded out so it
  * never becomes furniture.
  *
- * Exported because the debug Replay-intro button shares the timing. Two
- * separate timers would drift, and worse, they would drift *visibly* — the two
- * sit at the bottom of the same screen, so one lingering after the other reads
- * as a bug rather than a coincidence. `gone` is only for the badge: the button
- * must stay mounted after it fades, or it could not be hovered back.
+ * Exported because the debug Replay-intro button gets the same treatment. It
+ * shares the POLICY, not a clock — each caller gets its own instance and its own
+ * pair of timers, so the two coincide only when they mounted together. On first
+ * run they don't: App gates the badge on the intro having finished, while the
+ * button's instance starts with the panel, so the badge outlasts it by roughly
+ * the length of the intro. Nor can they be made to share one, because the badge
+ * re-arms after a replay by design and the button deliberately does not. What
+ * the sharing buys is one definition of the durations rather than two.
+ *
+ * `gone` is only for the badge: the button must stay mounted after it fades, or
+ * it could not be hovered back.
  */
 export function useTransientChrome(): { shown: boolean; gone: boolean } {
   const [shown, setShown] = useState(false);

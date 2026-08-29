@@ -348,10 +348,13 @@ export function App() {
   const preWallet = Boolean(state && (!state.initialized || state.wallets.length === 0));
   // The animated ocean is a lock/intro backdrop only — never on the wallet itself.
   const animated = !unlocked && animationsPref;
-  // Shared with VersionBadge so the two pieces of transient bottom chrome fade
-  // as one. Called here rather than inside the button so the timer starts with
-  // the panel, not with the button's own mount — otherwise a replay would
-  // restart it and leave the button visible in a screenshot taken afterwards.
+  // Same treatment as VersionBadge, out of the same hook so the durations have
+  // one definition. Not the same clock: this instance starts with the panel and
+  // the badge's starts when the intro ends, so on first run the badge outlasts
+  // the button. Called here rather than inside the button so a replay can't
+  // restart the timer and leave the button visible in a screenshot taken
+  // afterwards — and the badge re-arming on replay is deliberate, which is
+  // exactly why the two can't be put on one clock.
   const { shown: chromeShown } = useTransientChrome();
   const { intro: moonIntro, end: endMoonIntro, replay: replayMoonIntro } = useMoonIntro(
     state,
