@@ -17,7 +17,9 @@ type Listener = (scrollY: number) => void;
 
 const listeners = new Set<Listener>();
 let lastScrollY = 0;
-let resetRaf = 0;
+/** Cancels whichever scene ease is in flight. One slot, because the moon can
+ *  only be going to one place at a time and whichever call arrives last wins. */
+let cancelActiveEase: () => void = () => {};
 
 const prefersReducedMotion = () =>
   typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -116,13 +118,24 @@ export function moonRise(scrollTop: number): number {
   return 1 - (1 - t) ** 3; // ease-out, standing in for the intro's cubic-bezier(0.2, 0.6, 0.3, 1)
 }
 
+/** The scene's three layers and who may write each.
+ *
+ *  `writeScene` moves all of them; `writeMoonOnly` and `writeStarfieldOnly`
+ *  exist because two callers must move exactly one. Motion-off parks the moon
+ *  without disturbing decoration, and the intro drives the sky while CSS
+ *  keyframes own the moon and the water. Splitting them is what keeps those two
+ *  cases from writing a variable that something else is already animating. */
+function setSceneVar(name: "--moon-rise" | "--scene-recede", value: number): void {
+  document.documentElement.style.setProperty(name, value.toFixed(4));
+}
+
 function writeScene(progress: number, scrollY: number): void {
   // Only the offset is retained. Nothing needs the progress back, because it is
   // derivable from the offset — see easeSceneTo. That it fell out unused when the
   // ease stopped lerping the two independently is the invariant proving itself.
   lastScrollY = scrollY;
-  document.documentElement.style.setProperty("--moon-rise", progress.toFixed(4));
-  document.documentElement.style.setProperty("--scene-recede", progress.toFixed(4));
+  setSceneVar("--moon-rise", progress);
+  setSceneVar("--scene-recede", progress);
   for (const l of listeners) l(scrollY);
 }
 
@@ -131,10 +144,7 @@ function writeScene(progress: number, scrollY: number): void {
  *  Cancels any reset in flight — the user's scroll always wins. */
 export function setSceneScroll(progress: number, scrollY: number): void {
   if (!sceneMayMove()) return;
-  if (resetRaf) {
-    cancelAnimationFrame(resetRaf);
-    resetRaf = 0;
-  }
+  cancelActiveEase();
   writeScene(progress, scrollY);
 }
 
@@ -160,23 +170,44 @@ export function setSceneScroll(progress: number, scrollY: number): void {
  * Eases from wherever the scene actually is, so a user who had scrolled partway
  * before navigating does not get a jump.
  */
+/**
+ * Walk one value from `from` to `to` over `durationMs`, easing, and hand each
+ * frame to `write`. Returns a cancel.
+ *
+ * The single easing primitive in this module. Every scene motion is this shape —
+ * the lock/reset walk home, a sub-view park, the intro's descent — differing
+ * only in distance, duration, and which layers the writer touches. They were
+ * three near-identical rAF loops until they were not.
+ */
+function easeScene(
+  from: number,
+  to: number,
+  durationMs: number,
+  write: (scrollY: number) => void,
+): () => void {
+  const start = performance.now();
+  let raf = requestAnimationFrame(function step(now: number) {
+    const k = Math.min(1, (now - start) / durationMs);
+    const eased = 1 - (1 - k) ** 3;
+    write(from + (to - from) * eased);
+    raf = k < 1 ? requestAnimationFrame(step) : 0;
+  });
+  return () => {
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+  };
+}
+
 function easeSceneTo(toScrollY: number): void {
-  if (resetRaf) cancelAnimationFrame(resetRaf);
+  cancelActiveEase();
   const fromScrollY = lastScrollY;
   if (fromScrollY === toScrollY) {
-    resetRaf = 0;
     writeScene(moonRise(toScrollY), toScrollY);
     return;
   }
-  const start = performance.now();
-  const step = (now: number) => {
-    const k = Math.min(1, (now - start) / RESET_MS);
-    const eased = 1 - (1 - k) ** 3;
-    const scrollY = fromScrollY + (toScrollY - fromScrollY) * eased;
-    writeScene(moonRise(scrollY), scrollY);
-    resetRaf = k < 1 ? requestAnimationFrame(step) : 0;
-  };
-  resetRaf = requestAnimationFrame(step);
+  cancelActiveEase = easeScene(fromScrollY, toScrollY, RESET_MS, (scrollY) =>
+    writeScene(moonRise(scrollY), scrollY),
+  );
 }
 
 /** Walk the scene back to rest — moon at apogee, sky home, water lit — eased,
@@ -188,10 +219,7 @@ export function resetSceneScroll(): void {
     // Cancel anyway. Only reachable if the preference is flipped mid-ease, and
     // the callers happen to cancel on every path that matters, but relying on
     // that is safety by call-site rather than by construction.
-    if (resetRaf) {
-      cancelAnimationFrame(resetRaf);
-      resetRaf = 0;
-    }
+    cancelActiveEase();
     return;
   }
   easeSceneTo(0);
@@ -214,7 +242,7 @@ export function resetSceneScroll(): void {
  * less motion. The preference is honored by cutting the ANIMATION, not the
  * move — reduced motion jumps straight to the parked position.
  *
- * Shares `resetRaf` with resetSceneScroll on purpose: leaving home fires both
+ * Shares the one ease slot with resetSceneScroll on purpose: leaving home fires both
  * (that function's cleanup, then this), and whichever runs last must win rather
  * than the two easing against each other.
  *
@@ -239,7 +267,7 @@ export function resetSceneScroll(): void {
  *  Deliberately does not touch `lastScrollY` or notify listeners, so the sky
  *  cannot be dragged along by a transition. */
 function writeMoonOnly(progress: number): void {
-  document.documentElement.style.setProperty("--moon-rise", progress.toFixed(4));
+  setSceneVar("--moon-rise", progress);
 }
 
 export function parkSceneMoon(parked: boolean): void {
@@ -251,10 +279,7 @@ export function parkSceneMoon(parked: boolean): void {
   // moon has nowhere to go, neither do the stars.
   const scrollY = parked ? Math.max(lastScrollY, MOON_CLEARED_SCROLL_PX) : 0;
   if (!sceneMayMove()) {
-    if (resetRaf) {
-      cancelAnimationFrame(resetRaf);
-      resetRaf = 0;
-    }
+    cancelActiveEase();
     // Moon only. Writing the whole scene here used to move the starfield and
     // dim the water on a transition for users whose sky never moves anywhere
     // else in the app, since setSceneScroll returns early for them — motion in
@@ -263,6 +288,70 @@ export function parkSceneMoon(parked: boolean): void {
     return;
   }
   easeSceneTo(scrollY);
+}
+
+/** How long the intro's moon takes to come down. Mirrors the 5s on
+ *  `apogee-moon-descend` in theme.css; the two are the same fact and there is no
+ *  way to read one from the other, so a change to either wants a change to both. */
+export const INTRO_MOON_MS = 5_000;
+
+
+
+/** Notify the starfield WITHOUT touching the moon or the water.
+ *
+ *  The intro drives those two itself, in CSS: `apogee-moon-descend` owns the
+ *  moon's transform, and `.apogee-intro-dim` owns the water through its own
+ *  keyframes. Writing `--moon-rise` or `--scene-recede` here would fight both —
+ *  and the second collision is the nastier one, because `.apogee-scroll-dim` is
+ *  a separate element that would light up alongside the intro's own band, which
+ *  its comment in theme.css explicitly relies on never happening. */
+function writeStarfieldOnly(scrollY: number): void {
+  lastScrollY = scrollY;
+  for (const l of listeners) l(scrollY);
+}
+
+/**
+ * Carry the starfield through the intro's moon descent.
+ *
+ * Everywhere else in the panel the moon and the sky travel together: scrolling
+ * the history parallaxes both, and so does entering a sub-view. The intro was
+ * the exception, because its moon is a CSS keyframe and the starfield only ever
+ * moved when JS told it to — so the moon fell through a sky that was nailed in
+ * place.
+ *
+ * Reuses the same ease as the scroll driver rather than reimplementing the
+ * intro's `cubic-bezier(0.2, 0.6, 0.3, 1)` in JS. That is not an approximation
+ * introduced here: `moonRise` already describes its cubic as "standing in for
+ * the intro's cubic-bezier", so the two curves were already treated as the same
+ * shape, and matching that keeps one easing in the module instead of two.
+ *
+ * Deliberately not gated on `sceneMayMove()`. App owns the intro's motion
+ * decision and never reaches "play" with reduced motion or animations off;
+ * checking again here would only add a way for a racing preference read to kill
+ * a cinematic that had already been allowed to start.
+ *
+ * Returns a cancel function.
+ */
+export function driveIntroStarfield(intro: "hold" | "play" | false): () => void {
+  if (intro === "hold") {
+    // Parked, matching the moon the hold class pins above the panel, so the
+    // hold and the first frame of the descent agree and nothing snaps.
+    writeStarfieldOnly(MOON_CLEARED_SCROLL_PX);
+    return () => {};
+  }
+  if (intro === false) {
+    // Covers the capped hold: the panel gives up on the cinematic and shows the
+    // wallet, and the sky must not stay parked from a descent that never ran.
+    writeStarfieldOnly(0);
+    return () => {};
+  }
+  // Parked, ALWAYS — not `lastScrollY`. The moon's keyframe declares an absolute
+  // `from: translate(-50%, var(--moon-park))`, so it starts at the top whatever
+  // the scene was doing a frame earlier, and the sky has to agree. Reading the
+  // live value instead made the replay button a no-op: replay() goes
+  // false -> one frame -> "play" without passing through "hold", so `from` was
+  // the 0 the `false` branch had just written, and the sweep ran 0 to 0.
+  return easeScene(MOON_CLEARED_SCROLL_PX, 0, INTRO_MOON_MS, writeStarfieldOnly);
 }
 
 export function subscribeScene(listener: Listener): () => void {

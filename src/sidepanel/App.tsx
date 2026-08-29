@@ -7,6 +7,7 @@ import { armBalanceStrike } from "@/sidepanel/balance-strike";
 import { ErrorText, IconButton, LoadingPill } from "@/sidepanel/components/ui";
 import { ToastView, type ToastNotice } from "@/sidepanel/components/Toast";
 import { ConnectionBar } from "@/sidepanel/components/ConnectionBar";
+import { driveIntroStarfield } from "@/sidepanel/scene-scroll";
 import { VersionBadge, useTransientChrome } from "@/sidepanel/components/VersionBadge";
 import { errMessage, wallet } from "@/sidepanel/wallet-client";
 import { browser } from "@/lib/ext";
@@ -363,6 +364,13 @@ export function App() {
     animated,
     animationsLoaded,
   );
+  // The intro's moon is a CSS keyframe and the starfield only moves when JS says
+  // so, which left the moon descending through a sky nailed in place — the one
+  // place in the panel where the two did not travel together. Keyed on the
+  // phase, so a replay re-runs the sweep and a capped hold resets the sky rather
+  // than stranding it parked from a descent that never played.
+  useEffect(() => driveIntroStarfield(moonIntro), [moonIntro]);
+
   // Defence in depth only: the replay handler clears this before re-arming the
   // phase, which is what actually closes the stale-`true` frame, and no other
   // path reaches "play" with it set. Kept so a future second caller of `replay`
