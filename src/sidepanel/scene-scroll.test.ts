@@ -43,3 +43,13 @@ describe("MOON_CLEARED_SCROLL_PX", () => {
     expect(moonRise(MOON_CLEARED_SCROLL_PX - 1)).toBeLessThan(1);
   });
 });
+
+// The module is imported here in a node environment with no `chrome` global.
+// It must not reach @/lib/ext, which evaluates that global at import time, or
+// this file fails to load at all rather than failing an assertion.
+describe("importability outside an extension page", () => {
+  it("loads with no chrome global and still answers", () => {
+    expect(typeof (globalThis as { chrome?: unknown }).chrome).toBe("undefined");
+    expect(moonRise(MOON_CLEARED_SCROLL_PX)).toBe(1);
+  });
+});

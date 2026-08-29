@@ -6,8 +6,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { browser } from "@/lib/ext";
+import { ANIMATIONS_KEY } from "@/lib/animations-pref";
 
-const ANIM_KEY = "apogee:animations";
+const ANIM_KEY = ANIMATIONS_KEY;
 
 /**
  * `[animated, setAnimated, loaded]` — `true` (animated) until storage says
