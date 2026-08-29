@@ -31,8 +31,12 @@ type Meteor = {
   bright: number; // peak alpha
 };
 
-export function ShootingStars() {
+export function ShootingStars({ firstSpawnMs }: { firstSpawnMs?: number } = {}) {
   const ref = useRef<HTMLCanvasElement>(null);
+  // Read through a ref so changing it cannot restart the rAF loop; the loop
+  // reads it only when arming the first spawn.
+  const firstSpawn = useRef(firstSpawnMs);
+  firstSpawn.current = firstSpawnMs;
 
   useEffect(() => {
     const canvas = ref.current;
@@ -140,7 +144,10 @@ export function ShootingStars() {
       // above, so a meteor spawned on a resume tick (where `steps` can be
       // large) isn't immediately killed by that same tick's decrement.
       if (nextAt === 0) {
-        nextAt = now + 2500 + Math.random() * 2500; // first one ~2.5–5s in
+        // The intro asks for a specific first meteor so one is always crossing
+        // the sky as the logo arrives; everywhere else the first is random in a
+        // 2.5-5s window. Subsequent spawns are random either way.
+        nextAt = now + (firstSpawn.current ?? 2500 + Math.random() * 2500);
       } else if (now >= nextAt) {
         spawn();
         nextAt = now + 9000 + Math.random() * 16000; // then every ~9–25s

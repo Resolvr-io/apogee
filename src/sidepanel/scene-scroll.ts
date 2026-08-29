@@ -295,7 +295,18 @@ export function parkSceneMoon(parked: boolean): void {
  *  way to read one from the other, so a change to either wants a change to both. */
 export const INTRO_MOON_MS = 5_000;
 
+/** When the intro hands the UI back: the delay on `apogee-content-in` in
+ *  theme.css, which is when the logo starts fading in. Same mirroring caveat as
+ *  INTRO_MOON_MS — nothing can read the stylesheet, so the two move together. */
+export const INTRO_CONTENT_IN_MS = 3_500;
 
+/** How far ahead of the logo the intro's first meteor is spawned.
+ *
+ *  A meteor lives well under a second, so this puts one mid-flight as the logo
+ *  begins to arrive rather than landing on top of it. Left to itself the first
+ *  spawn is random in a 2.5-5s window, which straddles the logo: sometimes a
+ *  meteor greeted it, sometimes one crossed it, most often nothing happened. */
+export const INTRO_METEOR_LEAD_MS = 600;
 
 /** Notify the starfield WITHOUT touching the moon or the water.
  *
