@@ -1,21 +1,17 @@
-// SideSwap instant-swap orchestration (Track 1, Phase 2).
+// SideSwap instant-swap orchestration. Chains the dealer-quoted flow:
 //
-// Chains the full dealer-quoted swap flow:
+//   getUtxos (filtered to send-asset) → startQuotes → wait → getQuote →
+//   signSwapPset (atomic verify + sign + finalize) → takerSign
 //
-//   getUtxos (filter to send-asset) → startQuotes → wait for quote → getQuote
-//   → signSwapPset (atomic verify + sign + finalize) → takerSign
+// Three safety properties hold it together:
 //
-// Honors the three wiring prerequisites from the integration plan:
-//
-//   1. **Atomic verify+sign.** The dealer PSET is verified and signed in a
-//      single engine call (`signSwapPset`), so an unverified PSET can never
+//   1. **Atomic verify+sign.** One engine call, so an unverified PSET can never
 //      slip in between the two steps.
-//   2. **Send-asset-only UTXOs.** `getUtxos` returns the full wallet with
-//      blinding factors; we filter to the send-asset UTXOs the dealer needs
-//      for coin selection so SideSwap can't unblind unrelated holdings.
-//   3. **Independent maxFee.** The caller MUST supply a fee cap derived from
-//      an independent estimate (feerate × vsize, or a fixed sane ceiling) —
-//      never from the dealer's quote or PSET.
+//   2. **Send-asset-only UTXOs.** `getUtxos` returns the whole wallet with
+//      blinding factors; filtering to the send asset keeps SideSwap from
+//      unblinding unrelated holdings.
+//   3. **Independent maxFee.** The caller MUST derive the cap from its own
+//      estimate (feerate × vsize, or a sane ceiling), never from the dealer.
 
 import type { SideSwapClient, SideSwapUtxo, SideSwapQuoteSuccess, SideSwapAssetType, SideSwapTradeDir } from "./client";
 import type { EngineRequest, UtxoDTO, VerifyDealerPsetTermsDTO, SignSwapPsetWireResult } from "@/engine/protocol";
@@ -106,12 +102,9 @@ export interface SwapQuotePreviewResult {
 
 // ---- result of the atomic signSwapPset engine call -----------------------
 //
-// The `signSwapPset` engine handler is being implemented on Angel's
-// engine-core branch. The request shape:
-//
-//   { kind: "signSwapPset"; mnemonic; descriptor; network; pset; terms: VerifyDealerPsetTermsDTO }
-//
-// The result type is `SignSwapPsetWireResult` from protocol.ts.
+// Request shape: { kind: "signSwapPset"; mnemonic; descriptor; network; pset;
+// terms: VerifyDealerPsetTermsDTO }. Result: `SignSwapPsetWireResult` from
+// protocol.ts.
 
 // ---- UTXO filtering ------------------------------------------------------
 
@@ -263,24 +256,20 @@ export async function executeInstantSwap(
   // 5. Get the dealer-built unsigned PSET.
   const quoteResult = await client.getQuote(success.quote_id);
 
-  // 6. Atomic verify + sign + finalize in one engine call (prerequisite 1).
-  //    The maxFee cap is the caller's independent estimate (prerequisite 3).
+  // 6. Atomic verify + sign + finalize in one engine call, with the caller's
+  //    independent maxFee cap.
   //
-  //    SideSwap's base_amount/quote_amount always refer to the pair's base
-  //    (LBTC) and quote respectively. Map to send/recv based on which asset
-  //    the user is sending: if sending base (LBTC), send=base, recv=quote;
-  //    if sending quote (e.g. USDt), send=quote, recv=base.
+  //    base_amount/quote_amount always refer to the pair's base (LBTC) and quote.
+  //    Map to send/recv by which asset the user is sending.
   const sendIsBase = sendAssetId === policyAssetId(network);
   // `base_amount`/`quote_amount` EXCLUDE the dealer's fee, which is always
-  // L-BTC-denominated. The gate measures the wallet's NET policy-asset outflow,
-  // which includes that fee — so on an L-BTC send the quoted figure has to be made
-  // fee-inclusive before it becomes `sendAmount`, or check 2
-  // (`sent <= sendAmount + fee + TOL`) rejects the real outflow.
+  // L-BTC-denominated, while the gate measures NET policy-asset outflow, which
+  // includes it. So on an L-BTC send the quoted figure must be made fee-inclusive
+  // before it becomes `sendAmount`, or check 2 rejects the real outflow.
   //
-  // Measured on mainnet: base 1556 + 83 dealer fee + 60 network fee = 1699 sent,
-  // against a fee-exclusive bound of 1556 + 60 + 1 = 1617. Every receive-exact
-  // L-BTC swap would be refused with "the rate moved unfavorably" — nothing to do
-  // with `maxSendAmount`, which check 2 never even reaches.
+  // Measured on mainnet: 1556 base + 83 dealer + 60 network = 1699 sent against a
+  // fee-exclusive bound of 1617. Every receive-exact L-BTC swap would be refused
+  // as "the rate moved unfavorably".
   const dealerFee =
     BigInt(Math.round(success.fixed_fee)) + BigInt(Math.round(success.server_fee));
   const quotedSendAmt =
@@ -299,14 +288,12 @@ export async function executeInstantSwap(
     ? quotedSendAmt
     : BigInt(params.sendAmount!);
 
-  // Slippage / send-cap logic. The user-reviewed amounts from the preview
-  // quote (SwapQuotePreview) are the authoritative bounds — they reflect
-  // what the user saw on the review screen before tapping Confirm. The
-  // execution-time dealer quote may differ; these caps catch that drift.
+  // The user-reviewed amounts from the preview quote are the authoritative
+  // bounds — what the user saw before tapping Confirm. The execution-time quote
+  // may differ, and these caps catch that drift.
   //
-  // minRecvAmount: prefer the user-reviewed receive estimate minus 3%
-  // tolerance over the execution-time quote. In receive-exact mode the user
-  // typed an exact receive amount — use that directly (no tolerance).
+  // minRecvAmount prefers the reviewed estimate minus 3% over the execution-time
+  // quote. In receive-exact mode the user typed the amount, so use it directly.
   const defaultMinRecv = receiveExact
     ? BigInt(params.recvAmount!)
     : params.reviewedRecvAmount != null
@@ -414,22 +401,19 @@ export async function previewSwapQuote(
   // user is sending: base (LBTC) or quote (e.g. USDt).
   const sendIsBase = sendAssetId === policyAssetId(network);
   const dealerFee = BigInt(Math.round(success.fixed_fee)) + BigInt(Math.round(success.server_fee));
-  // `base_amount` EXCLUDES the dealer's fee, which is L-BTC-denominated. Measured
-  // on a real $1 receive-exact quote: base 1556 sats + 83 sats fee = 1639, matching
-  // both SideSwap's own 1638-sat ask and the ~1643 implied by a live sell-exact
-  // swap. So the fee-exclusive figure is NOT what the wallet pays.
+  // `base_amount` EXCLUDES the dealer's L-BTC-denominated fee. Measured on a real
+  // $1 receive-exact quote: 1556 + 83 = 1639, matching SideSwap's own 1638-sat ask.
+  // So the fee-exclusive figure is NOT what the wallet pays.
   //
-  // Returning it fee-inclusive fixes three things at once:
-  //   - "You pay" shows the real charge instead of understating it;
-  //   - `reviewedSendAmount` (and so the receive-exact `maxSendAmount` cap) is
-  //     measured on the same basis as the outflow the gate checks — otherwise an
-  //     83-sat fee eats the entire 5% headroom (5.3% of 1556) and the gate rejects
-  //     a swap where nothing actually drifted;
-  //   - the cost percentage stops dividing by a base that excludes the fee.
+  // Returning it fee-inclusive fixes three things: "You pay" stops understating
+  // the charge; `reviewedSendAmount` (and the receive-exact `maxSendAmount` cap)
+  // is measured on the same basis as the outflow the gate checks, so an 83-sat fee
+  // no longer eats the entire 5% headroom and rejects a swap that never drifted;
+  // and the cost percentage stops dividing by a fee-exclusive base.
   //
-  // Only when SENDING L-BTC: the fee is always in L-BTC, so adding it to a USDt
-  // `sendAmount` would mix assets. On a USDt send the dealer covers the fee and it
-  // surfaces as a reduced receive instead (bounded by `minRecvAmount`).
+  // Only when SENDING L-BTC — adding an L-BTC fee to a USDt `sendAmount` would mix
+  // assets. On a USDt send the dealer covers it and it surfaces as a reduced
+  // receive, bounded by `minRecvAmount`.
   const sendAmount =
     BigInt(Math.round(sendIsBase ? success.base_amount : success.quote_amount)) +
     (sendIsBase ? dealerFee : 0n);

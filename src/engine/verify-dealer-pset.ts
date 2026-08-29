@@ -1,34 +1,29 @@
-// Dealer-PSET verification gate for SideSwap instant swaps (Track 1, plan task 4).
+// Dealer-PSET verification gate for SideSwap instant swaps.
 //
-// Before the wallet signs a PSET the SideSwap dealer built (the `get_quote`
-// response), this confirms — from the wallet's own point of view, via
-// `Wollet.psetDetails()` — that the PSET does what the accepted quote said:
+// Before the wallet signs a PSET the dealer built, this confirms from the
+// wallet's own point of view (`Wollet.psetDetails()`) that the PSET does what the
+// accepted quote said:
 //
-//   1. We receive at least the agreed amount of the receive asset. Net from the
-//      wallet's POV, so a positive inflow can only come from an output to an
-//      address the wallet owns — the real "paid to us" guarantee. This alone also
-//      catches a dealer who redirects the receive output away from us (our net
-//      inflow drops below the minimum).
-//   2. No input drain. `Signer.sign` signs EVERY input matching our descriptor,
-//      regardless of asset — so the check covers the send asset (outflow ≤
-//      offered + fee) AND every other asset (must net ≥ 0). Otherwise a dealer
-//      folding in a UTXO of some other token we hold, paid to themselves, drains
-//      it undetected.
-//   3. The network fee is within the caller's (required) cap — so a hostile dealer
-//      can't inflate the fee to burn our L-BTC. The fee is in the send asset and
-//      cancels out of check 2, so this cap is what actually bounds it.
+//   1. We receive at least the agreed amount. Net from the wallet's POV, so a
+//      positive inflow can only come from an output we own — which also catches a
+//      dealer redirecting the receive output away from us.
+//   2. No input drain. `Signer.sign` signs EVERY input matching our descriptor
+//      regardless of asset, so this covers the send asset (outflow ≤ offered +
+//      fee) AND every other asset (must net ≥ 0). Otherwise a dealer folds in a
+//      UTXO of some other token we hold, paid to themselves, undetected.
+//   3. The fee is within the caller's required cap, so a hostile dealer can't
+//      inflate it to burn our L-BTC. The fee cancels out of check 2, so this cap
+//      is what actually bounds it.
 //
-// There is deliberately NO separate "a recipient output carries the receive asset"
-// check: `PsetBalance.recipients()` lists only outputs that DON'T belong to the
-// wallet, but the receive output is paid to our own address — so it never appears
-// there. Such a check rejects the happy path while adding nothing over check 1.
+// Deliberately NO separate "a recipient output carries the receive asset" check:
+// `recipients()` lists only outputs that DON'T belong to the wallet, and the
+// receive output is paid to our own address. Such a check rejects the happy path
+// while adding nothing over check 1.
 //
-// Pure over a parsed PSET + Wollet: no network, no wallet mutation, no signing.
-// `psetDetails` takes the Pset by reference (does not consume it — `prepareSend`
-// reuses the same object), so it can be signed afterward. UNVALIDATED against a
-// live dealer PSET until the Track 1 spike lands — its tampered-PSET cases
-// (inflated send amount, a third-asset drain, a redirected receive output) are
-// what prove these checks hold.
+// Pure over a parsed PSET + Wollet: no network, no mutation, no signing.
+// `psetDetails` takes the Pset by reference, so it can be signed afterward. The
+// tampered-PSET cases (inflated send amount, third-asset drain, redirected
+// receive output) are what prove these checks hold.
 
 import type * as Lwk from "lwk_wasm";
 
@@ -38,19 +33,16 @@ export interface VerifyDealerPsetTerms {
   sendAmount: bigint; // amount offered in start_quotes (base units)
   recvAssetId: string; // hex asset being received (e.g. USDt)
   minRecvAmount: bigint; // minimum acceptable receive — caller applies slippage
-  /** Required cap on the network fee, in the SEND asset. Liquid fees are always in
-   *  the policy asset (L-BTC), so this bounds the fee when sending L-BTC. When
-   *  sending USDt the send-asset fee is 0 (the real L-BTC fee instead reduces the
-   *  received L-BTC, bounded by `minRecvAmount`), so the cap is a no-op in that
-   *  direction — but it stays REQUIRED so no caller can leave the L-BTC-send fee
-   *  unbounded, which a hostile dealer could exploit to burn the wallet's L-BTC. */
+  /** Required cap on the network fee, in the SEND asset. Liquid fees are always
+   *  in the policy asset, so this bounds the fee when sending L-BTC. Sending USDt
+   *  makes the send-asset fee 0 (the real fee reduces the received L-BTC, bounded
+   *  by `minRecvAmount`), so the cap is a no-op that direction — but it stays
+   *  REQUIRED so no caller can leave the L-BTC-send fee unbounded. */
   maxFee: bigint;
-  /** Independent upper bound on the send-asset principal (excluding fee). When
-   *  set, the gate rejects any PSET where sent > maxSendAmount + fee + TOL. This
-   *  is critical in receive-exact mode: without it, the dealer's quoted send
-   *  amount is the only bound, and a malicious dealer can quote arbitrarily
-   *  high. The caller should derive this from the user-reviewed estimate plus
-   *  a tolerance, never from the execution-time dealer quote. */
+  /** Independent upper bound on the send-asset principal, excluding fee. Critical
+   *  in receive-exact mode: without it the dealer's own quoted send amount is the
+   *  only bound. Derive it from the user-reviewed estimate plus a tolerance,
+   *  never from the execution-time quote. */
   maxSendAmount?: bigint;
 }
 
@@ -66,11 +58,10 @@ export function verifyDealerPset(
   wollet: Lwk.Wollet,
   terms: VerifyDealerPsetTerms,
 ): VerifyDealerPsetResult {
-  // Enrich the PSET with wallet input metadata (derivation paths, witness
-  // UTXOs) before reading balances. Dealer-built PSETs from SideSwap's
-  // get_quote lack this data; without addDetails, psetDetails returns empty
-  // balances and every check passes trivially (0 inflow, 0 outflow, 0 fee).
-  // Proven essential by the testnet spike (spikes/testnet-swap-spike.ts).
+  // Enrich with wallet input metadata (derivation paths, witness UTXOs) before
+  // reading balances. Dealer-built PSETs lack it, and without addDetails
+  // psetDetails returns empty balances — every check then passes trivially on
+  // 0 inflow, 0 outflow, 0 fee.
   pset.addDetails(wollet);
   const balance = wollet.psetDetails(pset).balance();
   // Net per asset from the wallet's POV (negative = spent, positive = received).
@@ -94,26 +85,24 @@ export function verifyDealerPset(
     return { ok: false, reason: `spend ${sent} exceeds offered ${terms.sendAmount} + fee ${fee}` };
   }
 
-  // 2a. Independent send-amount cap (receive-exact mode). The dealer chooses
-  //     the send amount in receive-exact, so `sendAmount` above is dealer-
-  //     derived. This independent cap — set from the user-reviewed estimate
-  //     plus a tolerance — is the real protection against a runaway quote.
+  // 2a. Independent send-amount cap. In receive-exact mode the dealer chooses the
+  //     send amount, so `sendAmount` above is dealer-derived; this cap, set from
+  //     the user-reviewed estimate, is the real protection against a runaway
+  //     quote.
   if (terms.maxSendAmount != null && sent > terms.maxSendAmount + fee + TOL) {
     return { ok: false, reason: `spend ${sent} exceeds user-approved cap ${terms.maxSendAmount} + fee ${fee}` };
   }
 
-  // 2b. No drain on any OTHER asset. Signer.sign signs every matching input
-  //     regardless of asset (header), so a UTXO of another token folded in and
-  //     paid to the dealer must be rejected here, not just the send asset.
+  // 2b. No drain on any OTHER asset — see the header: sign() covers every
+  //     matching input regardless of asset.
   for (const [asset, net] of balances) {
     if (asset !== terms.sendAssetId && net < -TOL) {
       return { ok: false, reason: `unexpected outflow of asset ${asset}: ${net}` };
     }
   }
 
-  // 3. Fee cap (send-asset fee — see the maxFee doc). Required, so the fee is
-  //    always bounded even though it cancels out of check 2 — a hostile dealer
-  //    can't inflate it to burn our L-BTC.
+  // 3. Fee cap. Required, so the fee stays bounded even though it cancels out of
+  //    check 2.
   if (fee > terms.maxFee) {
     return { ok: false, reason: `fee ${fee} exceeds cap ${terms.maxFee}` };
   }

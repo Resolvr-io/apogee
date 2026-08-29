@@ -132,13 +132,11 @@ function useHideBalance(): [boolean, () => void] {
 /**
  * A rate is only usable if it is a finite positive number.
  *
- * `priceFailed` is what gives the balance's "not final" pulse a terminal state,
- * and it was only ever set from `.catch` — so a `getRate` that *resolves* NaN or
- * 0 left `pricePending` true with nothing to end it, and the figure pulsed
- * forever. That is the exact failure the terminal state was added to prevent.
- * Not reachable through today's rate path, which throws rather than resolving
- * junk, but the guard costs nothing and the assumption is not enforced anywhere
- * upstream.
+ * `priceFailed` gives the balance's "not final" pulse its terminal state, and it
+ * was only ever set from `.catch` — so a `getRate` that *resolves* NaN or 0 left
+ * `pricePending` true with nothing to end it and the figure pulsed forever. Not
+ * reachable through today's rate path, which throws rather than resolving junk,
+ * but nothing upstream enforces that.
  */
 function usableRate(r: number | null): number | null {
   return typeof r === "number" && Number.isFinite(r) && r > 0 ? r : null;
@@ -454,18 +452,16 @@ export function Wallet({
   // `view !== "home"` returns early below, so calling it beside the hero render
   // made it conditional — React saw fewer hooks on Settings and blanked the panel.
   //
-  // A figure is only "ready" to strike once real numerals are on screen; stars, a
-  // spinner or the rate-failed dash would otherwise consume the arming and the
-  // balance would arrive already lit. The settling signal is an unconfirmed tx,
-  // NOT `pulse` — that also covers syncing and a pending rate, and neither of
-  // those is a confirmation.
-  // The Animations preference, read here for the strike (the Settings toggle
-  // and the Scene hold their own subscriptions). `loaded` gates the DECISION,
-  // not just the rendering: the preference starts at its optimistic default,
-  // and striking before it lands would consume the arming for someone who has
-  // animations off — the same window App guards the intro cinematic against.
-  // With animations off, `ready` stays false, the arming is held, and turning
-  // animations back on strikes the figure then showing.
+  // A figure is only "ready" once real numerals are on screen; stars, a spinner
+  // or the rate-failed dash would otherwise consume the arming and the balance
+  // would arrive already lit. The settling signal is an unconfirmed tx, NOT
+  // `pulse`, which also covers syncing and a pending rate.
+  //
+  // `loaded` gates the DECISION, not just the rendering: the animations
+  // preference starts at its optimistic default, and striking before it lands
+  // would consume the arming for someone who has animations off. With them off
+  // `ready` stays false, the arming is held, and turning them back on strikes the
+  // figure then showing.
   const [animated, , animationsLoaded] = useAnimations();
   const strikeEpoch = useBalanceStrike(
     String(total.totalSats),
@@ -518,18 +514,15 @@ export function Wallet({
         const result = await wallet.sync(active.id);
         const transactions = await wallet.getTransactions(active.id);
         // Pressing Sync is an explicit "tell me where I stand", so the numerals
-        // light again even when the figure hasn't moved — the spinner stopping
-        // is otherwise the only acknowledgement, and it stops whether or not the
-        // sync found anything.
+        // light again even unchanged — the spinner stopping is otherwise the only
+        // acknowledgement, and it stops either way.
         //
         // restrikeBalance() rather than armBalanceStrike() because it must also
-        // nudge a still-mounted hero — see balance-warmup.ts for why the lock
-        // paths deliberately don't. Armed here rather than on the click for two
-        // reasons: the strike then runs on the fresh figure instead of the stale
-        // one, and a sync that threw gets the error notice rather than a
-        // flourish. It also has to be the same React task as the setSync below —
-        // batched into one render — or the balance landing and the arming are
-        // two passes, and the second restarts the animation mid-flicker.
+        // nudge a still-mounted hero. Armed here rather than on the click so the
+        // strike runs on the fresh figure and a sync that threw gets the error
+        // notice instead of a flourish. Must be the same React task as the setSync
+        // below, batched into one render, or the balance landing and the arming
+        // are two passes and the second restarts the animation mid-flicker.
         if (kind === "manual") restrikeBalance();
         setSync(result);
         setTxs(transactions);
@@ -645,20 +638,18 @@ export function Wallet({
     seenTxids.current = null;
   }, [active?.id]);
 
-  // Toggling demo funds (debug builds) is a DISPLAY substitution — the canned
-  // dataset never enters liveSync — so there is nothing to clear, and clearing it
-  // was the bug: turning demo off nulled the real balance and left stars until
-  // the 20s poll or a manual refresh.
+  // Toggling demo funds is a DISPLAY substitution — the canned dataset never
+  // enters liveSync — so there is nothing to clear, and clearing it was the bug:
+  // turning demo off nulled the real balance and left stars until the next poll.
   //
-  // The seen-set still has to re-seed, though: `txs` swaps wholesale, so without
-  // this, switching on would toast a fabricated "Received 250,000 sats" and
-  // switching off would toast real history as if it had just arrived. Re-poll too,
-  // so the live figure is current rather than however stale it was when demo
-  // funds took over the display.
+  // The seen-set still has to re-seed: `txs` swaps wholesale, so switching on
+  // would toast a fabricated "Received 250,000 sats" and switching off would toast
+  // real history as if it had just arrived. Re-poll too, so the live figure is
+  // current rather than however stale it was when demo took over.
+  //
   // Keyed on the VALUE, not a "has run" flag: StrictMode re-invokes effects on
   // mount, and a flag would read the second pass as a toggle and fire a refresh
-  // that never happens in production. Comparing values is idempotent — a re-run
-  // with demoFunds unchanged does nothing, on mount or otherwise.
+  // that never happens in production.
   const lastDemoFunds = useRef(demoFunds);
   useEffect(() => {
     if (lastDemoFunds.current === demoFunds) return;
@@ -1225,24 +1216,20 @@ function Tokens({
   /**
    * L-BTC follows the denomination; tokens stay in their own precision.
    *
-   * The whole point of the L-BTC row is that the hero can be read against its
-   * parts, so rendering it in LBTC while the hero counts sats defeats it. Every
-   * other L-BTC figure in the panel already honors the setting — `TxRow` takes
-   * `denom`, Send and Swap take `unit={denom === "btc" ? "btc" : "sats"}` with
-   * "Applies to LBTC only — tokens enter in their own precision". This matches
-   * `TxRow` rather than Send/Swap, including fiat: those two collapse fiat to
-   * sats because they are *input* fields and fiat entry is not supported, a
-   * constraint a display list does not have.
+   * The point of the L-BTC row is that the hero can be read against its parts, so
+   * rendering it in LBTC while the hero counts sats defeats it. This matches
+   * `TxRow` rather than Send/Swap, including fiat: those two collapse fiat to sats
+   * because they are *input* fields and fiat entry isn't supported — a constraint
+   * a display list doesn't have.
    */
-  // The unit rides on the figure in sats mode, and only there. This row is the
-  // one place in the list where the label and the unit disagree: a token's label
-  // IS its unit, and in the other two denominations the figure describes itself
-  // (an LBTC decimal under an LBTC label, or a currency symbol). Sats under an
-  // "LBTC" label reads as 989,411 LBTC, which is what it looked like.
+  // The unit rides on the figure in sats mode, and only there. This row is the one
+  // place where the label and the unit disagree: a token's label IS its unit, and
+  // in the other denominations the figure describes itself. Sats under an "LBTC"
+  // label reads as 989,411 LBTC.
   //
-  // The unit goes on the figure rather than into the label because the label's
-  // job is to name the asset, which is also how the hero already handles this:
-  // it captions TOTAL SATS beneath the number instead of renaming L-BTC.
+  // On the figure rather than in the label because the label's job is to name the
+  // asset — the same choice the hero makes by captioning TOTAL SATS beneath the
+  // number instead of renaming L-BTC.
   const policyAmount = (amt: number): string =>
     denom === "btc"
       ? formatBtc(amt)
@@ -1696,22 +1683,19 @@ function Coins({
   const [busyAsset, setBusyAsset] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "info" | "error"; msg: string } | null>(null);
 
-  // Auto-lock "never" steps up auth on every local send (background/index.ts),
-  // so consolidation needs the same password field the other signing surfaces
-  // render — without it the background rejects with "Enter your password to
-  // send." and this screen has nowhere to type it.
+  // Auto-lock "never" steps up auth on every local send, so consolidation needs
+  // the same password field the other signing surfaces render — without it the
+  // background rejects and this screen has nowhere to type it.
   //
-  // Starts `null` (unknown), not a guessed default: a guessed default of "15"
-  // made `needsPassword` briefly read `false` on a Never wallet, so a confirm
-  // click inside that window failed with the background's rejection and only
-  // then did the password field appear. `null` disables Confirm below until
-  // the real value lands — a local storage read, so in practice imperceptible.
+  // Starts `null` (unknown), not a guessed default: guessing "15" made
+  // `needsPassword` briefly read false on a Never wallet, so a confirm click in
+  // that window failed and only then did the field appear. `null` disables Confirm
+  // until the real value lands.
   //
-  // A REJECTED read falls back to 0 (needsPassword), not null: the service
-  // worker can be asleep or mid-restart when this fires, and null would leave
-  // Confirm disabled forever with nothing on screen to explain why. 0 renders
-  // the password field, which the background ignores when it doesn't actually
-  // need one (see Swap.tsx) — safe on any wallet, correct on a Never one.
+  // A REJECTED read falls back to 0, not null: the service worker can be asleep
+  // when this fires, and null would disable Confirm forever with nothing to
+  // explain why. 0 renders the password field, which the background ignores when
+  // it doesn't need one — safe on any wallet, correct on a Never one.
   const [autoLock, setAutoLock] = useState<number | null>(null);
   const [password, setPassword] = useState("");
   const needsPassword = !isJade && autoLock === 0;
@@ -1773,19 +1757,15 @@ function Coins({
     return () => browser.runtime.onMessage.removeListener(onMsg);
   }, [loadUtxos]);
 
-  // Broadcast consolidations awaiting their first sighting, keyed by asset:
-  // the txid plus the outpoints the tx spends. getUtxos reads the wollet's
-  // last sync, so poll sync + reload on the home view's settle cadence until
-  // the spent outpoints drop out of the list — that's the moment the sync has
-  // caught the mempool tx, and the card clears. When an entry's OWN poll
-  // budget runs out, only that entry flips to a terminal "stuck" state (no
-  // spinner, dismissable), so one slow-to-confirm tx can't wedge another's
-  // card, and can't wedge the screen either.
+  // Broadcast consolidations awaiting their first sighting, keyed by asset: the
+  // txid plus the outpoints spent. getUtxos reads the wollet's last sync, so poll
+  // until those outpoints drop out — the moment the sync caught the mempool tx.
+  // When an entry's OWN budget runs out only that entry goes terminal ("stuck",
+  // dismissable), so one slow tx can't wedge another's card or the screen.
   //
-  // `broadcasts` itself (not a separate counter) is what re-arms this effect:
-  // bumping `polls` on every pending entry after each attempt changes its
-  // identity and re-triggers the effect, so a failed sync or an unchanged
-  // `utxos` still costs budget and the card always terminates.
+  // `broadcasts` itself re-arms the effect rather than a separate counter:
+  // bumping `polls` on each pending entry changes its identity, so a failed sync
+  // or unchanged `utxos` still costs budget and the card always terminates.
   useEffect(() => {
     const entries = Object.entries(broadcasts);
     // The demo dataset can't adjudicate a real broadcast: its outpoints are
@@ -2391,25 +2371,20 @@ function SettingsBody({
     }
   }
 
-  // Once revealed, count down and auto-hide the seed (phrase + QR) so it isn't
-  // left exposed. Cleared on unmount and whenever `seed` is reset (drawer close).
-  // Also restarts on a text/QR toggle: asking for the QR means starting a
-  // separate action on another device (lining up a phone camera, driving a
-  // Jade's scanner), which deserves a full window rather than whatever time
-  // was left over from the text view, where copy-paste is the usual path.
+  // Once revealed, count down and auto-hide the seed so it isn't left exposed.
+  // Cleared on unmount and whenever `seed` resets. Restarts on a text/QR toggle:
+  // asking for the QR means starting a separate action on another device, which
+  // deserves a full window rather than the remainder of the text view's.
   //
-  // Format and brightness are in the deps for the same reason: calibrating the
-  // dimmer while aiming a camera is the workflow this view exists for, and
-  // actively dragging a slider is about as clear an "I'm still here" signal as
-  // there is. Without them the seed hides mid-calibration and drops the user
-  // back to the password prompt. It does mean the window can be held open by
-  // fiddling, which is moot — they're already looking at the phrase.
-  // Encoding runs on live seed material and throws on anything outside the
-  // BIP-39 English wordlist. There is no error boundary in this app, so calling
-  // it bare in render would blank the whole side panel WHILE a seed is on
-  // screen. Memoized (the countdown re-renders every second, so this would
-  // otherwise re-encode the seed ~60x per reveal) and null on failure, which
-  // falls back to the plain-word QR rather than losing the view.
+  // Format and brightness are in the deps for the same reason — calibrating the
+  // dimmer while aiming a camera is this view's whole workflow, and dragging a
+  // slider is a clear "I'm still here". Without them the seed hides mid-
+  // calibration. It does mean fiddling holds the window open, which is moot:
+  // they're already looking at the phrase.
+  // Encoding throws on anything outside the BIP-39 English wordlist, and there is
+  // no error boundary in this app — calling it bare in render would blank the
+  // panel WHILE a seed is on screen. Memoized, because the countdown re-renders
+  // every second, and null on failure so it falls back to the plain-word QR.
   const seedQr = useMemo(() => {
     if (!seed) return null;
     try {
@@ -3016,30 +2991,26 @@ function SubView({
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // When a collapsible drawer (<details>) grows, scroll its header into view if
-  // the revealed content would otherwise fall below the fold.
+  // When a <details> drawer grows, scroll its header into view if the revealed
+  // content would otherwise fall below the fold.
   //
-  // The listener is on the capture phase because `toggle` is specified
-  // bubbles:false — that is the event's definition, not a gap in our browser
-  // floors, so the capture flag is permanent. Don't drop it: a React `onToggle`
-  // on an ancestor, or a bubble-phase listener here, sees nothing at all.
+  // Capture phase, because `toggle` is specified bubbles:false — the event's
+  // definition, not a gap in our browser floors, so the flag is permanent. A React
+  // `onToggle` on an ancestor, or a bubble-phase listener here, sees nothing.
   //
-  // `toggle` alone is not enough, because a drawer can grow more than once and
-  // only the first growth is a toggle. "Reveal seed phrase" opens to just a
-  // password form; submitting it swaps in the phrase, a countdown and two
-  // buttons, and "Show as QR code" then swaps the phrase for a QR plus a format
-  // toggle and a brightness row —
-  // together more height than the toggle itself revealed, and both are React
-  // state changes that fire no event on the element. So the toggle only decides
-  // WHAT to watch, and a ResizeObserver decides WHEN to act. It also removes the
-  // need to measure on a frame timer: it reports the box after layout, whereas a
-  // requestAnimationFrame could still measure the pre-expansion scroll range and
-  // under-scroll as a result.
+  // `toggle` alone isn't enough: a drawer can grow more than once and only the
+  // first growth is a toggle. "Reveal seed phrase" opens to a password form;
+  // submitting swaps in the phrase, a countdown and two buttons, and "Show as QR
+  // code" then swaps in a QR, a format toggle and a brightness row — together more
+  // height than the toggle revealed, and both are React state changes that fire no
+  // event. So the toggle decides WHAT to watch and a ResizeObserver decides WHEN
+  // to act, reporting the box after layout where a rAF could still measure the
+  // pre-expansion scroll range and under-scroll.
   //
-  // Live wherever SubView hosts a drawer: the three Settings sections, and Swap's
-  // "Quoted by SideSwap" disclosure on its confirm screen. Receive and Send have
-  // none. Swap's container is centered rather than feathered, so its geometry
-  // differs from the Settings screen this was measured against.
+  // Live wherever SubView hosts a drawer: the three Settings sections and Swap's
+  // "Quoted by SideSwap" disclosure. Swap's container is centered rather than
+  // feathered, so its geometry differs from the Settings screen this was measured
+  // against.
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;

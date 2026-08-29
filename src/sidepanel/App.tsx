@@ -20,11 +20,10 @@ import { Wallet, type View } from "@/sidepanel/screens/Wallet";
 import { ApprovalOverlay } from "@/sidepanel/screens/Approval";
 import type { ApprovalRequest } from "@/engine/protocol";
 
-// One-time first-run cinematic: the moon descends from above the panel, the
-// water lights up under it, and the UI fades in last (Scene `intro` +
-// theme.css). Plays exactly once per install — on the first onboarding (no
-// seed, no Jade) — then never again; the flag deliberately survives
-// wallet/reset, which removes only its own keys.
+// One-time first-run cinematic: the moon descends, the water lights under it,
+// and the UI fades in last (Scene `intro` + theme.css). Plays once per install,
+// on the first onboarding; the flag deliberately survives wallet/reset, which
+// removes only its own keys.
 const MOON_INTRO_KEY = "apogee:moonIntroPlayed";
 
 /** Total timeline length. KEEP IN SYNC with the .apogee-scene--intro block in
@@ -35,12 +34,10 @@ const MOON_INTRO_MS = 5_100;
  *  service-worker round trip, short next to a user wondering if it crashed. */
 const HOLD_CAP_MS = 2_500;
 
-// localStorage throws rather than degrades: SecurityError when storage is
-// blocked (Firefox `dom.storage.enabled=false`, strict cookie settings), and
-// setItem can throw on quota. This flag is cosmetic, so it must never be able to
-// take the panel down — and it is read in a useState initializer, where a throw
-// escapes App's render entirely. A failed READ reports "already played", the
-// conservative answer: no cinematic beats a white screen.
+// localStorage throws rather than degrades — SecurityError when storage is
+// blocked, quota on setItem — and this is read in a useState initializer, where
+// a throw escapes App's render entirely. A failed READ reports "already played":
+// no cinematic beats a white screen.
 function introFlagRead(): boolean {
   try {
     return localStorage.getItem(MOON_INTRO_KEY) !== null;
@@ -66,28 +63,24 @@ function prefersReducedMotion(): boolean {
 }
 
 /**
- * Decide the intro phase. "hold" parks the scene (moon above the panel, UI
- * hidden) until the keystore state arrives, so a genuine first run never
- * flashes the finished sky before the descent.
+ * Decide the intro phase. "hold" parks the scene until the keystore state
+ * arrives, so a genuine first run never flashes the finished sky before the
+ * descent.
  *
- * The played-once flag lives in `localStorage`, not `browser.storage.local` —
- * the only such use in the codebase, and deliberate: the flag must be readable
- * SYNCHRONOUSLY at first render, or every panel open would spend a frame or two
- * in the hold state waiting on the async read. localStorage is available in
- * every extension page (only the service worker lacks it), and a cosmetic flag
- * has no reason to be visible outside this panel. The flag is written as soon
- * as the decision lands — including the "off" path, so a pre-feature install
- * (flag unset, wallets exist) holds exactly once and a later reset-to-
- * onboarding doesn't replay a cinematic whose "first time" already happened.
+ * The played-once flag is in `localStorage`, not `browser.storage.local` — the
+ * only such use in the codebase, because it must be readable SYNCHRONOUSLY at
+ * first render or every open spends a frame or two holding on the async read.
+ * It is written as soon as the decision lands, including the "off" path, so a
+ * pre-feature install holds exactly once and a later reset-to-onboarding doesn't
+ * replay a cinematic whose "first time" already happened.
  *
  * The phase is owned here rather than latched inside Scene so the debug replay
  * can re-arm it; `end` is called when the timeline finishes.
  *
  * `error` is here because the hold is a full-panel blackout: Body renders the
- * load failure in its own `!state` branch, INSIDE the held wrapper, so holding
- * through a failed getState() would show an empty panel with no error, no
- * spinner and nothing to retry — most likely on exactly the open this runs for,
- * the first one after an install while the service worker is still coming up.
+ * load failure inside the held wrapper, so holding through a failed getState()
+ * shows an empty panel with no error and nothing to retry — most likely on
+ * exactly the open this runs for, the first after an install.
  */
 function useMoonIntro(
   state: KeystoreState | null,
@@ -96,12 +89,10 @@ function useMoonIntro(
   animated: boolean,
   animationsLoaded: boolean,
 ): { intro: SceneIntro; end: () => void; replay: () => void } {
-  // Reduced motion is settled HERE, not at decision time. The hold has to be
-  // skipped, not just the play: the reduced-motion rules deliberately leave the
-  // held content at opacity 1, so a phase that merely blocks input would show a
-  // complete, opaque onboarding screen whose buttons silently do nothing. A
-  // user who cannot see that anything is happening is exactly the user who
-  // clicks. Deciding at init means such a user never has an intro phase at all.
+  // Settled HERE, not at decision time, because the HOLD has to be skipped too:
+  // the reduced-motion rules leave held content at opacity 1, so a phase that
+  // merely blocks input shows a complete, opaque onboarding screen whose buttons
+  // silently do nothing. Deciding at init means such a user never holds at all.
   const [phase, setPhase] = useState<SceneIntro>(() =>
     introFlagRead() || prefersReducedMotion() ? false : "hold",
   );
@@ -113,14 +104,12 @@ function useMoonIntro(
       if (error) setPhase(false);
       return;
     }
-    // Settle everything that does NOT depend on the animation preference first,
-    // and only wait on that preference for the one answer it can change. This
-    // ordering is load-bearing, not tidiness: waiting first held a non-onboarding
-    // user — Unlock, Wallet — behind a storage read whose result could not
-    // affect them, invisible and not `inert`, with Unlock's autoFocus landing in
-    // a password field they cannot see. Deciding here means the only screen that
-    // can outlive `state` inside the hold is the onboarding chooser, which is
-    // the screen the cinematic is for and carries no autoFocus.
+    // Settle everything that does NOT depend on the animation preference first.
+    // Load-bearing, not tidiness: waiting first held Unlock and Wallet behind a
+    // storage read that could not affect them, invisible and not `inert`, with
+    // Unlock's autoFocus landing in a password field the user cannot see. This
+    // order leaves the onboarding chooser as the only screen that can outlive
+    // `state` inside the hold, and it carries no autoFocus.
     const onboarding = !state.initialized || state.wallets.length === 0;
     if (!onboarding || recovering) {
       introFlagWrite(true);
@@ -131,22 +120,15 @@ function useMoonIntro(
     // default, so deciding before it lands can play the cinematic for someone
     // who turned Animations off.
     if (!animationsLoaded) return;
-    // Reduced motion leaves the flag UNWRITTEN, so every place that ASKS about
-    // it agrees on the PHASE — initializer, the mid-flight listener below,
-    // `replay()`, and here: none of them plays a cinematic. On the flag they
-    // differ, which the next paragraph bounds. Writing first made this one disagree with the rest for a toggle
-    // landing in the decision window: `matchMedia().matches` flips
-    // synchronously with the OS setting, ahead of the `change` dispatch, so the
-    // effect can observe it before the listener ever runs.
+    // Reduced motion leaves the flag UNWRITTEN, so every place that asks agrees
+    // on the PHASE: none plays a cinematic. Writing first made this one disagree
+    // for a toggle landing in the decision window, because `matchMedia().matches`
+    // flips synchronously with the OS setting, ahead of the `change` dispatch.
     //
-    // Narrower than "nothing writes under reduced motion". Three writers sit
-    // outside that rule: the non-onboarding exit above, the hold cap below, and
-    // `replay()`, which writes before it asks. None is a reduced-motion
-    // decision, and replay both clears rather than sets and is debug-gated.
-    // Harmless either way — an RM user never holds again, because the
-    // initializer short-circuits (wherever `matchMedia` exists; without it they
-    // hold regardless of what the flag says, so a stray write costs nothing
-    // there either).
+    // Narrower than "nothing writes under reduced motion" — the non-onboarding
+    // exit above, the hold cap below, and `replay()` all write outside that rule.
+    // None is a reduced-motion decision, and an RM user never holds again anyway
+    // because the initializer short-circuits.
     if (prefersReducedMotion()) {
       setPhase(false);
       return;
@@ -159,19 +141,15 @@ function useMoonIntro(
     setPhase(animated ? "play" : false);
   }, [phase, state, error, recovering, animated, animationsLoaded]);
 
-  // Cap the hold. Everything above resolves it on a state OR an error, but the
-  // hold blacks out the whole panel, so any path that strands it — a
-  // sendMessage that never settles rather than rejecting — bricks the UI
-  // outright. Resolving to "no intro" costs a cinematic; not resolving costs
-  // the wallet.
+  // Cap the hold. Everything above resolves on a state or an error, but the hold
+  // blacks out the whole panel, so a sendMessage that never settles rather than
+  // rejecting bricks the UI. Resolving to "no intro" costs a cinematic; not
+  // resolving costs the wallet.
   //
-  // The flag IS written here, which loses the cinematic for good on this
-  // install. That is the point: leaving it unwritten made the degradation
-  // recurring rather than one-off, so a machine where getState() is reliably
-  // slower than the cap blacked out for the full cap on every single open — and
-  // silently, since Body's LoadingPill renders inside the held wrapper. A box
-  // that cannot produce wallet state in HOLD_CAP_MS has no business running a
-  // five-second cinematic anyway.
+  // The flag IS written here, losing the cinematic for good on this install.
+  // That's the point: unwritten, the degradation recurs, so a machine reliably
+  // slower than the cap blacks out for the full cap on every open — silently,
+  // since the LoadingPill renders inside the held wrapper.
   useEffect(() => {
     if (phase !== "hold") return;
     const t = window.setTimeout(() => {
@@ -181,29 +159,23 @@ function useMoonIntro(
     return () => window.clearTimeout(t);
   }, [phase]);
 
-  // Reduced motion turned on MID-FLIGHT ends the phase, hold or play. Without
-  // it the preference was honored at init and at decision time but nowhere in
-  // between, and both phases fail the same way: the media query makes the
-  // wrapper fully visible — the hold via an explicit `opacity: 1`, the play by
-  // deleting its animation so the base style shows through — while `inert`
-  // stays on. Four opaque, unclickable, untabbable chooser controls, which is
-  // the visible-but-dead shape this feature keeps landing on as the worst one.
+  // Reduced motion turned on MID-FLIGHT ends the phase, hold or play. Otherwise
+  // the preference is honored at init and at decision time but nowhere between,
+  // and both phases fail the same way: the media query makes the wrapper fully
+  // visible — the hold via `opacity: 1`, the play by deleting its animation —
+  // while `inert` stays on, leaving opaque unclickable controls.
   //
   // `play` is the harder half to spot: killing a running animation fires
   // `animationcancel`, NOT `animationend`, so `contentReady` never flips and
-  // nothing lifts `inert` until the backstop 5.35s later. Ending the phase is
-  // also just correct — CSS has deleted the timeline, so there is nothing left
-  // to watch.
+  // nothing lifts `inert` until the 5.35s backstop.
   //
-  // The unwritten flag applies to the hold only: a `play` reached through the
-  // decision effect already has it written. A REPLAYED play does not — replay
-  // clears it on purpose so the next open replays too — so ending one here
-  // leaves it cleared, which is that path's intent rather than a leak.
+  // The unwritten flag applies to the hold only — a `play` reached through the
+  // decision effect already has it written, and a REPLAYED one is cleared on
+  // purpose.
   //
   // Checked at attach too, not only on `change`, so a flip between render and
-  // commit self-corrects rather than being missed. That also covers `replay()`,
-  // which reads the preference synchronously and sets "play" a frame later: a
-  // flip inside that frame is caught by the attach check, not by any `change`.
+  // commit self-corrects. That also covers `replay()`, which reads the preference
+  // synchronously and sets "play" a frame later.
   useEffect(() => {
     if (!phase || typeof window.matchMedia !== "function") return;
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -365,8 +337,7 @@ export function App() {
     animationsLoaded,
   );
   // The intro's moon is a CSS keyframe and the starfield only moves when JS says
-  // so, which left the moon descending through a sky nailed in place — the one
-  // place in the panel where the two did not travel together. Keyed on the
+  // so, which left it descending through a sky nailed in place. Keyed on the
   // phase, so a replay re-runs the sweep and a capped hold resets the sky rather
   // than stranding it parked from a descent that never played.
   useEffect(() => driveIntroStarfield(moonIntro), [moonIntro]);
@@ -419,46 +390,36 @@ export function App() {
           the approval overlay stay outside: neither is decorative, and neither
           should ever wait on a cinematic. */}
       <div
-        // Faded out during the intro. Where `inert` below does not also apply —
-        // the one-commit Unlock/Wallet hold — that hides the content from the
-        // eye but not from the tab order or a screen reader, so Unlock's
-        // password field is focused and typeable while invisible for that
-        // commit. The first-run chooser is NOT in that set: it is inert.
+        // Faded out during the intro. Where `inert` below doesn't also apply —
+        // the one-commit Unlock/Wallet hold — that hides content from the eye but
+        // not from the tab order, so Unlock's password field is focused and
+        // typeable while invisible for that commit.
         //
-        // Keyed on the CONTENT fade, not on the phase: the phase ends with the
-        // water dim at 5.1s but this finishes at 4.8s, so keying on the phase
-        // left the UI fully opaque and apparently ready for ~300ms while still
-        // swallowing input. `target === currentTarget` because animationend
-        // bubbles — a child's animation must not count as this one's.
+        // Keyed on the CONTENT fade, not the phase: the phase ends at 5.1s with
+        // the water dim but this finishes at 4.8s, so keying on the phase left
+        // the UI opaque and apparently ready for ~300ms while still swallowing
+        // input. `target === currentTarget` because animationend bubbles.
         //
         // NOT applied to a hold that can be showing Unlock. `inert` blocks the
-        // imperative focus React fires for `autoFocus` at mount, and nothing
-        // re-fires it when inert lifts — so holding over the render that mounts
-        // Unlock cost its password field the focus it has always had, on every
-        // upgrade open. Not a race: `setPhase` runs in an effect, so the commit
-        // that mounts Unlock is ALWAYS under "hold", however fast getState()
-        // answers, and that one commit is simultaneously the only moment
+        // imperative focus React fires for `autoFocus` at mount and nothing
+        // re-fires it when inert lifts, so holding over the render that mounts
+        // Unlock costs its password field the focus it has always had. Not a
+        // race: `setPhase` runs in an effect, so the commit mounting Unlock is
+        // ALWAYS under "hold", and that commit is both the only moment
         // `autoFocus` can fire and the only moment focusable content is
-        // invisible. `inert` cannot be off for the first and on for the second.
+        // invisible.
         //
-        // `preWallet` is what makes the rest safe. It is exactly the effect's
-        // `onboarding` test, so an inert hold is only ever the chooser — which
-        // carries no `autoFocus` on entry, so there is nothing to lose — while
-        // the Unlock/Wallet hold, now one commit thanks to the reordered
-        // decision, stays live. That closes the escalation the plain
+        // `preWallet` is what makes the rest safe — it is exactly the effect's
+        // `onboarding` test, so an inert hold is only ever the chooser, which
+        // carries no `autoFocus`. That closes an escalation plain
         // `pointer-events: none` could not: the CSS stops a pointer but not
-        // Enter/Space on a focused invisible control, so a blind Tab+Enter on
-        // the chooser called `setStep("restore")` and mounted a seed-phrase
-        // Textarea — invisible, focused and typeable. The remaining residual
-        // exposure is the a11y tree, and a live one-commit Unlock.
+        // Enter/Space on a focused invisible control, so a blind Tab+Enter on the
+        // chooser mounted a seed-phrase Textarea, invisible and typeable. The
+        // residual exposure is the a11y tree and a live one-commit Unlock.
         //
-        // `play` needs no such test: it already requires `onboarding &&
-        // !recovering`, so Body can only render the chooser. Onboarding's other
-        // `autoFocus` sites sit on four steps — create, hardware, watch, restore
-        // — now reachable by neither click nor keyboard while inert. Give the
-        // chooser an `autoFocus`, or extend the intro to the unlock screen, and
-        // this regresses silently on first run only: change the phase gate too,
-        // or drop `inert` here.
+        // Give the chooser an `autoFocus`, or extend the intro to the unlock
+        // screen, and this regresses silently on first run: change the phase gate
+        // too, or drop `inert` here.
         inert={moonIntro === "play" ? !contentReady : moonIntro === "hold" && preWallet}
         onAnimationEnd={(e) => {
           if (e.target === e.currentTarget) setContentReady(true);
