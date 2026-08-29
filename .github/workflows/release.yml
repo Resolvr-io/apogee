@@ -1,115 +1,679 @@
 name: Release
-
-# Pushing a v* tag builds the extension and publishes a GitHub Release with
-# apogee-<version>-chrome.zip attached (Chrome Web Store, from dist/). Release
-# notes are extracted from the README section for the version being tagged.
+run-name: Release ${{ inputs.tag }} at ${{ inputs.commit_sha }}
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact stable tag (for example, v0.9.0)
+        required: true
+        type: string
+      commit_sha:
+        description: Full 40-character commit SHA from main
+        required: true
+        type: string
 
+# The built-in token is read-only. GitHub release mutations use a short-lived,
+# repository-scoped GitHub App token; Chrome mutations use a short-lived Google
+# access token obtained through Workload Identity Federation.
 permissions:
-  contents: write
+  contents: read
+
+# Every workflow that can mutate Apogee releases or the Chrome listing must use
+# this literal group. Keep all queued candidates instead of replacing one.
+concurrency:
+  group: apogee-production-release
+  queue: max
+
+env:
+  NODE_VERSION: 22.18.0
+  PNPM_VERSION: 10.33.0
+  CWS_JOURNAL_PREFIX: cws-mutation-journal-${{ github.run_id }}
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  preflight:
+    name: Preflight release candidate
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.validate.outputs.tag }}
+      version: ${{ steps.validate.outputs.version }}
+      sha: ${{ steps.validate.outputs.sha }}
+      release_notes_path: ${{ steps.validate.outputs.release_notes_path }}
+      zip_name: ${{ steps.package.outputs.zip_name }}
+      zip_sha256: ${{ steps.package.outputs.zip_sha256 }}
+      notes_sha256: ${{ steps.package.outputs.notes_sha256 }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install
-        run: pnpm install --frozen-lockfile
-
-      - name: Verify tag matches package.json version
+      - name: Validate dispatch context and input shape
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_SHA: ${{ inputs.commit_sha }}
         run: |
-          PKG="v$(node -p "require('./package.json').version")"
-          TAG="${GITHUB_REF_NAME}"
-          if [ "$PKG" != "$TAG" ]; then
-            echo "Tag $TAG does not match package.json $PKG" >&2
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
+            echo "This workflow may only run through workflow_dispatch." >&2
             exit 1
           fi
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Select the main branch when dispatching a release; got $GITHUB_REF." >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Tag must be an exact stable tag in the form vX.Y.Z." >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Commit SHA must contain exactly 40 hexadecimal characters." >&2
+            exit 1
+          fi
+
+      # Start from the trusted workflow revision on main. It decides whether
+      # the requested SHA is current main or an already-started exact release
+      # transaction before any code from that SHA executes.
+      - name: Check out trusted release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Require current main before the first mutation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          RELEASE_SHA="${RELEASE_SHA,,}"
+          STATE="$(node scripts/github-release.mjs inspect --tag "$RELEASE_TAG" --sha "$RELEASE_SHA")"
+          CHECKPOINT="$(jq -r 'if (.checkpoint | type) == "boolean" then .checkpoint else error("missing checkpoint") end' <<<"$STATE")"
+          CURRENT_MAIN_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "$CHECKPOINT" != "true" && "$RELEASE_SHA" != "$CURRENT_MAIN_SHA" ]]; then
+            echo "A new release must target current main $CURRENT_MAIN_SHA; got $RELEASE_SHA." >&2
+            exit 1
+          fi
+          git cat-file -e "${RELEASE_SHA}^{commit}"
+          git checkout --detach "$RELEASE_SHA"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Enable pnpm cache
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Validate version, commit, manifest, and release notes
+        id: validate
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_SHA: ${{ inputs.commit_sha }}
+        run: node scripts/validate-release.mjs --tag "$RELEASE_TAG" --sha "$RELEASE_SHA"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck
         run: pnpm typecheck
 
-      # The suite was previously run only by hand, so nothing stopped a release
-      # shipping with it red. Cheap here (~2s) and it gates the zip below.
       - name: Test
         run: pnpm test
 
-      # The zip recipe lives in scripts/build-release-zip.sh so `pnpm zip` and
-      # this job produce byte-identical archives — see that script's header for
-      # why each input is pinned.
-      - name: Build and zip
+      - name: Build, inspect, and hash the Chrome package
+        id: package
+        env:
+          RELEASE_NOTES_PATH: ${{ steps.validate.outputs.release_notes_path }}
+          RELEASE_SHA: ${{ steps.validate.outputs.sha }}
+          RELEASE_VERSION: ${{ steps.validate.outputs.version }}
         run: |
-          VERSION="$(node -p "require('./package.json').version")"
+          set -euo pipefail
+          ZIP_NAME="apogee-${RELEASE_VERSION}-chrome.zip"
           pnpm build
-          scripts/build-release-zip.sh "apogee-${VERSION}-chrome.zip" \
-            "$(git log -1 --format=%ct "$GITHUB_SHA")"
-
-      # A digest alone only proves the download wasn't corrupted in transit. To
-      # be independently verifiable it has to travel with the toolchain that
-      # produced it: bsdtar, 7-Zip and Python's zipfile all emit different
-      # deflate streams from identical inputs, so "rebuild and compare" needs
-      # to know it was Info-ZIP, at this version, on this Node.
-      - name: Publish checksums
-        run: |
-          VERSION="$(node -p "require('./package.json').version")"
-          sha256sum "apogee-${VERSION}-chrome.zip" > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-          {
-            echo "Built by ${GITHUB_WORKFLOW} for ${GITHUB_REF_NAME} (${GITHUB_SHA})"
-            echo "runner: ${RUNNER_OS} ${RUNNER_ARCH}"
-            echo "node: $(node -v)"
-            echo "pnpm: $(pnpm -v)"
-            # The distro's package revision is the identifier that actually
-            # distinguishes builds whose deflate streams could drift across a
-            # release series — bare "Zip 3.0" has been universal since 2008.
-            # Both probes tolerate failure: this file is informational, and
-            # under Actions' default `-eo pipefail` a fragility here could kill
-            # the release AFTER build and BEFORE gh release create. (The grep,
-            # not a head-slice: Info-ZIP leads with a banner line.)
-            echo "zip: $(zip -v 2>&1 | grep -m1 -i 'this is zip' || echo unknown)"
-            echo "zip-pkg: $(dpkg-query -W zip 2>/dev/null || echo unknown)"
-            echo "recipe: scripts/build-release-zip.sh (mtimes pinned to the tag's commit time, modes 644, sorted entries, deflate -6)"
-          } > BUILD-ENV.txt || true
-          cat BUILD-ENV.txt || true
-
-      # Release notes come from the README's section for this version, so the
-      # changelog has ONE source: the GitHub Release, the landing site's
-      # /releases mirror (which renders the release body), and the README all
-      # show the same text. A missing section is a hard failure rather than a
-      # release published with a placeholder.
-      - name: Extract release notes from the README
-        run: |
-          VERSION="$(node -p "require('./package.json').version")"
-          awk -v v="## ${VERSION}" '
-            $0 == v {found=1; next}
-            found && /^## / {exit}
-            found {print}
-          ' README.md > RELEASE_NOTES.md
-          if [ ! -s RELEASE_NOTES.md ]; then
-            echo "No '## ${VERSION}' section found in README.md" >&2
+          scripts/build-release-zip.sh "$ZIP_NAME" "$(git show -s --format=%ct "$RELEASE_SHA")"
+          unzip -p "$ZIP_NAME" manifest.json | jq -e --arg version "$RELEASE_VERSION" '.version == $version' >/dev/null
+          if unzip -Z1 "$ZIP_NAME" | grep -Eq '(^|/)(\.env|\.env\.(local|production|production\.local))$'; then
+            echo "Release archive unexpectedly contains an environment file." >&2
             exit 1
           fi
-          printf '\n[Full changelog](https://github.com/%s#readme)\n' "${GITHUB_REPOSITORY}" >> RELEASE_NOTES.md
-          cat RELEASE_NOTES.md
+          ZIP_SHA256="$(sha256sum "$ZIP_NAME" | awk '{print $1}')"
+          NOTES_SHA256="$(sha256sum "$RELEASE_NOTES_PATH" | awk '{print $1}')"
+          {
+            echo "zip_name=$ZIP_NAME"
+            echo "zip_sha256=$ZIP_SHA256"
+            echo "notes_sha256=$NOTES_SHA256"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Publish GitHub Release
+      - name: Summarize the approved candidate
+        env:
+          RELEASE_NOTES_PATH: ${{ steps.validate.outputs.release_notes_path }}
+          RELEASE_SHA: ${{ steps.validate.outputs.sha }}
+          RELEASE_TAG: ${{ steps.validate.outputs.tag }}
+          ZIP_NAME: ${{ steps.package.outputs.zip_name }}
+          ZIP_SHA256: ${{ steps.package.outputs.zip_sha256 }}
+          NOTES_SHA256: ${{ steps.package.outputs.notes_sha256 }}
+        run: |
+          {
+            echo "## Release candidate"
+            echo
+            echo "- Tag: \`$RELEASE_TAG\`"
+            echo "- Commit: \`$RELEASE_SHA\`"
+            echo "- Package: \`$ZIP_NAME\`"
+            echo "- Package SHA-256: \`$ZIP_SHA256\`"
+            echo "- Release-notes SHA-256: \`$NOTES_SHA256\`"
+            echo
+            cat "$RELEASE_NOTES_PATH"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  approval:
+    name: Approve production release
+    needs: preflight
+    runs-on: ubuntu-24.04
+    permissions: {}
+    environment:
+      name: release-approval
+    steps:
+      - name: Record approval
+        run: echo "Production release approved."
+
+  chrome_readiness:
+    name: Check Chrome Web Store readiness
+    needs: [preflight, approval]
+    runs-on: ubuntu-24.04
+    environment:
+      name: chrome-production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the approved commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Recheck release identity and main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.sha }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+          STATE="$(node scripts/github-release.mjs inspect --tag "$RELEASE_TAG" --sha "$RELEASE_SHA")"
+          CHECKPOINT="$(jq -r 'if (.checkpoint | type) == "boolean" then .checkpoint else error("missing checkpoint") end' <<<"$STATE")"
+          CURRENT_MAIN_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "$CHECKPOINT" != "true" && "$RELEASE_SHA" != "$CURRENT_MAIN_SHA" ]]; then
+            echo "Main advanced to $CURRENT_MAIN_SHA after approval. Dispatch the new commit or resume an existing exact release checkpoint." >&2
+            exit 1
+          fi
+
+      - name: Authenticate to Google with a read-only scope
+        id: google_auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.CWS_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore.readonly
+          access_token_lifetime: "900s"
+          create_credentials_file: false
+          export_environment_variables: false
+
+      - name: Reconcile Chrome status without mutation
+        id: chrome
+        env:
+          CWS_ACCESS_TOKEN: ${{ steps.google_auth.outputs.access_token }}
+          CWS_EXTENSION_ID: ${{ vars.CWS_EXTENSION_ID }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+          CWS_VERSION: ${{ needs.preflight.outputs.version }}
+        run: node scripts/chrome-web-store.mjs reconcile
+
+  github_release:
+    name: Publish immutable GitHub Release
+    needs: [preflight, approval, chrome_readiness]
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-production
+    permissions:
+      contents: read
+    outputs:
+      release_url: ${{ steps.publish.outputs.release_url }}
+    steps:
+      - name: Check out the approved commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node with pnpm cache
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild and verify the approved bytes
+        id: assets
+        env:
+          APPROVED_NOTES_SHA256: ${{ needs.preflight.outputs.notes_sha256 }}
+          APPROVED_ZIP_SHA256: ${{ needs.preflight.outputs.zip_sha256 }}
+          RELEASE_NOTES_PATH: ${{ needs.preflight.outputs.release_notes_path }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.sha }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          ZIP_NAME: ${{ needs.preflight.outputs.zip_name }}
+        run: |
+          set -euo pipefail
+          pnpm build
+          scripts/build-release-zip.sh "$ZIP_NAME" "$(git show -s --format=%ct "$RELEASE_SHA")"
+          ACTUAL_ZIP_SHA256="$(sha256sum "$ZIP_NAME" | awk '{print $1}')"
+          ACTUAL_NOTES_SHA256="$(sha256sum "$RELEASE_NOTES_PATH" | awk '{print $1}')"
+          if [[ "$ACTUAL_ZIP_SHA256" != "$APPROVED_ZIP_SHA256" ]]; then
+            echo "Rebuilt ZIP hash $ACTUAL_ZIP_SHA256 differs from approved hash $APPROVED_ZIP_SHA256." >&2
+            exit 1
+          fi
+          if [[ "$ACTUAL_NOTES_SHA256" != "$APPROVED_NOTES_SHA256" ]]; then
+            echo "Release-notes hash changed after approval." >&2
+            exit 1
+          fi
+          printf '%s  %s\n' "$ACTUAL_ZIP_SHA256" "$ZIP_NAME" > SHA256SUMS.txt
+          {
+            echo "commit: $RELEASE_SHA"
+            echo "runner: ubuntu-24.04"
+            echo "node: $NODE_VERSION"
+            echo "pnpm: $PNPM_VERSION"
+            echo "zip recipe: Info-ZIP via scripts/build-release-zip.sh"
+          } > BUILD-ENV.txt
+          jq -n \
+            --arg tag "$RELEASE_TAG" \
+            --arg version "$RELEASE_VERSION" \
+            --arg commit "$RELEASE_SHA" \
+            --arg zip "$ZIP_NAME" \
+            --arg zip_sha256 "$ACTUAL_ZIP_SHA256" \
+            --arg release_notes "$RELEASE_NOTES_PATH" \
+            --arg release_notes_sha256 "$ACTUAL_NOTES_SHA256" \
+            --arg workflow_run_id "$WORKFLOW_RUN_ID" \
+            '{schemaVersion: 1, tag: $tag, version: $version, commit: $commit, workflowRunId: $workflow_run_id, package: {name: $zip, sha256: $zip_sha256}, releaseNotes: {path: $release_notes, sha256: $release_notes_sha256}}' \
+            > RELEASE-METADATA.json
+
+      - name: Recheck main immediately before the first mutation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.sha }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+          STATE="$(node scripts/github-release.mjs inspect --tag "$RELEASE_TAG" --sha "$RELEASE_SHA")"
+          CHECKPOINT="$(jq -r 'if (.checkpoint | type) == "boolean" then .checkpoint else error("missing checkpoint") end' <<<"$STATE")"
+          CURRENT_MAIN_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "$CHECKPOINT" != "true" && "$RELEASE_SHA" != "$CURRENT_MAIN_SHA" ]]; then
+            echo "Main advanced to $CURRENT_MAIN_SHA after approval; no release mutation was made." >&2
+            exit 1
+          fi
+
+      - name: Mint a repository-scoped Release Bot token
+        id: release_app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-administration: read
+
+      - name: Create or safely resume the immutable GitHub Release
+        id: publish
+        env:
+          GH_TOKEN: ${{ steps.release_app.outputs.token }}
+          RELEASE_NOTES_PATH: ${{ needs.preflight.outputs.release_notes_path }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.sha }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          ZIP_NAME: ${{ needs.preflight.outputs.zip_name }}
+        run: |
+          set -euo pipefail
+          node scripts/github-release.mjs publish \
+            --tag "$RELEASE_TAG" \
+            --sha "$RELEASE_SHA" \
+            --notes "$RELEASE_NOTES_PATH" \
+            --asset "$ZIP_NAME" \
+            --asset SHA256SUMS.txt \
+            --asset BUILD-ENV.txt \
+            --asset RELEASE-METADATA.json \
+            > release-result.json
+          RELEASE_URL="$(jq -er '.releaseUrl' release-result.json)"
+          echo "release_url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
+          {
+            echo "## GitHub Release"
+            echo
+            echo "Published immutable release: $RELEASE_URL"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  chrome_upload:
+    name: Upload approved package to Chrome
+    needs: [preflight, approval, chrome_readiness, github_release]
+    runs-on: ubuntu-24.04
+    environment:
+      name: chrome-production
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    outputs:
+      cws_outcome: ${{ steps.upload.outputs.cws_outcome || steps.prepare_upload.outputs.cws_outcome }}
+      cws_error_code: ${{ steps.upload.outputs.cws_error_code || steps.prepare_upload.outputs.cws_error_code }}
+      journal_artifact_id: ${{ steps.preserve_upload_result.outputs.artifact-id || steps.persist_upload_checkpoint.outputs.artifact-id || steps.journal_lookup.outputs.artifact_id }}
+    steps:
+      - name: Check out the approved commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download the exact immutable GitHub Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.sha }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          ZIP_NAME: ${{ needs.preflight.outputs.zip_name }}
+          ZIP_SHA256: ${{ needs.preflight.outputs.zip_sha256 }}
+        run: |
+          node scripts/github-release.mjs download \
+            --tag "$RELEASE_TAG" \
+            --sha "$RELEASE_SHA" \
+            --name "$ZIP_NAME" \
+            --output chrome-upload.zip \
+            --sha256 "$ZIP_SHA256"
+
+      - name: Authenticate to Google for upload
+        id: google_auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.CWS_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+          access_token_lifetime: "900s"
+          create_credentials_file: false
+          export_environment_variables: false
+
+      # The helper records a guard before every POST. Restoring it on a rerun
+      # prevents replay when an earlier job lost its response after Chrome may
+      # already have accepted the mutation.
+      - name: Prepare Chrome mutation journal directory
+        run: mkdir -p cws-state
+
+      - name: Find a prior Chrome mutation journal
+        id: journal_lookup
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="$(node -p "require('./package.json').version")"
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "Apogee ${VERSION}" \
-            --notes-file RELEASE_NOTES.md \
-            "apogee-${VERSION}-chrome.zip" \
-            SHA256SUMS.txt \
-            BUILD-ENV.txt
+          set -euo pipefail
+          ARTIFACTS="$(gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
+            -f per_page=100)"
+          LATEST_ID="$(jq -r --arg prefix "${CWS_JOURNAL_PREFIX}-" \
+            '[.artifacts[] | select(.name | startswith($prefix))] | sort_by(.created_at, .id) | last | .id // empty' \
+            <<<"$ARTIFACTS")"
+          if [[ -n "$LATEST_ID" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "artifact_id=$LATEST_ID" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "artifact_id=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore a prior Chrome mutation journal
+        if: steps.journal_lookup.outputs.exists == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.journal_lookup.outputs.artifact_id }}
+          path: cws-state
+
+      - name: Prepare and journal the exact upload attempt
+        id: prepare_upload
+        env:
+          CWS_ACCESS_TOKEN: ${{ steps.google_auth.outputs.access_token }}
+          CWS_EXTENSION_ID: ${{ vars.CWS_EXTENSION_ID }}
+          CWS_MUTATION_ATTEMPT_ID: ${{ github.run_id }}-upload-${{ github.run_attempt }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+          CWS_UPLOAD_RECEIPT_PATH: cws-state/chrome-mutation-journal.json
+          CWS_VERSION: ${{ needs.preflight.outputs.version }}
+          CWS_ZIP_PATH: chrome-upload.zip
+          CWS_ZIP_SHA256: ${{ needs.preflight.outputs.zip_sha256 }}
+        run: node scripts/chrome-web-store.mjs prepare-upload
+
+      # This remote checkpoint must succeed before the POST. If the runner is
+      # lost afterward, a rerun restores this guard and refuses a blind replay.
+      - name: Persist the prepared upload checkpoint
+        id: persist_upload_checkpoint
+        if: steps.prepare_upload.outputs.cws_outcome == 'prepared'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.CWS_JOURNAL_PREFIX }}-upload-prepared-${{ github.run_attempt }}
+          path: cws-state/chrome-mutation-journal.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Execute the prepared upload once
+        id: upload
+        if: steps.prepare_upload.outputs.cws_outcome == 'prepared'
+        env:
+          CWS_ACCESS_TOKEN: ${{ steps.google_auth.outputs.access_token }}
+          CWS_EXTENSION_ID: ${{ vars.CWS_EXTENSION_ID }}
+          CWS_MUTATION_ATTEMPT_ID: ${{ github.run_id }}-upload-${{ github.run_attempt }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+          CWS_UPLOAD_RECEIPT_PATH: cws-state/chrome-mutation-journal.json
+          CWS_VERSION: ${{ needs.preflight.outputs.version }}
+          CWS_ZIP_PATH: chrome-upload.zip
+          CWS_ZIP_SHA256: ${{ needs.preflight.outputs.zip_sha256 }}
+        run: node scripts/chrome-web-store.mjs upload
+
+      - name: Preserve the upload result journal
+        id: preserve_upload_result
+        if: always() && steps.upload.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.CWS_JOURNAL_PREFIX }}-upload-result-${{ github.run_attempt }}
+          path: cws-state/chrome-mutation-journal.json
+          if-no-files-found: error
+          retention-days: 90
+
+  chrome_submit:
+    name: Submit Chrome release for review
+    needs: [preflight, approval, chrome_readiness, github_release, chrome_upload]
+    runs-on: ubuntu-24.04
+    environment:
+      name: chrome-production
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    outputs:
+      cws_outcome: ${{ steps.submit.outputs.cws_outcome || steps.prepare_publish.outputs.cws_outcome }}
+      cws_error_code: ${{ steps.submit.outputs.cws_error_code || steps.prepare_publish.outputs.cws_error_code }}
+    steps:
+      - name: Check out the approved commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Prepare Chrome mutation journal directory
+        run: mkdir -p cws-receipt
+
+      - name: Find the latest Chrome mutation journal
+        id: journal_lookup
+        env:
+          FALLBACK_ARTIFACT_ID: ${{ needs.chrome_upload.outputs.journal_artifact_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ARTIFACTS="$(gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
+            -f per_page=100)"
+          LATEST_ID="$(jq -r --arg prefix "${CWS_JOURNAL_PREFIX}-" \
+            '[.artifacts[] | select(.name | startswith($prefix))] | sort_by(.created_at, .id) | last | .id // empty' \
+            <<<"$ARTIFACTS")"
+          if [[ -z "$LATEST_ID" ]]; then
+            LATEST_ID="$FALLBACK_ARTIFACT_ID"
+          fi
+          if [[ -n "$LATEST_ID" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "artifact_id=$LATEST_ID" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "artifact_id=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore the latest Chrome mutation journal
+        if: steps.journal_lookup.outputs.exists == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.journal_lookup.outputs.artifact_id }}
+          path: cws-receipt
+
+      - name: Authenticate to Google for submission
+        id: google_auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.CWS_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+          access_token_lifetime: "900s"
+          create_credentials_file: false
+          export_environment_variables: false
+
+      - name: Prepare and journal the exact publish attempt
+        id: prepare_publish
+        env:
+          CWS_ACCESS_TOKEN: ${{ steps.google_auth.outputs.access_token }}
+          CWS_EXTENSION_ID: ${{ vars.CWS_EXTENSION_ID }}
+          CWS_MUTATION_ATTEMPT_ID: ${{ github.run_id }}-publish-${{ github.run_attempt }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+          CWS_UPLOAD_RECEIPT_PATH: cws-receipt/chrome-mutation-journal.json
+          CWS_VERSION: ${{ needs.preflight.outputs.version }}
+          CWS_ZIP_SHA256: ${{ needs.preflight.outputs.zip_sha256 }}
+        run: node scripts/chrome-web-store.mjs prepare-publish
+
+      - name: Persist the prepared publish checkpoint
+        id: persist_publish_checkpoint
+        if: steps.prepare_publish.outputs.cws_outcome == 'prepared'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.CWS_JOURNAL_PREFIX }}-publish-prepared-${{ github.run_attempt }}
+          path: cws-receipt/chrome-mutation-journal.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Submit with immediate publishing after Google review
+        id: submit
+        if: steps.prepare_publish.outputs.cws_outcome == 'prepared'
+        env:
+          CWS_ACCESS_TOKEN: ${{ steps.google_auth.outputs.access_token }}
+          CWS_EXTENSION_ID: ${{ vars.CWS_EXTENSION_ID }}
+          CWS_MUTATION_ATTEMPT_ID: ${{ github.run_id }}-publish-${{ github.run_attempt }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+          CWS_UPLOAD_RECEIPT_PATH: cws-receipt/chrome-mutation-journal.json
+          CWS_VERSION: ${{ needs.preflight.outputs.version }}
+          CWS_ZIP_SHA256: ${{ needs.preflight.outputs.zip_sha256 }}
+        run: node scripts/chrome-web-store.mjs publish
+
+      - name: Preserve the updated Chrome mutation journal
+        if: always() && steps.submit.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.CWS_JOURNAL_PREFIX }}-publish-result-${{ github.run_attempt }}
+          path: cws-receipt/chrome-mutation-journal.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Summarize Chrome submission
+        env:
+          CWS_OUTCOME: ${{ steps.submit.outputs.cws_outcome || steps.prepare_publish.outputs.cws_outcome }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          {
+            echo "## Chrome Web Store"
+            echo
+            echo "Version \`$RELEASE_VERSION\`: \`$CWS_OUTCOME\`."
+            echo
+            echo "A submitted result means Google review is in progress; approval publishes automatically at 100%."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  notify:
+    name: Notify #apogee
+    if: always()
+    needs: [preflight, approval, chrome_readiness, github_release, chrome_upload, chrome_submit]
+    runs-on: ubuntu-24.04
+    environment:
+      name: release-notifications
+    permissions: {}
+    steps:
+      - name: Send a best-effort Slack notification
+        continue-on-error: true
+        env:
+          APPROVAL_RESULT: ${{ needs.approval.result }}
+          CHROME_READINESS_RESULT: ${{ needs.chrome_readiness.result }}
+          CHROME_SUBMIT_OUTCOME: ${{ needs.chrome_submit.outputs.cws_outcome }}
+          CHROME_SUBMIT_RESULT: ${{ needs.chrome_submit.result }}
+          CHROME_UPLOAD_RESULT: ${{ needs.chrome_upload.result }}
+          GITHUB_RELEASE_RESULT: ${{ needs.github_release.result }}
+          INPUT_SHA: ${{ inputs.commit_sha }}
+          INPUT_TAG: ${{ inputs.tag }}
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          RELEASE_URL: ${{ needs.github_release.outputs.release_url }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
+            echo "SLACK_RELEASE_WEBHOOK_URL is not configured; skipping notification."
+            exit 0
+          fi
+          OVERALL="failed"
+          if [[ "$CHROME_SUBMIT_RESULT" == "success" ]]; then
+            OVERALL="submitted to Chrome"
+          elif [[ "$PREFLIGHT_RESULT" == "success" && "$APPROVAL_RESULT" != "success" ]]; then
+            OVERALL="not approved"
+          fi
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          SHORT_SHA="${INPUT_SHA:0:12}"
+          TEXT="Apogee release ${INPUT_TAG} (${SHORT_SHA}) — ${OVERALL}. Actor: ${GITHUB_ACTOR}; attempt: ${GITHUB_RUN_ATTEMPT}. Preflight=${PREFLIGHT_RESULT}, approval=${APPROVAL_RESULT}, Chrome readiness=${CHROME_READINESS_RESULT}, GitHub=${GITHUB_RELEASE_RESULT}, upload=${CHROME_UPLOAD_RESULT}, submit=${CHROME_SUBMIT_RESULT}${CHROME_SUBMIT_OUTCOME:+/${CHROME_SUBMIT_OUTCOME}}. Run: ${RUN_URL}${RELEASE_URL:+ Release: ${RELEASE_URL}}"
+          jq -n --arg text "$TEXT" '{text: $text}' > slack-payload.json
+          curl --fail --silent --show-error \
+            --header 'Content-Type: application/json' \
+            --data-binary @slack-payload.json \
+            "$SLACK_WEBHOOK_URL"
