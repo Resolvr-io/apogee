@@ -455,6 +455,7 @@ jobs:
         with:
           artifact-ids: ${{ steps.journal_lookup.outputs.artifact_id }}
           path: cws-state
+          merge-multiple: true
 
       - name: Prepare and journal the exact upload attempt
         id: prepare_upload
@@ -563,6 +564,7 @@ jobs:
         with:
           artifact-ids: ${{ steps.journal_lookup.outputs.artifact_id }}
           path: cws-receipt
+          merge-multiple: true
 
       - name: Authenticate to Google for submission
         id: google_auth
