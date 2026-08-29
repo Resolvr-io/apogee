@@ -1,6 +1,15 @@
 # Spec: Watch-only wallets
 
-**Status:** Proposed (spec only — no implementation on this branch)
+**Status:** Implemented. Import lives in the Onboarding `watch` step
+(`src/sidepanel/screens/Onboarding.tsx`), the record and its seedless handling in
+`src/keystore/keystore.ts`, and the signing refusal in
+`src/sidepanel/screens/Approval.tsx`. Descriptor export — the reverse direction,
+producing the material this spec describes importing — is in
+`docs/wallet-descriptor-export.md`.
+
+Retained for the motivation and architecture rationale below, which is not
+recorded elsewhere. Treat the design sections as the original proposal rather
+than a description of the shipped code.
 
 ## Motivation
 

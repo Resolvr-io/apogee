@@ -79,6 +79,6 @@ they are where your wallet activity is observable by third parties.
 
 ## See also
 
-- [2026-08 security vulnerability scan](docs/security-vulnerability-scan-2026-08.md)
+- [2026-08 security vulnerability scan](audits/security-vulnerability-scan-2026-08.md)
   — full findings, severity ratings, and recommendations for the issues above.
 
