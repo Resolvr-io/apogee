@@ -14,6 +14,7 @@
 // invisible.
 
 import { Starfield } from "./Starfield";
+import { INTRO_CONTENT_IN_MS, INTRO_METEOR_LEAD_MS } from "@/sidepanel/scene-scroll";
 import { ShootingStars } from "./ShootingStars";
 import { OceanVideo } from "./OceanVideo";
 
@@ -38,7 +39,18 @@ export function Scene({
     <div className={sceneClass} aria-hidden="true">
       <div className="apogee-sky" />
       <Starfield />
-      {animated && <ShootingStars />}
+      {/* Keyed on the phase so the timer starts when "play" does, not at mount:
+          the hold runs for however long the panel takes to load, so a delay
+          measured from mount would land anywhere. Remounting also clears any
+          meteor in flight, which at the intro's start is none. */}
+      {animated && (
+        <ShootingStars
+          key={intro === "play" ? "intro" : "ambient"}
+          firstSpawnMs={
+            intro === "play" ? INTRO_CONTENT_IN_MS - INTRO_METEOR_LEAD_MS : undefined
+          }
+        />
+      )}
       <div className="apogee-glow" />
       <div className="apogee-moon">
         <div className="apogee-moon-halo" />

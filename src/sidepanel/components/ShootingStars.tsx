@@ -31,7 +31,7 @@ type Meteor = {
   bright: number; // peak alpha
 };
 
-export function ShootingStars() {
+export function ShootingStars({ firstSpawnMs }: { firstSpawnMs?: number } = {}) {
   const ref = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -140,7 +140,13 @@ export function ShootingStars() {
       // above, so a meteor spawned on a resume tick (where `steps` can be
       // large) isn't immediately killed by that same tick's decrement.
       if (nextAt === 0) {
-        nextAt = now + 2500 + Math.random() * 2500; // first one ~2.5–5s in
+        // The intro asks for a specific first meteor so one is always crossing
+        // the sky as the logo arrives; everywhere else the first is random in a
+        // 2.5-5s window. Subsequent spawns are random either way.
+        // Closed over from a []-deps effect deliberately: Scene keys this
+        // component on the intro phase, so the prop is fixed for a mount's
+        // whole life and a later value would mean a remount anyway.
+        nextAt = now + (firstSpawnMs ?? 2500 + Math.random() * 2500);
       } else if (now >= nextAt) {
         spawn();
         nextAt = now + 9000 + Math.random() * 16000; // then every ~9–25s
