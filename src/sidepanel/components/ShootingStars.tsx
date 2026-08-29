@@ -33,10 +33,6 @@ type Meteor = {
 
 export function ShootingStars({ firstSpawnMs }: { firstSpawnMs?: number } = {}) {
   const ref = useRef<HTMLCanvasElement>(null);
-  // Read through a ref so changing it cannot restart the rAF loop; the loop
-  // reads it only when arming the first spawn.
-  const firstSpawn = useRef(firstSpawnMs);
-  firstSpawn.current = firstSpawnMs;
 
   useEffect(() => {
     const canvas = ref.current;
@@ -147,7 +143,10 @@ export function ShootingStars({ firstSpawnMs }: { firstSpawnMs?: number } = {}) 
         // The intro asks for a specific first meteor so one is always crossing
         // the sky as the logo arrives; everywhere else the first is random in a
         // 2.5-5s window. Subsequent spawns are random either way.
-        nextAt = now + (firstSpawn.current ?? 2500 + Math.random() * 2500);
+        // Closed over from a []-deps effect deliberately: Scene keys this
+        // component on the intro phase, so the prop is fixed for a mount's
+        // whole life and a later value would mean a remount anyway.
+        nextAt = now + (firstSpawnMs ?? 2500 + Math.random() * 2500);
       } else if (now >= nextAt) {
         spawn();
         nextAt = now + 9000 + Math.random() * 16000; // then every ~9–25s

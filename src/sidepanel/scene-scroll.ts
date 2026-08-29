@@ -16,7 +16,16 @@ import { COLLAPSE_THRESHOLD_PX } from "@/sidepanel/hero-collapse";
 type Listener = (scrollY: number) => void;
 
 const listeners = new Set<Listener>();
+// Where the SCROLL DRIVER has the scene, and what the STARFIELD was last told.
+// One slot until the intro, which moves the sky while CSS keyframes own the moon
+// and the water — a motion with no scroll position behind it. Collapsing the two
+// let that parked value leak into `easeSceneTo`'s start point: a `parkSceneMoon`
+// landing during the hold would ease from 329, snapping `--scene-recede` to 1 and
+// lighting `.apogee-scroll-dim` over the intro's own band. Keeping them apart is
+// what makes writeStarfieldOnly's promise — moon and water untouched — hold for
+// the NEXT scene write as well as its own.
 let lastScrollY = 0;
+let lastStarfieldY = 0;
 /** Cancels whichever scene ease is in flight. One slot, because the moon can
  *  only be going to one place at a time and whichever call arrives last wins. */
 let cancelActiveEase: () => void = () => {};
@@ -134,6 +143,7 @@ function writeScene(progress: number, scrollY: number): void {
   // derivable from the offset — see easeSceneTo. That it fell out unused when the
   // ease stopped lerping the two independently is the invariant proving itself.
   lastScrollY = scrollY;
+  lastStarfieldY = scrollY;
   setSceneVar("--moon-rise", progress);
   setSceneVar("--scene-recede", progress);
   for (const l of listeners) l(scrollY);
@@ -148,28 +158,6 @@ export function setSceneScroll(progress: number, scrollY: number): void {
   writeScene(progress, scrollY);
 }
 
-/**
- * Ease the whole scene to a target, moon and starfield together.
- *
- * Both values have to travel or the scene comes apart: `--moon-rise` moves the
- * moon, while the starfield subscribes to the scroll offset for its depth
- * parallax. Writing one and pinning the other at 0 is what made the moon slide
- * out of a motionless sky on entering a sub-view, when the same moon travelling
- * under a scroll gesture carries the stars with it.
- *
- * Eases ONE value, the scroll offset, and derives the moon from it with
- * moonRise. The scene's state is genuinely one-dimensional: every write the
- * scroll gesture makes satisfies `progress === moonRise(scrollY)`. Easing the two
- * independently against a shared factor breaks that invariant mid-flight — for
- * the first quarter of the transition the sky is still inside the dead zone
- * while the moon is already a quarter gone, then they cross and the sky runs
- * ahead — which is a smaller version of the defect this fix exists to remove.
- * Deriving instead of lerping makes every intermediate frame a state the gesture
- * could actually produce, and drops a parameter.
- *
- * Eases from wherever the scene actually is, so a user who had scrolled partway
- * before navigating does not get a jump.
- */
 /**
  * Walk one value from `from` to `to` over `durationMs`, easing, and hand each
  * frame to `write`. Returns a cancel.
@@ -198,6 +186,28 @@ function easeScene(
   };
 }
 
+/**
+ * Ease the whole scene to a target, moon and starfield together.
+ *
+ * Both values have to travel or the scene comes apart: `--moon-rise` moves the
+ * moon, while the starfield subscribes to the scroll offset for its depth
+ * parallax. Writing one and pinning the other at 0 is what made the moon slide
+ * out of a motionless sky on entering a sub-view, when the same moon travelling
+ * under a scroll gesture carries the stars with it.
+ *
+ * Eases ONE value, the scroll offset, and derives the moon from it with
+ * moonRise. The scene's state is genuinely one-dimensional: every write the
+ * scroll gesture makes satisfies `progress === moonRise(scrollY)`. Easing the two
+ * independently against a shared factor breaks that invariant mid-flight — for
+ * the first quarter of the transition the sky is still inside the dead zone
+ * while the moon is already a quarter gone, then they cross and the sky runs
+ * ahead — which is a smaller version of the defect this fix exists to remove.
+ * Deriving instead of lerping makes every intermediate frame a state the gesture
+ * could actually produce, and drops a parameter.
+ *
+ * Eases from wherever the scene actually is, so a user who had scrolled partway
+ * before navigating does not get a jump.
+ */
 function easeSceneTo(toScrollY: number): void {
   cancelActiveEase();
   const fromScrollY = lastScrollY;
@@ -317,7 +327,7 @@ export const INTRO_METEOR_LEAD_MS = 600;
  *  a separate element that would light up alongside the intro's own band, which
  *  its comment in theme.css explicitly relies on never happening. */
 function writeStarfieldOnly(scrollY: number): void {
-  lastScrollY = scrollY;
+  lastStarfieldY = scrollY;
   for (const l of listeners) l(scrollY);
 }
 
@@ -362,12 +372,19 @@ export function driveIntroStarfield(intro: "hold" | "play" | false): () => void 
   // live value instead made the replay button a no-op: replay() goes
   // false -> one frame -> "play" without passing through "hold", so `from` was
   // the 0 the `false` branch had just written, and the sweep ran 0 to 0.
-  return easeScene(MOON_CLEARED_SCROLL_PX, 0, INTRO_MOON_MS, writeStarfieldOnly);
+  // Into the same slot as every other ease, so the "one slot, last call wins"
+  // rule at the top of the module stays true. Nothing reaches this concurrently
+  // today — the replay button is gated on there being no wallet, so the screen
+  // that eases the scene is not mounted — but two loops writing the same
+  // listeners with neither able to stop the other is not a state to leave open.
+  cancelActiveEase();
+  cancelActiveEase = easeScene(MOON_CLEARED_SCROLL_PX, 0, INTRO_MOON_MS, writeStarfieldOnly);
+  return cancelActiveEase;
 }
 
 export function subscribeScene(listener: Listener): () => void {
   listeners.add(listener);
-  listener(lastScrollY);
+  listener(lastStarfieldY);
   return () => {
     listeners.delete(listener);
   };
