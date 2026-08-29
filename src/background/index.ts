@@ -317,20 +317,17 @@ let guideTabId: number | null = null;
 
 // ---- scanned seed phrase: one-shot hand-off ---------------------------------
 //
-// A seed phrase scanned by the QR window is parked HERE rather than broadcast.
+// A seed phrase scanned by the QR window is parked HERE rather than broadcast:
 // `runtime.sendMessage` with no target fans out to every extension context, so a
-// broadcast phrase would be readable by any page that happens to be listening —
-// today only our own, but a seed shouldn't depend on that. The panel claims it
+// broadcast phrase would be readable by anything listening. The panel claims it
 // exactly once with `apogee/qr-secret-claim`.
 //
-// Deliberately module-level (in memory) and never persisted: writing it to
-// storage.session/local would leave the phrase recoverable from disk or survive a
-// crash, which is precisely what we're avoiding.
+// Module-level and never persisted — storage.session/local would leave the phrase
+// recoverable from disk or surviving a crash. It also expires quickly, so an
+// unclaimed phrase doesn't sit in SW memory indefinitely.
 //
-// Expires quickly. If the panel never claims it (window closed, user walked away)
-// the phrase must not sit in SW memory indefinitely. The read-and-clear semantics
-// (single-use, time-boxed) live in `lib/qr-secret.ts` so they're unit-testable —
-// this module registers listeners at import and can't load under Node.
+// The read-and-clear semantics live in `lib/qr-secret.ts` so they're unit-
+// testable; this module registers listeners at import and can't load under Node.
 // See docs/seed-qr-import.md for the full threat model.
 let qrSecret: ParkedSecret | null = null;
 
