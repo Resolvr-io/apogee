@@ -14,7 +14,23 @@ import { APP_VERSION_DISPLAY } from "@/version";
 const VISIBLE_MS = 15_000; // from mount to the start of the fade-out
 const FADE_MS = 1_000; // matches duration-1000 below
 
-export function VersionBadge() {
+/**
+ * The panel's transient bottom chrome: visible on arrival, then faded out so it
+ * never becomes furniture.
+ *
+ * Exported because the debug Replay-intro button gets the same treatment. It
+ * shares the POLICY, not a clock — each caller gets its own instance and its own
+ * pair of timers, so the two coincide only when they mounted together. On first
+ * run they don't: App gates the badge on the intro having finished, while the
+ * button's instance starts with the panel, so the badge outlasts it by roughly
+ * the length of the intro. Nor can they be made to share one, because the badge
+ * re-arms after a replay by design and the button deliberately does not. What
+ * the sharing buys is one definition of the durations rather than two.
+ *
+ * `gone` is only for the badge: the button must stay mounted after it fades, or
+ * it could not be hovered back.
+ */
+export function useTransientChrome(): { shown: boolean; gone: boolean } {
   const [shown, setShown] = useState(false);
   const [gone, setGone] = useState(false);
 
@@ -35,6 +51,12 @@ export function VersionBadge() {
       window.clearTimeout(remove);
     };
   }, []);
+
+  return { shown, gone };
+}
+
+export function VersionBadge() {
+  const { shown, gone } = useTransientChrome();
 
   if (gone) return null;
   return (

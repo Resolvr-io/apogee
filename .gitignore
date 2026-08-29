@@ -39,3 +39,10 @@ docs/*PRD*
 docs/*prd*
 docs/**/*PRD*
 docs/**/*prd*
+
+# Staging for release assets composed in Figma (see docs/screenshots.md, tracked
+# in #167). Exports on their way to the store listing, not sources, and large
+# binaries in a public repo. Ignored rather than trusted to discipline: this
+# directory appears mid-release when attention is elsewhere, and `git add -A` is
+# routine enough that it was committed by accident once already.
+temp/
