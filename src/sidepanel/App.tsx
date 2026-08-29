@@ -7,7 +7,7 @@ import { armBalanceStrike } from "@/sidepanel/balance-strike";
 import { ErrorText, IconButton, LoadingPill } from "@/sidepanel/components/ui";
 import { ToastView, type ToastNotice } from "@/sidepanel/components/Toast";
 import { ConnectionBar } from "@/sidepanel/components/ConnectionBar";
-import { VersionBadge } from "@/sidepanel/components/VersionBadge";
+import { VersionBadge, useTransientChrome } from "@/sidepanel/components/VersionBadge";
 import { errMessage, wallet } from "@/sidepanel/wallet-client";
 import { browser } from "@/lib/ext";
 import { Scene, type SceneIntro } from "@/sidepanel/components/Scene";
@@ -348,6 +348,11 @@ export function App() {
   const preWallet = Boolean(state && (!state.initialized || state.wallets.length === 0));
   // The animated ocean is a lock/intro backdrop only — never on the wallet itself.
   const animated = !unlocked && animationsPref;
+  // Shared with VersionBadge so the two pieces of transient bottom chrome fade
+  // as one. Called here rather than inside the button so the timer starts with
+  // the panel, not with the button's own mount — otherwise a replay would
+  // restart it and leave the button visible in a screenshot taken afterwards.
+  const { shown: chromeShown } = useTransientChrome();
   const { intro: moonIntro, end: endMoonIntro, replay: replayMoonIntro } = useMoonIntro(
     state,
     error,
@@ -529,7 +534,16 @@ export function App() {
           it stays reachable while the cinematic plays. Not during the hold —
           `preWallet` needs a loaded state and the hold is precisely the window
           before one arrives — which costs nothing, since the hold is the part
-          with nothing to watch. */}
+          with nothing to watch.
+
+          It fades out on the version badge's timer, so this screen can be
+          photographed from a debug build without the button in shot. Once faded
+          it stays MOUNTED and keeps its hit area, because opacity does not
+          affect hit-testing: hovering the corner brings it back, moving away
+          takes it again, and focus-visible reveals it so it is not lost to the
+          keyboard. Two durations on purpose — a second to match the badge on the
+          way out, 150ms on hover, because a control that takes a full second to
+          answer the pointer reads as broken rather than gentle. */}
       {DEBUG_ENTERPRISE_BUILD && preWallet && (
         <button
           type="button"
@@ -542,7 +556,11 @@ export function App() {
           }}
           aria-label="Replay intro"
           title="Replay intro (debug build only)"
-          className="absolute right-3 bottom-3 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-[color:var(--warning-border)] bg-[color:var(--warning-bg)] text-[color:var(--warning-text)] transition-opacity hover:opacity-80"
+          className={`absolute right-3 bottom-3 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-[color:var(--warning-border)] bg-[color:var(--warning-bg)] text-[color:var(--warning-text)] transition-opacity duration-1000 hover:duration-150 motion-reduce:transition-none ${
+            chromeShown
+              ? "opacity-100 hover:opacity-80"
+              : "opacity-0 hover:opacity-100 focus-visible:opacity-100"
+          }`}
         >
           <RotateCcw size={14} />
         </button>
