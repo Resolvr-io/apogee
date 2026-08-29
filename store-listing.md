@@ -43,12 +43,12 @@ Apogee never asks for your recovery phrase outside of setup. Keep your phrase an
 Apogee is a self-custodial wallet, not a custodian, exchange, or financial service.
 
 WHAT'S NEW IN 0.8.0
-• Export your wallet's descriptor and public data — the account key, the watch-only descriptor that recreates the wallet elsewhere, the master blinding key, and a public descriptor with that key removed. Grouped by what each one discloses, because one group reveals which addresses are yours and the other reveals every amount you hold. Nothing exported can sign or spend, and your seed phrase is never included. Works for seed, Jade and watch-only wallets.
-• Trusted Simplicity Lending transactions — a connected Liquid app can request any of eight lending lifecycle actions, and Apogee independently resolves chain state, builds and dry-runs the covenant transaction, shows the exact effects for approval, then signs and broadcasts. Restricted to Liquid testnet software wallets in this release.
 • The balance behaves like an instrument — the numerals strike when a figure changes, the balance folds away as your history scrolls, and an Animations switch turns the motion off.
 • A seed QR a Jade can read — the export now carries a brightness control, so moving a wallet onto a Jade no longer depends on your screen.
-• Your transaction history as a CSV — every transaction with its date, txid, amounts, assets and fee, one row per asset moved so a swap reads as the two sides it actually is. Amounts in both base units and scaled, so a spreadsheet adds them up without losing precision.
+• Export your wallet's descriptor and public data — the account key, the watch-only descriptor that recreates the wallet elsewhere, the master blinding key, and a public descriptor with that key removed. Grouped by what each one discloses, because one group reveals which addresses are yours and the other reveals every amount you hold. Nothing exported can sign or spend, and your seed phrase is never included. Works for seed, Jade and watch-only wallets.
 • Connect a hardware wallet is a button again, and the L-BTC row in Assets now names the unit its number is in.
+• Your transaction history as a CSV — every transaction with its date, txid, amounts, assets and fee, one row per asset moved so a swap reads as the two sides it actually is. Amounts in both base units and scaled, so a spreadsheet adds them up without losing precision.
+• Groundwork for richer app transactions — when a connected Liquid app requests a multi-step transaction, Apogee resolves the chain state itself, builds and dry-runs it, and shows the exact effects before you approve. Testnet only in this release, while the format is still settling.
 • Fixes — a consolidation in flight survives leaving the Coins screen, an implausible fee estimate is refused rather than paid, and a completed contract execution keeps only its txid instead of a week of readable detail.
 
 ## Single purpose
