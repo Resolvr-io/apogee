@@ -173,6 +173,16 @@ async function getRelease(client, tag) {
   return matches[0] ?? null;
 }
 
+async function getReleaseById(client, releaseId) {
+  const release = await client.request(
+    `/repos/${encodeURIComponent(client.owner)}/${encodeURIComponent(client.repo)}/releases/${encodeURIComponent(String(releaseId))}`,
+  );
+  if (!release || typeof release !== "object" || release.id !== releaseId) {
+    throw new GitHubReleaseError(`GitHub returned no release for ID ${releaseId}`);
+  }
+  return release;
+}
+
 export async function inspectRelease(client, tagInput, shaInput) {
   const { tag, sha } = validateIdentity(tagInput, shaInput);
   const [reference, release] = await Promise.all([getTagReference(client, tag), getRelease(client, tag)]);
@@ -269,6 +279,12 @@ async function ensureDraftRelease(client, { tag, sha, title, notes }) {
 }
 
 function assertReleaseMetadata(release, { tag, title, notes }) {
+  if (!release || typeof release !== "object") {
+    throw new GitHubReleaseError(`GitHub returned no release for ${tag}`);
+  }
+  if (!Number.isInteger(release.id) || release.id <= 0) {
+    throw new GitHubReleaseError(`release ${tag} is missing a valid GitHub release ID`);
+  }
   if (release.tag_name !== tag) throw new GitHubReleaseError(`release has unexpected tag ${release.tag_name}`);
   if (release.name !== title) throw new GitHubReleaseError(`release ${tag} has unexpected title ${JSON.stringify(release.name)}`);
   if (release.prerelease !== false) {
@@ -325,8 +341,8 @@ async function ensureAsset(client, release, filename) {
       body: bytes,
     });
   } catch (error) {
-    const refreshed = await getRelease(client, release.tag_name);
-    const candidates = (refreshed?.assets ?? []).filter((asset) => asset.name === name);
+    const refreshed = await getReleaseById(client, release.id);
+    const candidates = (refreshed.assets ?? []).filter((asset) => asset.name === name);
     if (candidates.length !== 1) throw error;
     uploaded = candidates[0];
   }
@@ -371,11 +387,11 @@ export async function publishRelease(client, { tag: tagInput, sha: shaInput, not
 
   const assets = [];
   for (const filename of resolvedAssetPaths) {
-    release = await getRelease(client, tag);
+    release = await getReleaseById(client, release.id);
     assets.push(await ensureAsset(client, release, filename));
   }
 
-  release = await getRelease(client, tag);
+  release = await getReleaseById(client, release.id);
   const actualAssetNames = (release.assets ?? []).map((asset) => asset.name).sort();
   const exactExpectedAssetNames = [...expectedAssetNames].sort();
   if (JSON.stringify(actualAssetNames) !== JSON.stringify(exactExpectedAssetNames)) {
@@ -394,8 +410,8 @@ export async function publishRelease(client, { tag: tagInput, sha: shaInput, not
         },
       );
     } catch (error) {
-      const reconciled = await getRelease(client, tag);
-      if (!reconciled || reconciled.draft) throw error;
+      const reconciled = await getReleaseById(client, release.id);
+      if (reconciled.draft) throw error;
       release = reconciled;
     }
   }

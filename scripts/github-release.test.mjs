@@ -130,7 +130,8 @@ test("GitHub GET retries use backoff when Retry-After is absent", async () => {
   assert.deepEqual(delays, [250]);
 });
 
-function createStatefulClient() {
+function createStatefulClient({ releaseListLagReads = 0 } = {}) {
+  let remainingReleaseListLagReads = 0;
   const state = {
     tagSha: null,
     release: null,
@@ -157,7 +158,13 @@ function createStatefulClient() {
         return { ref: payload.ref, object: { type: "commit", sha: payload.sha } };
       }
 
-      if (path.includes("/releases?")) return state.release ? [structuredClone(state.release)] : [];
+      if (path.includes("/releases?")) {
+        if (remainingReleaseListLagReads > 0) {
+          remainingReleaseListLagReads -= 1;
+          return [];
+        }
+        return state.release ? [structuredClone(state.release)] : [];
+      }
 
       if (path.endsWith("/releases") && method === "POST") {
         const payload = JSON.parse(options.body);
@@ -173,6 +180,7 @@ function createStatefulClient() {
           html_url: `https://github.com/Resolvr-io/apogee/releases/tag/${payload.tag_name}`,
           assets: [],
         };
+        remainingReleaseListLagReads = releaseListLagReads;
         state.mutations.push("create-release");
         return structuredClone(state.release);
       }
@@ -193,6 +201,10 @@ function createStatefulClient() {
 
       if (path.startsWith("https://api.github.test/assets/")) {
         return Buffer.from(state.assets.get(path));
+      }
+
+      if (/\/releases\/42$/.test(path) && method === "GET") {
+        return structuredClone(state.release);
       }
 
       if (/\/releases\/42$/.test(path) && method === "PATCH") {
@@ -240,6 +252,31 @@ test("publishRelease creates an immutable release once and safely resumes it", a
   });
   assert.equal(second.assets[0].reused, true);
   assert.equal(state.mutations.length, 4, "resume must not repeat any mutation");
+});
+
+test("publishRelease tolerates a newly created draft missing from release listings", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "apogee-github-release-list-lag-test-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const notesPath = join(directory, "notes.md");
+  const assetPath = join(directory, "apogee-0.8.0-chrome.zip");
+  await writeFile(notesPath, "# Apogee v0.8.0\n\n- Ready.\n");
+  await writeFile(assetPath, "fixed archive bytes");
+  const { client, state } = createStatefulClient({ releaseListLagReads: 3 });
+
+  const result = await publishRelease(client, {
+    tag: TAG,
+    sha: SHA,
+    notesPath,
+    assetPaths: [assetPath],
+  });
+
+  assert.equal(result.immutable, true);
+  assert.deepEqual(state.mutations, [
+    "create-tag",
+    "create-release",
+    "upload:apogee-0.8.0-chrome.zip",
+    "publish-release",
+  ]);
 });
 
 test("publishRelease refuses to publish an unapproved draft asset", async (context) => {
