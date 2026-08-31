@@ -15,7 +15,10 @@ import pkg from "./package.json";
 // from a source zip), rather than failing the build.
 function getCommitHash(): string {
   try {
-    return execSync("git rev-parse --short HEAD").toString().trim();
+    // Pin the abbreviation width ourselves. Git's `--short[=<n>]` promises a
+    // *minimum* unique length and can grow as new objects introduce prefix
+    // collisions, which would make a later rebuild of this commit differ.
+    return execSync("git rev-parse HEAD").toString().trim().slice(0, 12);
   } catch {
     return "unknown";
   }

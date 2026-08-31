@@ -1,0 +1,18 @@
+# Release authority. Branch protection should require one CODEOWNER approval;
+# either release owner may review repository changes, while the production
+# workflow's protected environment separately prevents self-approval.
+/.github/CODEOWNERS @dmnyc @tvolk131
+/.github/workflows/release.yml @dmnyc @tvolk131
+/release-notes/ @dmnyc @tvolk131
+/docs/releasing.md @dmnyc @tvolk131
+/scripts/build-release-zip.sh @dmnyc @tvolk131
+/scripts/validate-release.mjs @dmnyc @tvolk131
+/scripts/validate-release.test.mjs @dmnyc @tvolk131
+/scripts/github-release.mjs @dmnyc @tvolk131
+/scripts/github-release.test.mjs @dmnyc @tvolk131
+/scripts/chrome-web-store.mjs @dmnyc @tvolk131
+/scripts/chrome-web-store.test.mjs @dmnyc @tvolk131
+/package.json @dmnyc @tvolk131
+/pnpm-lock.yaml @dmnyc @tvolk131
+/manifest.config.ts @dmnyc @tvolk131
+/vite.config.ts @dmnyc @tvolk131

@@ -15,7 +15,7 @@
     "build": "vite build",
     "build:tx-manifest-runtime": "bash scripts/build-tx-manifest-runtime.sh",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.playground.json",
-    "test": "vitest run --exclude src/sideswap/integration.test.ts",
+    "test": "vitest run --exclude src/sideswap/integration.test.ts && node --test scripts/*.test.mjs",
     "test:sideswap:integration": "vitest run src/sideswap/integration.test.ts",
     "test:provider": "pnpm build && playwright test",
     "test:lending:regtest": "node scripts/test-lending-regtest.mjs",
