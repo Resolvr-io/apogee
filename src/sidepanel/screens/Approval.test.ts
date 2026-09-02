@@ -225,6 +225,7 @@ describe("ApprovalOverlay", () => {
       network: "testnet",
       locked: false,
       signerKind: "local",
+      signingMode: "wallet",
       review: {
         kind: "acceptOffer",
         protocolLabel: "Simplicity Lending",
@@ -285,6 +286,7 @@ describe("ApprovalOverlay", () => {
       network: "testnet",
       locked: false,
       signerKind: "local",
+      signingMode: "wallet",
       recovery: true,
       review: {
         kind: "acceptOffer",
@@ -314,7 +316,8 @@ describe("ApprovalOverlay", () => {
 
     expect(markup).toContain("Resume contract transaction");
     expect(markup).toContain("exact signed transaction");
-    expect(markup).toContain("does not rebuild or re-sign");
+    expect(markup).toContain("revalidates current state");
+    expect(markup).toContain("does not replace or re-sign");
     expect(markup).toContain("Resume broadcast");
     expect(markup).not.toContain("Approval signs and broadcasts it");
   });
@@ -327,6 +330,7 @@ describe("ApprovalOverlay", () => {
       network: "testnet",
       locked: false,
       signerKind: "local",
+      signingMode: "wallet",
       review: {
         kind: "claimLenderVault",
         protocolLabel: "Simplicity Lending",
@@ -355,5 +359,77 @@ describe("ApprovalOverlay", () => {
     expect(markup).toContain("Net to wallet");
     expect(markup).toContain("Protocol fee");
     expect(markup).toContain("Lender NFT burned");
+  });
+
+  it("keeps signature-free manifest approval keyless for locked watch-only wallets", () => {
+    const request: Extract<ApprovalRequest, { kind: "executeTxManifest" }> = {
+      kind: "executeTxManifest",
+      id: "keyless-manifest-approval-test",
+      origin: "https://contracts.example.test",
+      network: "testnet",
+      locked: true,
+      signerKind: "watch",
+      signingMode: "none",
+      review: {
+        kind: "createFactory",
+        protocolLabel: "Contract",
+        actionLabel: "Advance state",
+        requestId: "keyless-action-1",
+        accountIdentifier: `bip122:${"22".repeat(16)}:${"33".repeat(16)}`,
+        bundleHash: `sha256:${"44".repeat(32)}`,
+        action: "contract.Advance",
+        factoryAssetId: COLLATERAL_ASSET,
+        fundingAmount: "1",
+        feeAssetId: POLICY_ASSET,
+        fee: "1000",
+        feeChange: "0",
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      createElement(ApprovalOverlay, { request, onClose: vi.fn() }),
+    );
+
+    expect(markup).toContain("approve to verify and broadcast");
+    expect(markup).toContain("Approve &amp; broadcast");
+    expect(markup).not.toContain("Unlock to approve");
+    expect(markup).not.toContain("sign on your Jade");
+  });
+
+  it("describes signature-free recovery without claiming the bytes were signed", () => {
+    const request: Extract<ApprovalRequest, { kind: "executeTxManifest" }> = {
+      kind: "executeTxManifest",
+      id: "keyless-manifest-recovery-test",
+      origin: "https://contracts.example.test",
+      network: "testnet",
+      locked: false,
+      signerKind: "jade",
+      signingMode: "none",
+      recovery: true,
+      review: {
+        kind: "createFactory",
+        protocolLabel: "Contract",
+        actionLabel: "Advance state",
+        requestId: "keyless-action-1",
+        accountIdentifier: `bip122:${"22".repeat(16)}:${"33".repeat(16)}`,
+        bundleHash: `sha256:${"44".repeat(32)}`,
+        action: "contract.Advance",
+        factoryAssetId: COLLATERAL_ASSET,
+        fundingAmount: "1",
+        feeAssetId: POLICY_ASSET,
+        fee: "1000",
+        feeChange: "0",
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      createElement(ApprovalOverlay, { request, onClose: vi.fn() }),
+    );
+
+    expect(markup).toContain("exact finalized transaction");
+    expect(markup).toContain("revalidates current state");
+    expect(markup).toContain("without accessing signing keys");
+    expect(markup).not.toContain("exact signed transaction");
+    expect(markup).not.toContain("sign on your Jade");
   });
 });

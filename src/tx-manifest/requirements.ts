@@ -13,6 +13,7 @@ import {
   resolveTrustedTxManifest,
   type TxManifestBundleHash,
 } from "./registry";
+import type { DeclarativeRequirementPlan } from "./declarative-plan";
 
 export type TxManifestOutpoint = { txid: string; vout: number };
 
@@ -296,6 +297,11 @@ export type TxManifestRequirementPlan =
   | CancelOfferRequirementPlan
   | LiquidateOfferRequirementPlan
   | ClaimLenderVaultRequirementPlan;
+
+/** Provider-wide union; the legacy name above intentionally stays Lending-only for action narrowing. */
+export type AnyTxManifestRequirementPlan =
+  | TxManifestRequirementPlan
+  | DeclarativeRequirementPlan;
 
 const REQUIRED_INSTANCE_FIELDS = [
   "COLLATERAL_ASSET_ID",

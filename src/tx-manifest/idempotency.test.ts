@@ -38,7 +38,7 @@ function memoryStore(): TxManifestExecutionStore & { records: TxManifestExecutio
 }
 
 function checkpointRecord(
-  overrides: Partial<TxManifestCheckpointRecord> = {},
+  overrides: Partial<Extract<TxManifestCheckpointRecord, { sealedPayload: unknown }>> = {},
 ): TxManifestCheckpointRecord {
   return {
     state: "checkpointed",
@@ -47,6 +47,7 @@ function checkpointRecord(
     checkpointedAt: 1_000,
     walletId: "wallet-1",
     network: "liquidtestnet",
+    signingMode: "wallet",
     sealedPayload: { iv: "iv", ct: "ciphertext" },
     ...overrides,
   };
@@ -160,6 +161,43 @@ describe("TxManifestIdempotency", () => {
     ]);
   });
 
+  it("stores and resumes a public checkpoint for a keyless transaction", async () => {
+    const store = memoryStore();
+    const coordinator = new TxManifestIdempotency(store, () => 2_000);
+    const publicPayload = JSON.stringify({ transactionHex: "00", txid: RESULT.txid });
+    const interrupted = new Error("broadcast response lost");
+
+    await expect(
+      coordinator.execute("scope", DIGEST, async (generation) => {
+        await coordinator.checkpoint({
+          key: "scope",
+          invocationDigest: DIGEST,
+          walletId: "watch-wallet",
+          network: "liquidtestnet",
+          signingMode: "none",
+          publicPayload,
+        }, generation);
+        throw interrupted;
+      }, reconstruct),
+    ).rejects.toBe(interrupted);
+    expect(store.records).toEqual([
+      expect.objectContaining({
+        state: "checkpointed",
+        signingMode: "none",
+        publicPayload,
+      }),
+    ]);
+
+    const resume = vi.fn(async (checkpoint: TxManifestCheckpointRecord) => {
+      expect(checkpoint).toMatchObject({ publicPayload });
+      return RESULT;
+    });
+    await expect(
+      coordinator.execute("scope", DIGEST, vi.fn(), reconstruct, resume),
+    ).resolves.toEqual(RESULT);
+    expect(resume).toHaveBeenCalledOnce();
+  });
+
   it("leaves the checkpoint durable when recovery or terminal persistence fails", async () => {
     const store = memoryStore();
     const coordinator = new TxManifestIdempotency(store, () => 2_000);
@@ -172,6 +210,7 @@ describe("TxManifestIdempotency", () => {
           invocationDigest: DIGEST,
           walletId: "wallet-1",
           network: "liquidtestnet",
+          signingMode: "wallet",
           sealedPayload: { iv: "iv", ct: "ciphertext" },
         }, generation);
         throw interrupted;
@@ -203,6 +242,7 @@ describe("TxManifestIdempotency", () => {
         invocationDigest: DIGEST,
         walletId: "wallet-1",
         network: "liquidtestnet",
+        signingMode: "wallet",
         sealedPayload: { iv: "iv", ct: "ciphertext" },
       }, generation);
       return RESULT;
@@ -235,6 +275,7 @@ describe("TxManifestIdempotency", () => {
           invocationDigest: DIGEST,
           walletId: "wallet-1",
           network: "liquidtestnet",
+          signingMode: "wallet",
           sealedPayload: { iv: "iv", ct: "ciphertext" },
         }, generation);
         broadcast();
@@ -351,6 +392,7 @@ describe("TxManifestIdempotency", () => {
         invocationDigest: DIGEST,
         walletId: "wallet-1",
         network: "liquidtestnet",
+        signingMode: "wallet",
         sealedPayload: { iv: "iv", ct: "ciphertext" },
       }, generation);
       broadcast();
@@ -387,6 +429,7 @@ describe("TxManifestIdempotency", () => {
         invocationDigest: DIGEST,
         walletId: "wallet-1",
         network: "liquidtestnet",
+        signingMode: "wallet",
         sealedPayload: { iv: "iv", ct: "ciphertext" },
       }, generation);
       broadcast();
@@ -573,6 +616,52 @@ describe("migrateStoredTxManifestRecords", () => {
     const failed = { state: "failed", key: "b", invocationDigest: DIGEST, failedAt: 1, message: "x" };
     const records = [trimmed, checkpointRecord(), failed];
     expect(migrateStoredTxManifestRecords(records)).toEqual(records);
+  });
+
+  it("adds signing modes to checkpoints written before the field existed", () => {
+    const legacySealed = { ...checkpointRecord() } as Record<string, unknown>;
+    delete legacySealed.signingMode;
+    const legacyPublic = {
+      state: "checkpointed",
+      key: "public",
+      invocationDigest: DIGEST,
+      checkpointedAt: 1_000,
+      walletId: "watch-wallet",
+      network: "liquidtestnet",
+      publicPayload: "payload",
+    };
+
+    expect(migrateStoredTxManifestRecords([legacySealed, legacyPublic])).toEqual([
+      checkpointRecord(),
+      { ...legacyPublic, signingMode: "none" },
+    ]);
+  });
+
+  it("retains a signing-mode mismatch as a permanent failure instead of replaying", async () => {
+    const malformed = {
+      ...checkpointRecord(),
+      signingMode: "none",
+    };
+    const store = memoryStore();
+    store.records = migrateStoredTxManifestRecords([malformed]);
+    expect(store.records).toEqual([
+      expect.objectContaining({
+        state: "failed",
+        permanent: true,
+        message: expect.stringContaining("checkpoint is unreadable"),
+      }),
+    ]);
+
+    const operation = vi.fn(async () => RESULT);
+    await expect(
+      new TxManifestIdempotency(store, () => 1_000).execute(
+        "scope",
+        DIGEST,
+        operation,
+        reconstruct,
+      ),
+    ).rejects.toThrow("checkpoint is unreadable");
+    expect(operation).not.toHaveBeenCalled();
   });
 
   it("leaves a malformed record alone rather than inventing a txid", () => {

@@ -1,6 +1,10 @@
 import type { LiquidExecuteTxManifestResult } from "@/provider/liquid-rpc";
 import type { Enc } from "@/keystore/crypto";
 import type { LiquidNetwork } from "@/keystore/keystore";
+import {
+  requireTxManifestSigningMode,
+  type TxManifestSigningMode,
+} from "@/tx-manifest/adapters/types";
 
 export type TxManifestTerminalRecord = {
   key: string;
@@ -15,20 +19,51 @@ export type TxManifestTerminalRecord = {
 };
 
 /**
- * A signed transaction that has been durably saved but has not yet reached a
- * durable terminal result. The sealed payload contains the exact raw
- * transaction and its reviewed result; routing metadata is authenticated as
- * AES-GCM additional data when the payload is opened.
+ * A finalized transaction that has been durably saved but has not yet reached
+ * a durable terminal result. Wallet-signed payloads are seed-sealed; the
+ * signature-free variant below may contain only already-public transaction
+ * bytes and their review.
  */
-export type TxManifestCheckpointRecord = {
+type TxManifestCheckpointRecordBase<SigningMode extends TxManifestSigningMode> = {
   state: "checkpointed";
+  signingMode: SigningMode;
   key: string;
   invocationDigest: `sha256:${string}`;
   checkpointedAt: number;
   walletId: string;
   network: LiquidNetwork;
-  sealedPayload: Enc;
 };
+
+/**
+ * Wallet-signed transactions remain seed-sealed. A signature-free manifest
+ * transaction may instead use a local cleartext checkpoint: its complete bytes
+ * are already public transaction data, and requiring the seed merely to save
+ * them would make an otherwise keyless action depend on an unlocked signer.
+ */
+export type TxManifestCheckpointRecord =
+  | (TxManifestCheckpointRecordBase<"wallet"> & {
+      sealedPayload: Enc;
+      publicPayload?: never;
+    })
+  | (TxManifestCheckpointRecordBase<"none"> & {
+      sealedPayload?: never;
+      publicPayload: string;
+    });
+
+type TxManifestCheckpointWriteBase<SigningMode extends TxManifestSigningMode> = Omit<
+  TxManifestCheckpointRecordBase<SigningMode>,
+  "state" | "checkpointedAt"
+>;
+
+export type TxManifestCheckpointWrite =
+  | (TxManifestCheckpointWriteBase<"wallet"> & {
+      sealedPayload: Enc;
+      publicPayload?: never;
+    })
+  | (TxManifestCheckpointWriteBase<"none"> & {
+      sealedPayload?: never;
+      publicPayload: string;
+    });
 
 export type TxManifestFailedRecord = {
   state: "failed";
@@ -36,6 +71,8 @@ export type TxManifestFailedRecord = {
   invocationDigest: `sha256:${string}`;
   failedAt: number;
   message: string;
+  /** Corrupt unresolved checkpoints must never age out into a replayable request. */
+  permanent?: true;
 };
 
 export type TxManifestExecutionRecord =
@@ -144,15 +181,31 @@ export class TxManifestIdempotency {
 
   /** Save-before-broadcast transition. Unresolved checkpoints are never aged out. */
   async checkpoint(
-    record: Omit<TxManifestCheckpointRecord, "state" | "checkpointedAt">,
+    record: TxManifestCheckpointWrite,
     generation: TxManifestExecutionGeneration,
   ): Promise<void> {
     this.assertActive(generation);
-    const checkpoint: TxManifestCheckpointRecord = {
-      ...record,
+    const signingMode = requireTxManifestSigningMode(record.signingMode);
+    const common = {
       state: "checkpointed",
       checkpointedAt: this.now(),
-    };
+      key: record.key,
+      invocationDigest: record.invocationDigest,
+      walletId: record.walletId,
+      network: record.network,
+    } as const;
+    let checkpoint: TxManifestCheckpointRecord;
+    if (signingMode === "none") {
+      if (typeof record.publicPayload !== "string" || record.sealedPayload !== undefined) {
+        throw new Error("A signature-free TX Manifest requires a public checkpoint payload.");
+      }
+      checkpoint = { ...common, signingMode, publicPayload: record.publicPayload };
+    } else {
+      if (record.publicPayload !== undefined || !isEncryptedPayload(record.sealedPayload)) {
+        throw new Error("A wallet-signing TX Manifest requires a sealed checkpoint payload.");
+      }
+      checkpoint = { ...common, signingMode, sealedPayload: record.sealedPayload };
+    }
     return this.queueGenerationWrite(generation, async () => {
       const records = await this.store.load();
       this.assertActive(generation);
@@ -261,7 +314,9 @@ export class TxManifestIdempotency {
       (record) =>
         record.key === key &&
         (isCheckpoint(record) ||
-          (isFailed(record) ? record.failedAt >= cutoff : record.completedAt >= cutoff)),
+          (isFailed(record)
+            ? record.permanent === true || record.failedAt >= cutoff
+            : record.completedAt >= cutoff)),
     );
   }
 
@@ -273,13 +328,16 @@ export class TxManifestIdempotency {
       const cutoff = this.now() - RETENTION_MS;
       const current = await this.store.load();
       this.assertActive(generation);
-      const checkpoints = current.filter(
-        (candidate) => isCheckpoint(candidate) && candidate.key !== record.key,
+      const unresolved = current.filter(
+        (candidate) =>
+          candidate.key !== record.key &&
+          (isCheckpoint(candidate) || (isFailed(candidate) && candidate.permanent === true)),
       );
       const terminals = current
         .filter(
           (candidate): candidate is TxManifestTerminalRecord | TxManifestFailedRecord =>
             !isCheckpoint(candidate) &&
+            !(isFailed(candidate) && candidate.permanent === true) &&
             candidate.key !== record.key &&
             (isFailed(candidate)
               ? candidate.failedAt >= cutoff
@@ -288,7 +346,7 @@ export class TxManifestIdempotency {
         .concat(record)
         .sort((a, b) => recordTime(b) - recordTime(a))
         .slice(0, MAX_RECORDS);
-      await this.store.save([...checkpoints, ...terminals]);
+      await this.store.save([...unresolved, ...terminals]);
     });
   }
 
@@ -354,6 +412,10 @@ export function migrateStoredTxManifestRecords(value: unknown): TxManifestExecut
     // write removes it from disk.
     if (!record || typeof record !== "object") return [];
     const candidate = record as Record<string, unknown>;
+    if (candidate.state === "checkpointed") {
+      const migrated = migrateCheckpointRecord(candidate);
+      return migrated ? [migrated] : [];
+    }
     if ("txid" in candidate || !("result" in candidate)) {
       return record as TxManifestExecutionRecord;
     }
@@ -368,6 +430,74 @@ export function migrateStoredTxManifestRecords(value: unknown): TxManifestExecut
       txid: result.txid,
     } as TxManifestExecutionRecord;
   });
+}
+
+function migrateCheckpointRecord(
+  candidate: Record<string, unknown>,
+): TxManifestCheckpointRecord | TxManifestFailedRecord | null {
+  if (
+    typeof candidate.key !== "string" ||
+    typeof candidate.invocationDigest !== "string" ||
+    !candidate.invocationDigest.startsWith("sha256:") ||
+    typeof candidate.checkpointedAt !== "number" ||
+    typeof candidate.walletId !== "string" ||
+    (candidate.network !== "liquid" &&
+      candidate.network !== "liquidtestnet" &&
+      candidate.network !== "regtest")
+  ) {
+    return null;
+  }
+  const sealed = isEncryptedPayload(candidate.sealedPayload);
+  const publicPayload = typeof candidate.publicPayload === "string";
+  if (
+    (candidate.signingMode === undefined || candidate.signingMode === "wallet") &&
+    sealed &&
+    !publicPayload
+  ) {
+    return {
+      state: "checkpointed",
+      signingMode: "wallet",
+      key: candidate.key,
+      invocationDigest: candidate.invocationDigest as `sha256:${string}`,
+      checkpointedAt: candidate.checkpointedAt,
+      walletId: candidate.walletId,
+      network: candidate.network,
+      sealedPayload: candidate.sealedPayload as Enc,
+    };
+  }
+  if (
+    (candidate.signingMode === undefined || candidate.signingMode === "none") &&
+    publicPayload &&
+    !sealed
+  ) {
+    return {
+      state: "checkpointed",
+      signingMode: "none",
+      key: candidate.key,
+      invocationDigest: candidate.invocationDigest as `sha256:${string}`,
+      checkpointedAt: candidate.checkpointedAt,
+      walletId: candidate.walletId,
+      network: candidate.network,
+      publicPayload: candidate.publicPayload as string,
+    };
+  }
+  return {
+    state: "failed",
+    key: candidate.key,
+    invocationDigest: candidate.invocationDigest as `sha256:${string}`,
+    failedAt: candidate.checkpointedAt,
+    message: "This saved TX Manifest checkpoint is unreadable. Submit the action again with a new requestId.",
+    permanent: true,
+  };
+}
+
+function isEncryptedPayload(value: unknown): value is Enc {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    typeof (value as Partial<Enc>).iv === "string" &&
+    typeof (value as Partial<Enc>).ct === "string",
+  );
 }
 
 export function isCheckpoint(
@@ -385,7 +515,7 @@ function recordTime(record: TxManifestTerminalRecord | TxManifestFailedRecord): 
 }
 
 function isCurrent(record: TxManifestExecutionRecord, cutoff: number): boolean {
-  return isCheckpoint(record) || recordTime(record) >= cutoff;
+  return isCheckpoint(record) || (isFailed(record) && record.permanent === true) || recordTime(record) >= cutoff;
 }
 
 export function txManifestIdempotencyKey(scope: {

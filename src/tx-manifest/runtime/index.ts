@@ -65,7 +65,15 @@ export type TxManifestPsetBuildSpec = {
     blinding_public_key?: string;
     blinder_index?: number;
   }>;
-  fee: { asset: string; amount: string };
+  fee: {
+    asset: string;
+    amount: string;
+    /**
+     * Final transaction output index for the sole Elements fee output.
+     * Omit to preserve the historical behavior of appending the fee last.
+     */
+    output_index?: number;
+  };
   locktime?: number;
 };
 

@@ -4,9 +4,18 @@ import {
   isPermanentTxManifestBroadcastError,
   lookupTxManifestTransaction,
   parseTxManifestCheckpointPayload,
+  readTxManifestCheckpointPayload,
+  requireTxManifestRecoveryPlanBinding,
 } from "./broadcast-checkpoint";
+import type { TxManifestApprovalReviewDTO } from "@/engine/protocol";
+import type { TxManifestCheckpointRecord } from "./idempotency";
 
 const TXID = "11".repeat(32);
+const AUTHORIZATION = {
+  requirementDigest: `sha256:${"33".repeat(32)}` as const,
+  planDigest: `sha256:${"44".repeat(32)}` as const,
+  feeSelectionTarget: "10",
+};
 
 describe("lookupTxManifestTransaction", () => {
   it("reports found when either automatic provider recognizes the transaction", async () => {
@@ -76,5 +85,140 @@ describe("parseTxManifestCheckpointPayload", () => {
         JSON.stringify({ version: 1, transactionHex: "xyz", txid: TXID, result: {}, review: {} }),
       ),
     ).toThrow("Invalid");
+  });
+
+  it("normalizes legacy signed payloads and preserves explicit keyless mode", () => {
+    const base = { version: 1, transactionHex: "00", txid: TXID, result: {}, review: {} };
+    expect(parseTxManifestCheckpointPayload(JSON.stringify(base)).signingMode).toBe("wallet");
+    expect(
+      parseTxManifestCheckpointPayload(
+        JSON.stringify({ ...base, signingMode: "none", authorization: AUTHORIZATION }),
+      ).signingMode,
+    ).toBe("none");
+    expect(() =>
+      parseTxManifestCheckpointPayload(JSON.stringify({ ...base, signingMode: "none" })),
+    ).toThrow("Invalid");
+    expect(() =>
+      parseTxManifestCheckpointPayload(
+        JSON.stringify({ ...base, signingMode: "future" }),
+      ),
+    ).toThrow("Invalid");
+  });
+});
+
+describe("readTxManifestCheckpointPayload", () => {
+  const base = {
+    version: 1,
+    transactionHex: "00",
+    txid: TXID,
+    result: {},
+    review: {},
+  };
+
+  it("reads a public keyless checkpoint without opening the keystore", async () => {
+    const checkpoint: TxManifestCheckpointRecord = {
+      state: "checkpointed",
+      signingMode: "none",
+      key: "scope",
+      invocationDigest: `sha256:${"22".repeat(32)}`,
+      checkpointedAt: 1,
+      walletId: "watch-wallet",
+      network: "liquidtestnet",
+      publicPayload: JSON.stringify({
+        ...base,
+        signingMode: "none",
+        authorization: AUTHORIZATION,
+      }),
+    };
+    const openWalletPayload = vi.fn();
+
+    await expect(
+      readTxManifestCheckpointPayload(checkpoint, openWalletPayload),
+    ).resolves.toMatchObject({ signingMode: "none", txid: TXID });
+    expect(openWalletPayload).not.toHaveBeenCalled();
+  });
+
+  it("opens a wallet checkpoint and rejects a payload mode mismatch", async () => {
+    const checkpoint: TxManifestCheckpointRecord = {
+      state: "checkpointed",
+      signingMode: "wallet",
+      key: "scope",
+      invocationDigest: `sha256:${"22".repeat(32)}`,
+      checkpointedAt: 1,
+      walletId: "wallet",
+      network: "liquidtestnet",
+      sealedPayload: { iv: "iv", ct: "ct" },
+    };
+    const openWalletPayload = vi.fn(async () =>
+      JSON.stringify({
+        ...base,
+        signingMode: "none",
+        authorization: AUTHORIZATION,
+      }),
+    );
+
+    await expect(
+      readTxManifestCheckpointPayload(checkpoint, openWalletPayload),
+    ).rejects.toThrow("signing mode does not match");
+    expect(openWalletPayload).toHaveBeenCalledOnce();
+  });
+});
+
+describe("requireTxManifestRecoveryPlanBinding", () => {
+  function payload() {
+    return parseTxManifestCheckpointPayload(JSON.stringify({
+      version: 1,
+      signingMode: "none",
+      authorization: AUTHORIZATION,
+      transactionHex: "00",
+      txid: TXID,
+      result: {},
+      review: { action: "generic.Execute", fee: "10" },
+    }));
+  }
+
+  it("accepts only a freshly reproduced keyless plan, txid, and authoritative review", async () => {
+    const checkpoint = payload();
+    await expect(requireTxManifestRecoveryPlanBinding({
+      payload: checkpoint,
+      requirementDigest: AUTHORIZATION.requirementDigest,
+      refreshedPlanDigest: AUTHORIZATION.planDigest,
+      refreshedTxid: TXID,
+      refreshedReview: checkpoint.review,
+    })).resolves.toBeUndefined();
+  });
+
+  it("rejects a coherent public-checkpoint transaction replacement", async () => {
+    const checkpoint = payload();
+    checkpoint.txid = "55".repeat(32);
+    checkpoint.result = { ...checkpoint.result, txid: checkpoint.txid };
+    await expect(requireTxManifestRecoveryPlanBinding({
+      payload: checkpoint,
+      requirementDigest: AUTHORIZATION.requirementDigest,
+      refreshedPlanDigest: AUTHORIZATION.planDigest,
+      refreshedTxid: TXID,
+      refreshedReview: checkpoint.review,
+    })).rejects.toThrow("refreshed template");
+  });
+
+  it("rejects replaced plan or review authority", async () => {
+    const checkpoint = payload();
+    await expect(requireTxManifestRecoveryPlanBinding({
+      payload: checkpoint,
+      requirementDigest: AUTHORIZATION.requirementDigest,
+      refreshedPlanDigest: `sha256:${"66".repeat(32)}`,
+      refreshedTxid: TXID,
+      refreshedReview: checkpoint.review,
+    })).rejects.toThrow("execution plan");
+    await expect(requireTxManifestRecoveryPlanBinding({
+      payload: checkpoint,
+      requirementDigest: AUTHORIZATION.requirementDigest,
+      refreshedPlanDigest: AUTHORIZATION.planDigest,
+      refreshedTxid: TXID,
+      refreshedReview: {
+        ...checkpoint.review,
+        fee: "11",
+      } as TxManifestApprovalReviewDTO,
+    })).rejects.toThrow("review does not match");
   });
 });

@@ -94,8 +94,13 @@ export function parseLiquidRpcRequest(value: unknown): AnyLiquidRequest {
 }
 
 function parseTxManifestSupport(value: unknown): LiquidGetTxManifestSupportParams {
-  const params = exactRecord(value, "params", ["bundleHash"]);
-  return { bundleHash: bundleHash(params.bundleHash, "params.bundleHash") };
+  const params = exactRecord(value, "params", ["bundleHash", "bundle"]);
+  return {
+    bundleHash: bundleHash(params.bundleHash, "params.bundleHash"),
+    ...(params.bundle === undefined
+      ? {}
+      : { bundle: jsonRecord(params.bundle, "params.bundle") }),
+  };
 }
 
 function parseTxManifestExecution(value: unknown): LiquidExecuteTxManifestParams {

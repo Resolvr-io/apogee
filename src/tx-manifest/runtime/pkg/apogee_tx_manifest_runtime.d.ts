@@ -47,7 +47,9 @@ export function dry_run_covenant_json(spec_json: string): void;
 /**
  * Estimate the conservative signed discounted vsize and required fee for a
  * manifest PSET. Contract adapters must finalize every non-wallet input first;
- * remaining unsigned inputs must be Apogee's standard native SegWit P2WPKH.
+ * any remaining unsigned inputs must be Apogee's standard native SegWit
+ * P2WPKH. A fully finalized keyless transaction needs no added satisfaction
+ * weight.
  */
 export function estimate_manifest_fee_json(spec_json: string): string;
 

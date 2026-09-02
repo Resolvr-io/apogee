@@ -4,7 +4,17 @@
 // prompt popup when it isn't. Reject (or closing the popup) fails the request.
 
 import { useEffect, useState } from "react";
-import { Check, Eye, Send, PenLine, FileCode2, Coins, KeyRound, Bell } from "lucide-react";
+import {
+  AlertTriangle,
+  Bell,
+  Check,
+  Coins,
+  Eye,
+  FileCode2,
+  KeyRound,
+  PenLine,
+  Send,
+} from "lucide-react";
 import type { ApprovalRequest, TxManifestAssetMeta } from "@/engine/protocol";
 import { formatAssetAmountExact, formatBaseUnits } from "@/lib/format";
 import { shortenHex } from "@/lib/utils";
@@ -112,7 +122,7 @@ const METHOD_LABELS: Record<string, { label: string; description: string; icon: 
   },
   experimental_executeTxManifest: {
     label: "Execute contracts",
-    description: "Request contract actions like lending. Each action is built, verified, and shown for approval before signing.",
+    description: "Request contract actions like lending. Each action is built, verified, and shown for approval before any required signing and broadcast.",
     icon: FileCode2,
   },
   getUTXOs: {
@@ -145,6 +155,8 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
   const isPset = request.kind === "signPset";
   const isManifest = request.kind === "executeTxManifest";
   const resumesManifest = request.kind === "executeTxManifest" && request.recovery === true;
+  const manifestRequiresSigning =
+    request.kind === "executeTxManifest" && request.signingMode === "wallet";
   const broadcastsPset = request.kind === "signPset" && request.broadcast;
   const sendReview = request.kind === "send" ? request.review : null;
   const tokenAmount = sendReview?.assetId
@@ -159,10 +171,15 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
         )
       : "";
   // Jade actions are signed on the device (in a tab) after approval, not here.
-  const jade = request.kind !== "connect" && request.signerKind === "jade";
+  const jade =
+    request.kind !== "connect" &&
+    request.signerKind === "jade" &&
+    (!isManifest || manifestRequiresSigning);
   // A locked wallet must be unlocked before connecting, sending, or signing —
   // the SW rejects the decision while locked, so gate it behind this form.
-  const [locked, setLocked] = useState(Boolean(request.locked));
+  const [locked, setLocked] = useState(
+    Boolean(request.locked && (!isManifest || manifestRequiresSigning)),
+  );
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -175,7 +192,11 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
   const [autoLock, setAutoLock] = useState(15);
   const [sendPassword, setSendPassword] = useState("");
   // Auto-lock "never" steps up auth: any local signing requires the password.
-  const needsStepUpPassword = !isConnect && !jade && autoLock === 0;
+  const needsStepUpPassword =
+    !isConnect &&
+    !jade &&
+    autoLock === 0 &&
+    (!isManifest || manifestRequiresSigning);
 
   // Hold the success checkmark for a beat, then dismiss the overlay.
   useEffect(() => {
@@ -384,6 +405,7 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
           review={request.review}
           network={request.network}
           recovery={request.recovery === true}
+          signingMode={request.signingMode}
         />
       ) : (
         <>
@@ -516,7 +538,11 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
                   ? "Approve & sign on Jade"
                   : "Approve & sign"
             ) : isManifest ? (
-              resumesManifest ? "Resume broadcast" : "Approve & execute"
+              resumesManifest
+                ? "Resume broadcast"
+                : manifestRequiresSigning
+                  ? "Approve & execute"
+                  : "Approve & broadcast"
             ) : jade ? (
               "Approve & sign on Jade"
             ) : (
@@ -647,15 +673,215 @@ function manifestTechnicalAssets(
   );
 }
 
+type GenericTxManifestReviewDTO = Extract<TxManifestReviewDTO, { kind: "generic" }>;
+
+function GenericTxManifestReview({
+  review,
+  network,
+  recovery,
+  requestedSigningMode,
+}: {
+  review: GenericTxManifestReviewDTO;
+  network: "mainnet" | "testnet" | "regtest";
+  recovery: boolean;
+  requestedSigningMode: Extract<
+    ApprovalRequest,
+    { kind: "executeTxManifest" }
+  >["signingMode"];
+}) {
+  const signingModeMismatch = requestedSigningMode !== review.signingMode;
+  const walletEffects = Object.entries(review.walletBalanceChanges).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  return (
+    <div className="flex flex-col gap-3">
+      <div
+        role="alert"
+        data-testid="generic-manifest-warning"
+        className="flex items-start gap-2 rounded-xl border border-[color:var(--warning-border)] bg-[color:var(--warning-bg)] p-3 text-[color:var(--warning-text)]"
+      >
+        <AlertTriangle className="mt-0.5 size-5 shrink-0" aria-hidden="true" />
+        <div>
+          <div className="text-sm font-semibold">Unverified contract action</div>
+          <div className="mt-0.5 text-xs leading-relaxed">
+            Apogee has no trusted app-specific understanding of what this action means. Verify every
+            exact input, output, asset, amount, and script below. Publisher descriptions are untrusted.
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-subtle)]">
+          Generic declarative transaction
+        </div>
+        <div className="mt-1 break-all font-mono text-sm font-semibold text-[color:var(--text-strong)]">
+          {review.action}
+        </div>
+        <div className="mt-1 text-xs text-[color:var(--text-secondary)]">
+          {networkLabel(network)} · {recovery
+            ? "resume exact saved broadcast"
+            : review.signingMode === "wallet"
+              ? "approve exact transaction, sign, and broadcast"
+              : "approve exact transaction and broadcast without a wallet signature"}
+        </div>
+      </div>
+
+      {recovery && (
+        <p className="text-sm text-[color:var(--text-secondary)]">
+          {review.signingMode === "wallet"
+            ? "Apogee previously saved this exact signed transaction after approval. Resuming revalidates current state and broadcasts those same bytes; it does not replace or re-sign them."
+            : "Apogee previously saved this exact finalized transaction after approval. Resuming revalidates current state and broadcasts those same bytes without accessing signing keys."}
+        </p>
+      )}
+
+      {signingModeMismatch && (
+        <div
+          role="alert"
+          className="rounded-xl border border-[color:var(--warning-border)] bg-[color:var(--warning-bg)] p-3 text-xs font-semibold text-[color:var(--warning-text)]"
+        >
+          Signing mode mismatch. Reject this request.
+        </div>
+      )}
+
+      <ReviewSection title="Transaction policy">
+        <ReviewItem>
+          <Row label="Inputs" value={String(review.inputs.length)} />
+          <Row label="Outputs" value={String(review.outputs.length)} />
+          <Row label="Fee output index" value={String(review.feeOutputIndex)} mono strong />
+          <Row label="Locktime" value={String(review.locktime)} mono />
+          <Row label="Replace-by-fee" value={review.rbf ? "yes" : "no"} strong={review.rbf} />
+          <Row
+            label="Signing mode"
+            value={review.signingMode === "wallet" ? "wallet · signatures required" : "none · no wallet signature"}
+            strong
+          />
+        </ReviewItem>
+      </ReviewSection>
+
+      <ReviewSection title="Every input">
+        {review.inputs.map((input) => (
+          <ReviewItem key={`generic-input:${input.index}`}>
+            <div className="mb-1 text-sm font-semibold text-[color:var(--text-strong)]">
+              Input {input.index} · <span className="font-mono">{input.roleId}</span>
+            </div>
+            <Row label="Outpoint" value={`${input.txid}:${input.vout}`} mono wrap />
+            <Row label="Asset ID" value={input.assetId} mono wrap />
+            <Row label="Amount" value={`${formatBaseUnits(input.amount)} base units`} amount />
+            <Row label="Script" value={input.scriptPubKey || "(empty)"} mono wrap />
+            <Row
+              label="Confidential"
+              value={input.confidential ? "yes · blinded" : "no · explicit"}
+            />
+            <Row label="Ownership" value={input.walletOwned ? "this wallet" : "not this wallet"} />
+            <Row label="Source" value={input.source} mono />
+            <Row label="Authorization" value={input.authorization} mono />
+            <Row
+              label="Sequence"
+              value={`${input.sequence} · 0x${input.sequence.toString(16).padStart(8, "0")}`}
+              mono
+            />
+            <Row
+              label="Confirmation"
+              value={input.confirmed === null ? "unknown" : input.confirmed ? "confirmed" : "unconfirmed"}
+            />
+          </ReviewItem>
+        ))}
+      </ReviewSection>
+
+      <ReviewSection title="Every output">
+        {review.outputs.map((output) => (
+          <ReviewItem key={`generic-output:${output.index}`}>
+            <div className="mb-1 flex items-center justify-between gap-3 text-sm font-semibold text-[color:var(--text-strong)]">
+              <span>Output {output.index}</span>
+              <span className="font-mono text-xs text-[color:var(--text-secondary)]">{output.role}</span>
+            </div>
+            <Row label="Asset ID" value={output.assetId} mono wrap />
+            <Row label="Amount" value={`${formatBaseUnits(output.amount)} base units`} amount />
+            <Row
+              label="Script"
+              value={output.scriptPubKey || "(empty · Elements fee output)"}
+              mono
+              wrap
+            />
+            <Row
+              label="Confidential"
+              value={output.confidential ? "yes · blinded" : "no · explicit"}
+            />
+            <Row label="Ownership" value={output.walletOwned ? "this wallet" : "not this wallet"} />
+          </ReviewItem>
+        ))}
+      </ReviewSection>
+
+      <ReviewSection title="Wallet balance effects">
+        {walletEffects.length === 0 ? (
+          <ReviewItem>
+            <Row label="Wallet effect" value="none" />
+          </ReviewItem>
+        ) : (
+          walletEffects.map(([assetId, amount]) => (
+            <ReviewItem key={`generic-effect:${assetId}`}>
+              <Row label="Asset ID" value={assetId} mono wrap />
+              <Row label="Net change" value={`${formatBaseUnits(amount)} base units`} amount strong />
+            </ReviewItem>
+          ))
+        )}
+      </ReviewSection>
+
+      <ReviewSection title="Publisher-provided details · unverified">
+        <ReviewItem>
+          <Row label="Protocol claim" value={review.protocolLabel} wrap />
+          <Row label="Action label" value={review.actionLabel} wrap />
+          {review.publisherDescription !== undefined && (
+            <Row label="Description" value={review.publisherDescription} wrap />
+          )}
+        </ReviewItem>
+      </ReviewSection>
+
+      <details className="rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-xs">
+        <summary className="cursor-pointer text-[color:var(--text-secondary)]">Technical details</summary>
+        <div className="mt-2 flex flex-col gap-2">
+          {[
+            { label: "Account", value: review.accountIdentifier },
+            { label: "Request", value: review.requestId },
+            { label: "Bundle", value: review.bundleHash },
+            { label: "Review format", value: review.reviewVersion },
+          ].map(({ label, value }) => (
+            <div key={label}>
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-subtle)]">
+                {label}
+              </div>
+              <div className="mt-0.5 break-all font-mono text-[color:var(--text-primary)]">
+                {value}
+              </div>
+            </div>
+          ))}
+        </div>
+      </details>
+    </div>
+  );
+}
+
 function TxManifestReview({
   review,
   network,
   recovery = false,
+  signingMode,
 }: {
   review: TxManifestReviewDTO;
   network: "mainnet" | "testnet" | "regtest";
   recovery?: boolean;
+  signingMode: Extract<ApprovalRequest, { kind: "executeTxManifest" }>["signingMode"];
 }) {
+  if (review.kind === "generic") {
+    return (
+      <GenericTxManifestReview
+        review={review}
+        network={network}
+        recovery={recovery}
+        requestedSigningMode={signingMode}
+      />
+    );
+  }
   const specNetwork = manifestSpecNetwork(network);
   const feeMeta = metaFor(review, review.feeAssetId);
 
@@ -670,14 +896,18 @@ function TxManifestReview({
           {review.actionLabel}
         </div>
         <div className="mt-1 text-xs text-[color:var(--text-secondary)]">
-          {networkLabel(network)} · {recovery ? "resume exact saved broadcast" : "approve to sign and broadcast"}
+          {networkLabel(network)} · {recovery
+            ? "resume exact saved broadcast"
+            : signingMode === "wallet"
+              ? "approve to sign and broadcast"
+              : "approve to verify and broadcast"}
         </div>
       </div>
       {recovery && (
         <p className="text-sm text-[color:var(--text-secondary)]">
-          Apogee previously saved this exact signed transaction after you approved it, but could
-          not durably confirm submission. Resuming broadcasts those same bytes; it does not rebuild
-          or re-sign the transaction.
+          {signingMode === "wallet"
+            ? "Apogee previously saved this exact signed transaction after you approved it, but could not durably confirm submission. Resuming revalidates current state and broadcasts those same bytes; it does not replace or re-sign them."
+            : "Apogee previously saved this exact finalized transaction after you approved it, but could not durably confirm submission. Resuming revalidates current state and broadcasts those same bytes without accessing signing keys."}
         </p>
       )}
 

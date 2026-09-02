@@ -1,4 +1,8 @@
 import type { WalletInfo } from "@/keystore/keystore";
+import {
+  requireTxManifestSigningMode,
+  type TxManifestSigningMode,
+} from "@/tx-manifest/adapters/types";
 import { isTxManifestExecutionNetwork } from "@/tx-manifest/network";
 import {
   LIQUID_WALLET_RPC_METHODS,
@@ -94,6 +98,25 @@ export async function withAuthorizedProviderTxManifestExecution<
       },
     );
   }
+  return dependencies.continueExecution(connection, wallet);
+}
+
+function providerError(
+  code: (typeof LIQUID_RPC_ERROR_CODES)[keyof typeof LIQUID_RPC_ERROR_CODES],
+  message: string,
+  reason: (typeof LIQUID_RPC_ERROR_REASONS)[keyof typeof LIQUID_RPC_ERROR_REASONS],
+  data?: unknown,
+): LiquidRpcError {
+  return new LiquidRpcError(code, message, reason, data);
+}
+
+/** Apply signer restrictions after the trusted adapter resolves its execution plan. */
+export function requireTxManifestSigningCapability(
+  wallet: WalletInfo,
+  signingModeValue: unknown,
+): TxManifestSigningMode {
+  const signingMode = requireTxManifestSigningMode(signingModeValue);
+  if (signingMode === "none") return signingMode;
   if (wallet.signer !== "local") {
     throw providerError(
       LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
@@ -107,15 +130,5 @@ export async function withAuthorizedProviderTxManifestExecution<
       },
     );
   }
-
-  return dependencies.continueExecution(connection, wallet);
-}
-
-function providerError(
-  code: (typeof LIQUID_RPC_ERROR_CODES)[keyof typeof LIQUID_RPC_ERROR_CODES],
-  message: string,
-  reason: (typeof LIQUID_RPC_ERROR_REASONS)[keyof typeof LIQUID_RPC_ERROR_REASONS],
-  data?: unknown,
-): LiquidRpcError {
-  return new LiquidRpcError(code, message, reason, data);
+  return signingMode;
 }
