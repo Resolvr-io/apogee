@@ -33,15 +33,22 @@ export type TxManifestBundleHash = `sha256:${string}`;
 
 export type LiquidGetTxManifestSupportParams = {
   bundleHash: TxManifestBundleHash;
+  /** Required when asking Apogee to inspect a bundle it does not ship. */
+  bundle?: Record<string, unknown>;
 };
 
 export type LiquidGetTxManifestSupportResult = {
   supported: boolean;
   bundleHash: TxManifestBundleHash;
-  status: "builtin" | "unknown" | "blocked";
+  status: "builtin" | "generic" | "unknown" | "blocked";
+  compatibility: "executable" | "inspect-only" | "incompatible";
+  trust: "builtin" | "unverified" | null;
+  requiresBundle: boolean;
+  warningRequired: boolean;
   protocol?: { name: string; version: string };
   manifestSpecVersion?: string;
   supportedActions?: string[];
+  reason?: string;
 };
 
 export type LiquidTxManifestOutpoint = { txid: string; vout: number };

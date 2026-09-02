@@ -102,15 +102,42 @@ import {
   serializeLiquidRpcError,
 } from "@/provider/liquid-rpc-errors";
 import { finalizeAndBroadcastProviderPset } from "@/provider/liquid-provider-pset-broadcast";
-import { withAuthorizedProviderTxManifestExecution } from "@/provider/liquid-provider-tx-manifest-authorization";
 import {
+  requireTxManifestSigningCapability,
+  withAuthorizedProviderTxManifestExecution,
+} from "@/provider/liquid-provider-tx-manifest-authorization";
+import {
+  requireTxManifestSigningMode,
   txManifestExecutionAdapterForPlan,
   txManifestExecutionAdapterForPrepared,
+  txManifestSigningModeForPlan,
   type PreparedProviderTxManifest,
   type ReviewedTxManifestFee,
+  type TxManifestSigningMode,
 } from "@/tx-manifest/adapters";
+import { simplicityLendingV3PreparationRoute } from "@/tx-manifest/adapters/simplicity-lending-v3";
 import { taggedCanonicalJsonHash } from "@/tx-manifest/bundle";
-import type { TxManifestRequirementPlan } from "@/tx-manifest/requirements";
+import {
+  resolveDeclarativeChainSnapshot,
+  type DeclarativeChainInputRequest,
+} from "@/tx-manifest/declarative-chain";
+import {
+  resolveAcceptOfferChainSnapshot,
+  resolveClaimLenderVaultChainSnapshot,
+  resolveNewLendingActionChainSnapshot,
+  type NewLendingActionRequirementPlan,
+} from "@/tx-manifest/esplora";
+import type {
+  AcceptOfferRequirementPlan,
+  AnyTxManifestRequirementPlan,
+  ClaimLenderVaultRequirementPlan,
+  TxManifestRequirementPlan,
+} from "@/tx-manifest/requirements";
+import type { TxManifestTransactionOutputInspection } from "@/tx-manifest/runtime";
+import {
+  requireTxManifestFinalTransactionTxid,
+  txManifestPsetForFinalization,
+} from "@/tx-manifest/signing";
 import {
   migrateStoredTxManifestRecords,
   TxManifestIdempotency,
@@ -123,7 +150,8 @@ import {
   isKnownTxManifestBroadcastError,
   isPermanentTxManifestBroadcastError,
   lookupTxManifestTransaction,
-  parseTxManifestCheckpointPayload,
+  readTxManifestCheckpointPayload,
+  requireTxManifestRecoveryPlanBinding,
   txManifestCheckpointContext,
   type TxManifestCheckpointPayload,
 } from "@/tx-manifest/broadcast-checkpoint";
@@ -1584,6 +1612,7 @@ async function handleStandardProvider(requestValue: unknown, origin: string | un
       return engine({
         kind: "getTxManifestSupport",
         bundleHash: request.params.bundleHash,
+        ...(request.params.bundle === undefined ? {} : { bundle: request.params.bundle }),
       });
     case "experimental_executeTxManifest":
       return executeProviderTxManifest(origin, request.params);
@@ -2112,10 +2141,14 @@ async function executeProviderTxManifest(
           key,
           invocationDigest,
           async (idempotencyGeneration) => {
-            const plan = await engine<TxManifestRequirementPlan>({
+            const plan = await engine<AnyTxManifestRequirementPlan>({
               kind: "resolveTxManifestRequirements",
               invocation,
             });
+            const signingMode = requireTxManifestSigningCapability(
+              info,
+              txManifestSigningModeForPlan(plan),
+            );
             const preparedContext = await prepareProviderTxManifest(
               origin,
               connection,
@@ -2123,6 +2156,7 @@ async function executeProviderTxManifest(
               revision,
               generation,
               plan,
+              signingMode,
             );
             const review = await txManifestApprovalReview(preparedContext, info.network);
             const id = `appr-${approvalSeq++}-${Date.now()}`;
@@ -2132,8 +2166,9 @@ async function executeProviderTxManifest(
               origin,
               review,
               network: toDappNetwork(info.network),
-              locked: keystore.isLocked(),
+              locked: signingMode === "wallet" && keystore.isLocked(),
               signerKind: info.signer,
+              signingMode,
             };
             return new Promise<LiquidExecuteTxManifestResult>((resolve, reject) => {
               parkApproval(id, {
@@ -2144,6 +2179,7 @@ async function executeProviderTxManifest(
                 descriptor: info.descriptor,
                 network: info.network,
                 invocation,
+                signingMode,
                 plan,
                 expectedPlanDigest: preparedContext.prepared.planDigest,
                 reviewedFee: {
@@ -2194,7 +2230,18 @@ async function resumeProviderTxManifest(
   if (checkpoint.walletId !== info.id || checkpoint.network !== info.network) {
     throw new Error("The TX Manifest checkpoint does not belong to the connected wallet.");
   }
-  if (keystore.isLocked()) {
+  const plan = await engine<AnyTxManifestRequirementPlan>({
+    kind: "resolveTxManifestRequirements",
+    invocation,
+  });
+  const signingMode = requireTxManifestSigningCapability(
+    info,
+    txManifestSigningModeForPlan(plan),
+  );
+  if (checkpoint.signingMode !== signingMode) {
+    throw new Error("The TX Manifest checkpoint signing mode does not match its execution plan.");
+  }
+  if (signingMode === "wallet" && keystore.isLocked()) {
     throw providerError(
       LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
       "Unlock Apogee to resume this previously approved TX Manifest transaction.",
@@ -2202,12 +2249,14 @@ async function resumeProviderTxManifest(
       { cause: "locked" },
     );
   }
-  const payload = parseTxManifestCheckpointPayload(
-    await keystore.openTxManifestCheckpoint(
-      checkpoint.walletId,
-      txManifestCheckpointContext(checkpoint),
-      checkpoint.sealedPayload,
-    ),
+  const payload = await readTxManifestCheckpointPayload(
+    checkpoint,
+    (walletCheckpoint) =>
+      keystore.openTxManifestCheckpoint(
+        walletCheckpoint.walletId,
+        txManifestCheckpointContext(walletCheckpoint),
+        walletCheckpoint.sealedPayload,
+      ),
   );
   if (
     payload.result.requestId !== invocation.requestId ||
@@ -2223,6 +2272,18 @@ async function resumeProviderTxManifest(
   ) {
     throw new Error("The TX Manifest checkpoint does not match this invocation.");
   }
+  if (
+    payload.authorization !== undefined &&
+    payload.authorization.requirementDigest !== plan.requirementDigest
+  ) {
+    throw new Error("The TX Manifest checkpoint does not match its resolved execution plan.");
+  }
+  const checkpointTransaction = await engine<{ txid: string }>({
+    kind: "inspectTxManifestTransactionOutput",
+    transactionHex: payload.transactionHex,
+    vout: 0,
+  });
+  requireTxManifestFinalTransactionTxid(payload.txid, checkpointTransaction.txid);
 
   const status = await lookupTxManifestTransaction(
     checkpoint.network,
@@ -2230,6 +2291,12 @@ async function resumeProviderTxManifest(
     await chainServer(checkpoint.network),
   );
   if (status === "found") return payload.result;
+  const recoveryAuthorization = payload.authorization;
+  if (recoveryAuthorization === undefined) {
+    throw new Error(
+      "This saved TX Manifest transaction lacks an execution-plan binding. Submit the action again with a new requestId.",
+    );
+  }
 
   const id = `appr-${approvalSeq++}-${Date.now()}`;
   const approval: ApprovalRequest = {
@@ -2240,6 +2307,7 @@ async function resumeProviderTxManifest(
     network: toDappNetwork(info.network),
     locked: false,
     signerKind: info.signer,
+    signingMode,
     recovery: true,
   };
   return new Promise<LiquidExecuteTxManifestResult>((resolve, reject) => {
@@ -2251,6 +2319,13 @@ async function resumeProviderTxManifest(
       descriptor: info.descriptor,
       network: info.network,
       invocation,
+      signingMode,
+      plan,
+      expectedPlanDigest: recoveryAuthorization.planDigest,
+      reviewedFee: {
+        actualFee: payload.review.fee,
+        selectionFee: recoveryAuthorization.feeSelectionTarget,
+      },
       executionKey: checkpoint.key,
       invocationDigest: checkpoint.invocationDigest,
       idempotencyGeneration,
@@ -2281,27 +2356,67 @@ async function prepareProviderTxManifest(
   info: Awaited<ReturnType<typeof walletInfo>>,
   revision: number,
   generation: number,
-  plan: TxManifestRequirementPlan,
+  plan: AnyTxManifestRequirementPlan,
+  signingMode: TxManifestSigningMode,
   reviewedFee?: ReviewedTxManifestFee,
 ): Promise<PreparedProviderTxManifest> {
-  await engine<SyncResult>({
-    kind: "sync",
-    descriptor: info.descriptor,
-    network: info.network,
-    esploraUrl: await chainServer(info.network),
-  });
+  if (txManifestSigningModeForPlan(plan) !== signingMode) {
+    throw new Error("The TX Manifest signing mode changed before preparation.");
+  }
+  if (signingMode === "wallet") {
+    await engine<SyncResult>({
+      kind: "sync",
+      descriptor: info.descriptor,
+      network: info.network,
+      esploraUrl: await chainServer(info.network),
+    });
+  }
   const policyAssetId = connection.policyAssetId.slice(connection.policyAssetId.lastIndexOf(":") + 1);
   const configuredServer = await chainServer(info.network);
-  const execution = await txManifestExecutionAdapterForPlan(plan).prepare(plan, {
+  const expectedGenesisHash = txManifestExpectedGenesisHash(info.network);
+  const adapter = txManifestExecutionAdapterForPlan(plan);
+  const common = {
     origin,
     descriptor: info.descriptor,
     network: info.network,
     policyAssetId,
-    configuredChainServer: configuredServer,
-    expectedGenesisHash: txManifestExpectedGenesisHash(info.network),
     reviewedFee,
     engine,
-  });
+  };
+  const execution = plan.planVersion === "apogee-declarative-requirements/v1"
+    ? await adapter.prepare(plan, {
+        ...common,
+        chainResolution: "declarative",
+        resolveDeclarativeChainSnapshot: async (requestedInputs) => {
+          requireExactDeclarativeChainRequests(plan.providedInputs, requestedInputs);
+          return resolveDeclarativeChainSnapshot(
+            requestedInputs,
+            (transactionHex, vout) =>
+              engine<TxManifestTransactionOutputInspection>({
+                kind: "inspectTxManifestTransactionOutput",
+                transactionHex,
+                vout,
+              }),
+            configuredServer,
+            expectedGenesisHash,
+          );
+        },
+      })
+    : await adapter.prepare(plan, {
+        ...common,
+        chainResolution: "builtin",
+        resolveBuiltinChainSnapshot: () =>
+          resolveBuiltinChainSnapshot(
+            plan,
+            policyAssetId,
+            configuredServer,
+            expectedGenesisHash,
+          ),
+      });
+  txManifestExecutionAdapterForPrepared(execution);
+  if (execution.signingMode !== signingMode) {
+    throw new Error("The prepared TX Manifest signing mode changed during preparation.");
+  }
   await requireProviderPsetAuthorization(
     {
       origin,
@@ -2318,6 +2433,75 @@ async function prepareProviderTxManifest(
   return execution;
 }
 
+async function resolveBuiltinChainSnapshot(
+  plan: TxManifestRequirementPlan,
+  policyAssetId: string,
+  configuredServer: string | undefined,
+  expectedGenesisHash: string,
+) {
+  const inspectOutput = (transactionHex: string, vout: number) =>
+    engine<TxManifestTransactionOutputInspection>({
+      kind: "inspectTxManifestTransactionOutput",
+      transactionHex,
+      vout,
+    });
+  switch (simplicityLendingV3PreparationRoute(plan.action)) {
+    case "acceptOffer": {
+      const resolved = await resolveAcceptOfferChainSnapshot(
+        plan as AcceptOfferRequirementPlan,
+        policyAssetId,
+        inspectOutput,
+        configuredServer,
+        expectedGenesisHash,
+      );
+      return { kind: "acceptOffer" as const, snapshot: resolved.snapshot };
+    }
+    case "claimLenderVault": {
+      const resolved = await resolveClaimLenderVaultChainSnapshot(
+        plan as ClaimLenderVaultRequirementPlan,
+        policyAssetId,
+        inspectOutput,
+        configuredServer,
+        expectedGenesisHash,
+      );
+      return { kind: "claimLenderVault" as const, snapshot: resolved.snapshot };
+    }
+    case "newLendingAction": {
+      const resolved = await resolveNewLendingActionChainSnapshot(
+        plan as NewLendingActionRequirementPlan,
+        policyAssetId,
+        inspectOutput,
+        configuredServer,
+        expectedGenesisHash,
+      );
+      return { kind: "newLendingAction" as const, snapshot: resolved.snapshot };
+    }
+  }
+}
+
+function requireExactDeclarativeChainRequests(
+  declared: readonly {
+    roleId: string;
+    outpoint: { txid: string; vout: number };
+  }[],
+  requested: readonly DeclarativeChainInputRequest[],
+): void {
+  if (declared.length !== requested.length) {
+    throw new Error("The declarative adapter requested inputs outside its execution plan.");
+  }
+  for (let index = 0; index < declared.length; index += 1) {
+    const expected = declared[index];
+    const actual = requested[index];
+    if (
+      actual.id !== expected.roleId ||
+      actual.outpoint.txid !== expected.outpoint.txid ||
+      actual.outpoint.vout !== expected.outpoint.vout
+    ) {
+      throw new Error("The declarative adapter requested inputs outside its execution plan.");
+    }
+  }
+}
+
 /**
  * Resolve display metadata like the wallet screens do: built-in assets first,
  * then the configured registry, with a shortened-id fallback. Metadata is
@@ -2328,8 +2512,14 @@ async function resolveManifestAssets(
   network: LiquidNetwork,
 ): Promise<Record<string, TxManifestAssetMeta>> {
   const assets: Record<string, TxManifestAssetMeta> = {};
+  const adapter = txManifestExecutionAdapterForPrepared(context);
+  const assetIds = adapter.assetIds(context);
+  if (assetIds.length > 128) {
+    throw new Error("The TX Manifest review contains too many distinct assets.");
+  }
+  const unverifiedDeclarative = context.plan.planVersion === "apogee-declarative-requirements/v1";
   await Promise.all(
-    txManifestExecutionAdapterForPrepared(context).assetIds(context).map(async (assetId) => {
+    assetIds.map(async (assetId) => {
       const known = KNOWN_ASSETS[assetId];
       if (known) {
         assets[assetId] = {
@@ -2337,6 +2527,17 @@ async function resolveManifestAssets(
           ticker: known.label,
           precision: known.precision,
           source: "builtin",
+        };
+        return;
+      }
+      // An unverified bundle controls its asset ids. Keep those lookups local
+      // so one review cannot fan out attacker-chosen registry requests.
+      if (unverifiedDeclarative) {
+        assets[assetId] = {
+          label: shortenHex(assetId, 6, 6),
+          ticker: null,
+          precision: null,
+          source: "fallback",
         };
         return;
       }
@@ -2805,6 +3006,7 @@ type PendingApproval =
       descriptor: string;
       network: LiquidNetwork;
       invocation: LiquidExecuteTxManifestParams;
+      signingMode: TxManifestSigningMode;
       executionKey: string;
       invocationDigest: `sha256:${string}`;
       idempotencyGeneration: TxManifestExecutionGeneration;
@@ -2818,12 +3020,15 @@ type PendingApproval =
     } & (
       | {
           recovery?: undefined;
-          plan: TxManifestRequirementPlan;
+          plan: AnyTxManifestRequirementPlan;
           expectedPlanDigest: `sha256:${string}`;
           reviewedFee: ReviewedTxManifestFee;
         }
       | {
           recovery: TxManifestCheckpointPayload;
+          plan: AnyTxManifestRequirementPlan;
+          expectedPlanDigest: `sha256:${string}`;
+          reviewedFee: ReviewedTxManifestFee;
         }
     ));
 
@@ -3141,8 +3346,12 @@ async function handleApprovalDecision(
     throw err;
   }
   const info = await walletInfo(pending.walletId);
-  // Watch-only wallets can't sign — refuse the action outright.
-  if (info.signer === "watch") {
+  // Watch-only wallets cannot sign. Signature-free manifest actions are the
+  // sole exception because their trusted adapter never asks for wallet keys.
+  if (
+    info.signer === "watch" &&
+    (pending.kind !== "executeTxManifest" || pending.signingMode !== "none")
+  ) {
     const err = pending.permissionMethod
       ? providerError(
           LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
@@ -3160,17 +3369,19 @@ async function handleApprovalDecision(
   }
 
   if (pending.kind === "executeTxManifest") {
-    if (info.signer !== "local") {
-      const err = providerError(
-        LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
-        "This TX Manifest action currently requires an Apogee software wallet.",
-        LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
-        { method: pending.permissionMethod, cause: info.signer },
-      );
+    let signingMode: TxManifestSigningMode;
+    try {
+      signingMode = requireTxManifestSigningMode(pending.signingMode);
+      if (pending.request.signingMode !== signingMode) {
+        throw new Error("The TX Manifest approval signing mode does not match its execution.");
+      }
+      requireTxManifestSigningCapability(info, signingMode);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       pending.reject(err);
       throw err;
     }
-    if (keystore.isLocked()) {
+    if (signingMode === "wallet" && keystore.isLocked()) {
       const err = providerError(
         LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
         "Unlock Apogee to approve this TX Manifest execution.",
@@ -3181,6 +3392,7 @@ async function handleApprovalDecision(
       throw err;
     }
     if (
+      signingMode === "wallet" &&
       (await autoLockMinutes()) === 0 &&
       (!password || !(await keystore.verifyPassword(password)))
     ) {
@@ -3195,10 +3407,13 @@ async function handleApprovalDecision(
     }
     try {
       if (pending.recovery) {
+        if (pending.recovery.signingMode !== signingMode) {
+          throw new Error("The TX Manifest recovery signing mode does not match its approval.");
+        }
         await requireProviderPsetAuthorization(
           pending,
           "This site was disconnected before Apogee could resume the manifest transaction.",
-          true,
+          signingMode === "wallet",
         );
         const esploraUrl = await chainServer(pending.network);
         const status = await lookupTxManifestTransaction(
@@ -3207,6 +3422,42 @@ async function handleApprovalDecision(
           esploraUrl,
         );
         if (status !== "found") {
+          const refreshed = await prepareProviderTxManifest(
+            pending.origin,
+            connection,
+            info,
+            pending.revision,
+            pending.generation,
+            pending.plan,
+            signingMode,
+            pending.reviewedFee,
+          );
+          if (refreshed.signingMode !== signingMode) {
+            throw new Error("The saved TX Manifest execution plan changed before recovery.");
+          }
+          let refreshedTxid: string | undefined;
+          if (signingMode === "none") {
+            const expectedTransaction = await engine<{ txid: string }>({
+              kind: "extractPsetTransaction",
+              pset: refreshed.prepared.pset,
+            });
+            refreshedTxid = expectedTransaction.txid;
+          }
+          await requireTxManifestRecoveryPlanBinding({
+            payload: pending.recovery,
+            requirementDigest: pending.plan.requirementDigest,
+            refreshedPlanDigest: refreshed.prepared.planDigest,
+            refreshedReview: txManifestExecutionAdapterForPrepared(refreshed).approvalReview(
+              refreshed,
+              {},
+            ),
+            ...(refreshedTxid === undefined ? {} : { refreshedTxid }),
+          });
+          await txManifestExecutionAdapterForPrepared(refreshed).verifyFinalTransaction(
+            refreshed,
+            pending.recovery.transactionHex,
+            engine,
+          );
           let sent: SendResult;
           try {
             sent = await engineAfterGate<SendResult>(
@@ -3220,7 +3471,7 @@ async function handleApprovalDecision(
                 await requireProviderPsetAuthorization(
                   pending,
                   "This site was disconnected before Apogee could resume the manifest transaction.",
-                  true,
+                  signingMode === "wallet",
                 );
                 txManifestIdempotency.assertActive(pending.idempotencyGeneration);
               },
@@ -3267,12 +3518,20 @@ async function handleApprovalDecision(
         pending.revision,
         pending.generation,
         pending.plan,
+        signingMode,
         pending.reviewedFee,
       );
-      if (refreshed.prepared.planDigest !== pending.expectedPlanDigest) {
+      if (
+        refreshed.signingMode !== signingMode ||
+        refreshed.prepared.planDigest !== pending.expectedPlanDigest
+      ) {
         throw new Error("The wallet or chain execution plan changed after approval.");
       }
-      if (keystore.isLocked()) {
+      const expectedTransaction = await engine<{ transactionHex: string; txid: string }>({
+        kind: "extractPsetTransaction",
+        pset: refreshed.prepared.pset,
+      });
+      if (signingMode === "wallet" && keystore.isLocked()) {
         throw providerError(
           LIQUID_RPC_ERROR_CODES.UNAUTHORIZED,
           "Apogee locked while it was revalidating this TX Manifest execution.",
@@ -3280,23 +3539,33 @@ async function handleApprovalDecision(
           { cause: "locked" },
         );
       }
-      const signedPset = await engine<string>({
-        kind: "signTxManifestPset",
-        mnemonic: await keystore.getMnemonic(pending.walletId),
-        descriptor: pending.descriptor,
-        network: pending.network,
-        pset: refreshed.prepared.pset,
-      });
-      const finalizedPset = await engine<string>({
-        kind: "finalizePset",
-        descriptor: pending.descriptor,
-        network: pending.network,
-        pset: signedPset,
-      });
+      const { pset: psetToFinalize } = await txManifestPsetForFinalization(
+        signingMode,
+        refreshed.prepared.pset,
+        async (pset) => engine<string>({
+          kind: "signTxManifestPset",
+          mnemonic: await keystore.getMnemonic(pending.walletId),
+          descriptor: pending.descriptor,
+          network: pending.network,
+          pset,
+        }),
+      );
+      // Covenant finalization already completes every keyless input. Calling
+      // the wallet finalizer here would unnecessarily load a Wollet and turn a
+      // permissionless action into a wallet-dependent one.
+      const finalizedPset = signingMode === "wallet"
+        ? await engine<string>({
+            kind: "finalizePset",
+            descriptor: pending.descriptor,
+            network: pending.network,
+            pset: psetToFinalize,
+          })
+        : psetToFinalize;
       const extracted = await engine<{ transactionHex: string; txid: string }>({
         kind: "extractPsetTransaction",
         pset: finalizedPset,
       });
+      requireTxManifestFinalTransactionTxid(expectedTransaction.txid, extracted.txid);
       await txManifestExecutionAdapterForPrepared(refreshed).verifyFinalTransaction(
         refreshed,
         extracted.transactionHex,
@@ -3306,7 +3575,7 @@ async function handleApprovalDecision(
       await requireProviderPsetAuthorization(
         pending,
         "This site was disconnected before Apogee could broadcast the manifest transaction.",
-        true,
+        signingMode === "wallet",
       );
       const esploraUrl = await chainServer(pending.network);
       const checkpointMetadata = {
@@ -3317,22 +3586,36 @@ async function handleApprovalDecision(
       };
       const checkpointPayload: TxManifestCheckpointPayload = {
         version: 1,
+        signingMode,
+        authorization: {
+          requirementDigest: pending.plan.requirementDigest,
+          planDigest: refreshed.prepared.planDigest,
+          feeSelectionTarget: refreshed.prepared.feeSelectionTarget,
+        },
         transactionHex: extracted.transactionHex,
         txid: extracted.txid,
         result,
         review: pending.request.review,
       };
-      const sealedPayload = await keystore.sealTxManifestCheckpoint(
-        pending.walletId,
-        txManifestCheckpointContext(checkpointMetadata),
-        JSON.stringify(checkpointPayload),
-      );
       // The durable boundary: no chain-server submission is attempted unless
-      // these exact signed bytes can be recovered after service-worker loss.
-      await txManifestIdempotency.checkpoint(
-        { ...checkpointMetadata, sealedPayload },
-        pending.idempotencyGeneration,
-      );
+      // these exact finalized bytes can be recovered after service-worker loss.
+      const serializedCheckpoint = JSON.stringify(checkpointPayload);
+      if (signingMode === "wallet") {
+        const sealedPayload = await keystore.sealTxManifestCheckpoint(
+          pending.walletId,
+          txManifestCheckpointContext(checkpointMetadata),
+          serializedCheckpoint,
+        );
+        await txManifestIdempotency.checkpoint(
+          { ...checkpointMetadata, signingMode, sealedPayload },
+          pending.idempotencyGeneration,
+        );
+      } else {
+        await txManifestIdempotency.checkpoint(
+          { ...checkpointMetadata, signingMode, publicPayload: serializedCheckpoint },
+          pending.idempotencyGeneration,
+        );
+      }
       let sent: SendResult;
       try {
         sent = await engineAfterGate<SendResult>(
@@ -3346,7 +3629,7 @@ async function handleApprovalDecision(
             await requireProviderPsetAuthorization(
               pending,
               "This site was disconnected before Apogee could broadcast the manifest transaction.",
-              true,
+              signingMode === "wallet",
             );
             txManifestIdempotency.assertActive(pending.idempotencyGeneration);
           },

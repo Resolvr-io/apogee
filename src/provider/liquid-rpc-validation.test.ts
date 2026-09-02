@@ -68,11 +68,11 @@ describe("parseLiquidRpcRequest", () => {
     expect(
       parseLiquidRpcRequest({
         method: "experimental_getTxManifestSupport",
-        params: { bundleHash },
+        params: { bundleHash, bundle: { schema: "example" } },
       }),
     ).toEqual({
       method: "experimental_getTxManifestSupport",
-      params: { bundleHash },
+      params: { bundleHash, bundle: { schema: "example" } },
     });
 
     const request = parseLiquidRpcRequest({

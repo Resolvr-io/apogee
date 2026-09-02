@@ -24,6 +24,10 @@ describe("trusted TX Manifest registry", () => {
     await expect(getTxManifestSupport(SIMPLICITY_LENDING_V3_BUNDLE_HASH)).resolves.toMatchObject({
       supported: true,
       status: "builtin",
+      compatibility: "executable",
+      trust: "builtin",
+      requiresBundle: false,
+      warningRequired: false,
       supportedActions: [
         "issuance_factory.CreateFactory",
         "lending_contract.CreateOffer",
@@ -63,6 +67,10 @@ describe("trusted TX Manifest registry", () => {
       supported: false,
       bundleHash: unknown,
       status: "unknown",
+      compatibility: "inspect-only",
+      trust: null,
+      requiresBundle: true,
+      warningRequired: true,
     });
     const edited = structuredClone(SIMPLICITY_LENDING_V3_BUNDLE);
     edited.manifest.description = "modified";

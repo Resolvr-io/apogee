@@ -578,6 +578,17 @@ fn build_manifest_pset(spec: &ManifestPsetSpec) -> Result<String, String> {
     if spec.inputs.is_empty() {
         return Err("manifest PSET must contain at least one input".to_owned());
     }
+    let fee_output_index = spec
+        .fee
+        .output_index
+        .map(|index| index as usize)
+        .unwrap_or(spec.outputs.len());
+    if fee_output_index > spec.outputs.len() {
+        return Err(format!(
+            "fee.output_index {fee_output_index} is out of range for {} non-fee outputs",
+            spec.outputs.len()
+        ));
+    }
     let mut pset = PartiallySignedTransaction::new_v2();
     if let Some(locktime) = spec.locktime {
         pset.global.tx_data.fallback_locktime = Some(LockTime::from_consensus(locktime));
@@ -669,14 +680,19 @@ fn build_manifest_pset(spec: &ManifestPsetSpec) -> Result<String, String> {
             .map_err(|error| format!("invalid outputs[{index}].asset: {error}"))?;
         let amount = amount(&entry.amount, &format!("outputs[{index}].amount"))?;
         spend_balance(&mut balances, asset, amount, &format!("outputs[{index}]"))?;
+        let script_pubkey = script(&entry.script_pub_key)?;
+        if script_pubkey.is_empty() {
+            return Err(format!(
+                "outputs[{index}].script_pub_key must not be empty; use the fee field for the sole Elements fee output"
+            ));
+        }
         let blinding_key = entry
             .blinding_public_key
             .as_deref()
             .map(PublicKey::from_str)
             .transpose()
             .map_err(|error| format!("invalid outputs[{index}].blinding_public_key: {error}"))?;
-        let mut output =
-            Output::new_explicit(script(&entry.script_pub_key)?, amount, asset, blinding_key);
+        let mut output = Output::new_explicit(script_pubkey, amount, asset, blinding_key);
         match (output.blinding_key, entry.blinder_index) {
             (Some(_), Some(blinder_index)) if (blinder_index as usize) < spec.inputs.len() => {
                 output.blinder_index = Some(blinder_index);
@@ -702,17 +718,16 @@ fn build_manifest_pset(spec: &ManifestPsetSpec) -> Result<String, String> {
         .map_err(|error| format!("invalid fee.asset: {error}"))?;
     let fee_amount = amount(&spec.fee.amount, "fee.amount")?;
     spend_balance(&mut balances, fee_asset, fee_amount, "fee")?;
-    pset.add_output(Output::new_explicit(
-        Script::new(),
-        fee_amount,
-        fee_asset,
-        None,
-    ));
+    pset.insert_output(
+        Output::new_explicit(Script::new(), fee_amount, fee_asset, None),
+        fee_output_index,
+    );
 
     if has_blinded_output {
         pset.blind_last(&mut OsRng, &Secp256k1::new(), &secrets)
             .map_err(|error| format!("PSET blinding failed: {error}"))?;
     }
+    validate_manifest_fee_output(&pset, fee_output_index, fee_asset, fee_amount)?;
     if let Some((asset, remainder)) = balances.iter().find(|(_, amount)| **amount != 0) {
         return Err(format!(
             "manifest PSET is unbalanced for asset {asset}: {remainder} input units remain"
@@ -720,6 +735,43 @@ fn build_manifest_pset(spec: &ManifestPsetSpec) -> Result<String, String> {
     }
     pset.sanity_check().map_err(|error| error.to_string())?;
     Ok(pset.to_string())
+}
+
+fn validate_manifest_fee_output(
+    pset: &PartiallySignedTransaction,
+    expected_index: usize,
+    expected_asset: AssetId,
+    expected_amount: u64,
+) -> Result<(), String> {
+    let fee_indices = pset
+        .outputs()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, output)| output.script_pubkey.is_empty().then_some(index))
+        .collect::<Vec<_>>();
+    if fee_indices != [expected_index] {
+        return Err(format!(
+            "manifest PSET must contain exactly one Elements fee output at index {expected_index}"
+        ));
+    }
+    let fee = &pset.outputs()[expected_index];
+    if fee.asset != Some(expected_asset)
+        || fee.amount != Some(expected_amount)
+        || fee.asset_comm.is_some()
+        || fee.amount_comm.is_some()
+        || fee.blinding_key.is_some()
+        || fee.ecdh_pubkey.is_some()
+        || fee.blinder_index.is_some()
+        || fee.value_rangeproof.is_some()
+        || fee.asset_surjection_proof.is_some()
+        || fee.blind_value_proof.is_some()
+        || fee.blind_asset_proof.is_some()
+    {
+        return Err(format!(
+            "manifest PSET fee output at index {expected_index} must be explicit and unblinded"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_input_secrets(
@@ -1047,8 +1099,16 @@ struct ExplicitFee {
 struct ManifestPsetSpec {
     inputs: Vec<ManifestPsetInput>,
     outputs: Vec<ManifestPsetOutput>,
-    fee: ExplicitFee,
+    fee: ManifestFee,
     locktime: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManifestFee {
+    asset: String,
+    amount: String,
+    output_index: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -1494,7 +1554,113 @@ fn main() {
         assert_eq!(parsed.inputs().len(), 2);
         assert_eq!(parsed.outputs().len(), 4);
         assert_eq!(parsed.outputs()[0].script_pubkey, Script::from(vec![0x51]));
+        assert_eq!(parsed.outputs()[1].script_pubkey, Script::from(vec![0x52]));
+        assert_eq!(parsed.outputs()[2].script_pubkey, Script::from(vec![0x53]));
         assert!(parsed.outputs()[3].script_pubkey.is_empty());
+    }
+
+    #[test]
+    fn places_the_fee_at_an_explicit_index_without_reordering_other_outputs() {
+        let tx_out = elements::encode::serialize_hex(&TxOut {
+            asset: Asset::Explicit(AssetId::from_str(POLICY_ASSET).unwrap()),
+            value: Value::Explicit(100),
+            nonce: Nonce::Null,
+            script_pubkey: Script::from(vec![0x51]),
+            witness: TxOutWitness::default(),
+        });
+        let spec = serde_json::json!({
+            "inputs": [{
+                "txid": "55".repeat(32), "vout": 0, "tx_out": tx_out,
+                "asset": POLICY_ASSET, "amount": "100"
+            }],
+            "outputs": [
+                { "script_pub_key": "51", "asset": POLICY_ASSET, "amount": "90" },
+                { "script_pub_key": "6a01", "asset": POLICY_ASSET, "amount": "0" },
+                { "script_pub_key": "6a02", "asset": POLICY_ASSET, "amount": "0" }
+            ],
+            "fee": { "asset": POLICY_ASSET, "amount": "10", "output_index": 1 }
+        });
+        let parsed = PartiallySignedTransaction::from_str(
+            &build_manifest_pset(&serde_json::from_value(spec).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(parsed.outputs().len(), 4);
+        assert_eq!(parsed.outputs()[0].script_pubkey, Script::from(vec![0x51]));
+        assert!(parsed.outputs()[1].script_pubkey.is_empty());
+        assert_eq!(
+            parsed.outputs()[1].asset,
+            Some(AssetId::from_str(POLICY_ASSET).unwrap())
+        );
+        assert_eq!(parsed.outputs()[1].amount, Some(10));
+        assert_eq!(
+            parsed.outputs()[2].script_pubkey,
+            Script::from(vec![0x6a, 0x01])
+        );
+        assert_eq!(
+            parsed.outputs()[3].script_pubkey,
+            Script::from(vec![0x6a, 0x02])
+        );
+        assert_eq!(
+            parsed
+                .outputs()
+                .iter()
+                .filter(|output| output.script_pubkey.is_empty())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn rejects_an_out_of_range_fee_output_index() {
+        let tx_out = elements::encode::serialize_hex(&TxOut {
+            asset: Asset::Explicit(AssetId::from_str(POLICY_ASSET).unwrap()),
+            value: Value::Explicit(100),
+            nonce: Nonce::Null,
+            script_pubkey: Script::from(vec![0x51]),
+            witness: TxOutWitness::default(),
+        });
+        let spec = serde_json::json!({
+            "inputs": [{
+                "txid": "66".repeat(32), "vout": 0, "tx_out": tx_out,
+                "asset": POLICY_ASSET, "amount": "100"
+            }],
+            "outputs": [
+                { "script_pub_key": "51", "asset": POLICY_ASSET, "amount": "90" }
+            ],
+            "fee": { "asset": POLICY_ASSET, "amount": "10", "output_index": 2 }
+        });
+
+        assert_eq!(
+            build_manifest_pset(&serde_json::from_value(spec).unwrap()).unwrap_err(),
+            "fee.output_index 2 is out of range for 1 non-fee outputs"
+        );
+    }
+
+    #[test]
+    fn rejects_an_empty_script_in_the_non_fee_output_list() {
+        let tx_out = elements::encode::serialize_hex(&TxOut {
+            asset: Asset::Explicit(AssetId::from_str(POLICY_ASSET).unwrap()),
+            value: Value::Explicit(100),
+            nonce: Nonce::Null,
+            script_pubkey: Script::from(vec![0x51]),
+            witness: TxOutWitness::default(),
+        });
+        let spec = serde_json::json!({
+            "inputs": [{
+                "txid": "77".repeat(32), "vout": 0, "tx_out": tx_out,
+                "asset": POLICY_ASSET, "amount": "100"
+            }],
+            "outputs": [
+                { "script_pub_key": "", "asset": POLICY_ASSET, "amount": "90" }
+            ],
+            "fee": { "asset": POLICY_ASSET, "amount": "10", "output_index": 0 }
+        });
+
+        assert_eq!(
+            build_manifest_pset(&serde_json::from_value(spec).unwrap()).unwrap_err(),
+            "outputs[0].script_pub_key must not be empty; use the fee field for the sole Elements fee output"
+        );
     }
 
     #[test]
@@ -1559,15 +1725,18 @@ fn main() {
                 "blinding_public_key": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
                 "blinder_index": 0
             }],
-            "fee": { "asset": POLICY_ASSET, "amount": "10" }
+            "fee": { "asset": POLICY_ASSET, "amount": "10", "output_index": 0 }
         });
         let parsed = PartiallySignedTransaction::from_str(
             &build_manifest_pset(&serde_json::from_value(spec).unwrap()).unwrap(),
         )
         .unwrap();
-        assert!(parsed.outputs()[0].amount_comm.is_some());
-        assert!(parsed.outputs()[0].asset_comm.is_some());
-        assert!(parsed.outputs()[0].value_rangeproof.is_some());
+        assert!(parsed.outputs()[0].script_pubkey.is_empty());
+        assert!(parsed.outputs()[0].amount_comm.is_none());
+        assert!(parsed.outputs()[0].asset_comm.is_none());
+        assert!(parsed.outputs()[1].amount_comm.is_some());
+        assert!(parsed.outputs()[1].asset_comm.is_some());
+        assert!(parsed.outputs()[1].value_rangeproof.is_some());
     }
 
     #[test]

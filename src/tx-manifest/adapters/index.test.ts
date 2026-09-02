@@ -17,6 +17,7 @@ import {
   txManifestExecutionAdapterForInvocation,
   txManifestExecutionAdapterForPlan,
   txManifestExecutionAdapterForPrepared,
+  txManifestSigningModeForPlan,
   type PreparedProviderTxManifest,
 } from ".";
 import {
@@ -47,6 +48,7 @@ describe("TX Manifest execution adapter registry", () => {
     expect(adapter.id).toBe(SIMPLICITY_LENDING_V3_ADAPTER_ID);
     expect(plan.action).toBe(SIMPLICITY_LENDING_V3_CREATE_FACTORY);
     expect(txManifestExecutionAdapterForPlan(plan)).toBe(adapter);
+    expect(txManifestSigningModeForPlan(plan)).toBe("wallet");
   });
 
   it("retains the fail-closed error for an unknown bundle", async () => {
@@ -77,6 +79,7 @@ describe("TX Manifest execution adapter registry", () => {
     const plan = await resolveTxManifestRequirementsWithAdapter(createFactoryInvocation());
     const context: PreparedProviderTxManifest = {
       adapterId: SIMPLICITY_LENDING_V3_ADAPTER_ID,
+      signingMode: "wallet",
       plan,
       prepared: {
         pset: "pset",
@@ -91,6 +94,12 @@ describe("TX Manifest execution adapter registry", () => {
     );
 
     context.adapterId = "different-adapter";
+    expect(() => txManifestExecutionAdapterForPrepared(context)).toThrow(
+      "The prepared TX Manifest does not match its execution adapter.",
+    );
+
+    context.adapterId = SIMPLICITY_LENDING_V3_ADAPTER_ID;
+    context.signingMode = "none";
     expect(() => txManifestExecutionAdapterForPrepared(context)).toThrow(
       "The prepared TX Manifest does not match its execution adapter.",
     );

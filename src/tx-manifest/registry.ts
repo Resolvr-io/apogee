@@ -16,6 +16,10 @@ import {
   txManifestBundleHash,
   type TxManifestBundle,
 } from "./bundle";
+import {
+  parseDeclarativeTxManifest,
+  type DeclarativeManifest,
+} from "./declarative";
 import { SIMPLICITY_LENDING_V3_REGTEST_CHAIN } from "./network";
 import {
   TX_MANIFEST_ACTION_HINT_V1,
@@ -96,25 +100,107 @@ export const TRUSTED_TX_MANIFESTS: readonly TrustedTxManifest[] = Object.freeze(
 export type TxManifestSupportResult = {
   supported: boolean;
   bundleHash: TxManifestBundleHash;
-  status: "builtin" | "unknown" | "blocked";
+  status: "builtin" | "generic" | "unknown" | "blocked";
+  compatibility: "executable" | "inspect-only" | "incompatible";
+  trust: "builtin" | "unverified" | null;
+  requiresBundle: boolean;
+  warningRequired: boolean;
   protocol?: { name: string; version: string };
   manifestSpecVersion?: string;
   supportedActions?: string[];
+  reason?: string;
 };
 
 export async function getTxManifestSupport(
   bundleHash: TxManifestBundleHash,
+  suppliedBundle?: unknown,
 ): Promise<TxManifestSupportResult> {
   const trusted = TRUSTED_TX_MANIFESTS.find((entry) => entry.bundleHash === bundleHash);
-  if (!trusted) return { supported: false, bundleHash, status: "unknown" };
-  await assertTrustedBundleIntegrity(trusted);
+  if (trusted) {
+    try {
+      await assertTrustedBundleIntegrity(trusted);
+      if (suppliedBundle !== undefined) {
+        await requireSuppliedBundleHash(bundleHash, suppliedBundle);
+      }
+      return {
+        supported: true,
+        bundleHash,
+        status: "builtin",
+        compatibility: "executable",
+        trust: "builtin",
+        requiresBundle: false,
+        warningRequired: false,
+        protocol: { name: trusted.protocol, version: trusted.version },
+        manifestSpecVersion: trusted.bundle.manifest.manifest_version as string,
+        supportedActions: [...trusted.actions],
+      };
+    } catch (error) {
+      return blockedSupport(bundleHash, error);
+    }
+  }
+  if (suppliedBundle === undefined) {
+    return {
+      supported: false,
+      bundleHash,
+      status: "unknown",
+      compatibility: "inspect-only",
+      trust: null,
+      requiresBundle: true,
+      warningRequired: true,
+    };
+  }
+  try {
+    const generic = await resolveDeclarativeTxManifest(bundleHash, suppliedBundle);
+    return {
+      supported: true,
+      bundleHash,
+      status: "generic",
+      compatibility: "executable",
+      trust: "unverified",
+      requiresBundle: false,
+      warningRequired: true,
+      protocol: {
+        name: String(generic.bundle.manifest.protocol),
+        version: String(generic.bundle.manifest.manifest_version),
+      },
+      manifestSpecVersion: String(generic.bundle.manifest.manifest_version),
+      supportedActions: Object.keys(generic.declarative.actions).sort(),
+    };
+  } catch (error) {
+    return blockedSupport(bundleHash, error);
+  }
+}
+
+export type ResolvedDeclarativeTxManifest = {
+  bundleHash: TxManifestBundleHash;
+  bundle: TxManifestBundle;
+  declarative: DeclarativeManifest;
+};
+
+/**
+ * Resolve an untrusted bundle by capabilities, never by protocol name or hash.
+ * Callers must retain the full normalized bundle because its bytes are the
+ * execution authority and are revalidated for every invocation.
+ */
+export async function resolveDeclarativeTxManifest(
+  bundleHash: TxManifestBundleHash,
+  suppliedBundle: unknown,
+): Promise<ResolvedDeclarativeTxManifest> {
+  const bundle = normalizeTxManifestBundle(suppliedBundle);
+  const actual = await txManifestBundleHash(bundle);
+  if (actual !== bundleHash) {
+    throw new Error("The supplied TX Manifest bundle does not match its requested hash.");
+  }
+  if (bundle.manifestSpec.revision !== TX_MANIFEST_PINNED_REVISIONS.referenceSpec) {
+    throw new Error("The declarative bundle uses an unsupported TX Manifest specification revision.");
+  }
+  if (bundle.compiler.revision !== TX_MANIFEST_PINNED_REVISIONS.simplicityHl) {
+    throw new Error("The declarative bundle uses an unsupported SimplicityHL compiler revision.");
+  }
   return {
-    supported: true,
     bundleHash,
-    status: "builtin",
-    protocol: { name: trusted.protocol, version: trusted.version },
-    manifestSpecVersion: trusted.bundle.manifest.manifest_version as string,
-    supportedActions: [...trusted.actions],
+    bundle,
+    declarative: parseDeclarativeTxManifest(bundle),
   };
 }
 
@@ -157,4 +243,30 @@ async function assertTrustedBundleIntegrity(trusted: TrustedTxManifest): Promise
   if (trusted.bundle.compiler.revision !== trusted.compilerRevision) {
     throw new Error("Built-in TX Manifest compiler revision does not match its registry entry.");
   }
+}
+
+async function requireSuppliedBundleHash(
+  expected: TxManifestBundleHash,
+  suppliedBundle: unknown,
+): Promise<void> {
+  const actual = await txManifestBundleHash(normalizeTxManifestBundle(suppliedBundle));
+  if (actual !== expected) {
+    throw new Error("The supplied TX Manifest bundle does not match its requested hash.");
+  }
+}
+
+function blockedSupport(
+  bundleHash: TxManifestBundleHash,
+  error: unknown,
+): TxManifestSupportResult {
+  return {
+    supported: false,
+    bundleHash,
+    status: "blocked",
+    compatibility: "incompatible",
+    trust: "unverified",
+    requiresBundle: false,
+    warningRequired: true,
+    reason: error instanceof Error ? error.message : "The supplied bundle is incompatible.",
+  };
 }

@@ -10,6 +10,7 @@ import {
   LIQUID_RPC_ERROR_REASONS,
 } from "./liquid-rpc-errors";
 import {
+  requireTxManifestSigningCapability,
   withAuthorizedProviderTxManifestExecution,
   type TxManifestAuthorizationDependencies,
   type TxManifestExecutionConnection,
@@ -154,25 +155,20 @@ describe("withAuthorizedProviderTxManifestExecution", () => {
     expect(deps.continueExecution).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["jade", "Jade TX Manifest execution is not enabled"],
-    ["watch", "A watch-only wallet cannot execute TX Manifests"],
-  ] as const)("rejects a %s signer before approval or broadcast", async (signer, message) => {
-    const deps = dependencies({ loadWallet: vi.fn(async () => wallet(signer)) });
+  it.each(["local", "jade", "watch"] as const)(
+    "defers %s signer restrictions until after requirements resolution",
+    async (signer) => {
+      const deps = dependencies({ loadWallet: vi.fn(async () => wallet(signer)) });
 
-    await expect(
-      withAuthorizedProviderTxManifestExecution(ORIGIN, INVOCATION, deps),
-    ).rejects.toMatchObject({
-      code: LIQUID_RPC_ERROR_CODES.UNSUPPORTED_CAPABILITY,
-      message: expect.stringContaining(message),
-      data: {
-        reason: LIQUID_RPC_ERROR_REASONS.UNSUPPORTED_CAPABILITY,
-        method: LIQUID_WALLET_RPC_METHODS.EXECUTE_TX_MANIFEST,
-        cause: signer,
-      },
-    });
-    expect(deps.continueExecution).not.toHaveBeenCalled();
-  });
+      await expect(
+        withAuthorizedProviderTxManifestExecution(ORIGIN, INVOCATION, deps),
+      ).resolves.toBe("continued");
+      expect(deps.continueExecution).toHaveBeenCalledExactlyOnceWith(
+        CONNECTION,
+        expect.objectContaining({ signer }),
+      );
+    },
+  );
 
   it("continues exactly once for the authorized matching testnet software wallet", async () => {
     const deps = dependencies();
@@ -182,5 +178,31 @@ describe("withAuthorizedProviderTxManifestExecution", () => {
     ).resolves.toBe("continued");
     expect(deps.disconnect).not.toHaveBeenCalled();
     expect(deps.continueExecution).toHaveBeenCalledExactlyOnceWith(CONNECTION, WALLET);
+  });
+});
+
+describe("requireTxManifestSigningCapability", () => {
+  it.each(["local", "jade", "watch"] as const)(
+    "allows a signature-free plan with a %s wallet",
+    (signer) => {
+      expect(requireTxManifestSigningCapability(wallet(signer), "none")).toBe("none");
+    },
+  );
+
+  it("allows wallet signing only with the software signer", () => {
+    expect(requireTxManifestSigningCapability(wallet("local"), "wallet")).toBe("wallet");
+  });
+
+  it.each([
+    ["jade", "Jade TX Manifest execution is not enabled"],
+    ["watch", "A watch-only wallet cannot execute TX Manifests"],
+  ] as const)("rejects %s for a wallet-signing plan", (signer, message) => {
+    expect(() => requireTxManifestSigningCapability(wallet(signer), "wallet")).toThrow(message);
+  });
+
+  it("fails closed on an unknown signing mode", () => {
+    expect(() => requireTxManifestSigningCapability(wallet("local"), "future")).toThrow(
+      "Unsupported TX Manifest signing mode.",
+    );
   });
 });

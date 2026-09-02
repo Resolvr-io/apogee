@@ -10,11 +10,6 @@ import {
   SIMPLICITY_LENDING_V3_REPAY_LOAN,
 } from "@/tx-manifest/builtins/simplicity-lending-v3";
 import {
-  resolveAcceptOfferChainSnapshot,
-  resolveClaimLenderVaultChainSnapshot,
-  resolveNewLendingActionChainSnapshot,
-} from "@/tx-manifest/esplora";
-import {
   resolveTxManifestRequirements,
   type AcceptOfferRequirementPlan,
   type CancelOfferRequirementPlan,
@@ -24,18 +19,19 @@ import {
   type CreateOfferRequirementPlan,
   type LiquidateOfferRequirementPlan,
   type RepayLoanRequirementPlan,
-  type TxManifestRequirementPlan,
 } from "@/tx-manifest/requirements";
 import { SIMPLICITY_LENDING_V3_BUNDLE_HASH } from "@/tx-manifest/registry";
-import type { TxManifestTransactionOutputInspection } from "@/tx-manifest/runtime";
 import type {
+  AcceptOfferVerifiedChainSnapshot,
+  ClaimLenderVaultVerifiedChainSnapshot,
   HostedPreparedAcceptOfferExecution,
   HostedPreparedClaimLenderVaultExecution,
   HostedPreparedNewLendingExecution,
+  NewLendingVerifiedChainSnapshot,
 } from "@/tx-manifest/wallet-host";
 import {
   type ReviewedTxManifestFee,
-  type TxManifestAdapterPreparationContext,
+  type BuiltinTxManifestAdapterPreparationContext,
   type TxManifestExecutionAdapter,
 } from "./types";
 
@@ -49,9 +45,15 @@ type NewLendingPlan =
   | RepayLoanRequirementPlan
   | LiquidateOfferRequirementPlan;
 
+type SimplicityLendingV3RequirementPlan =
+  | AcceptOfferRequirementPlan
+  | ClaimLenderVaultRequirementPlan
+  | NewLendingPlan;
+
 export type SimplicityLendingV3PreparedTxManifest =
   | {
       adapterId: typeof SIMPLICITY_LENDING_V3_ADAPTER_ID;
+      signingMode: "wallet";
       kind: "acceptOffer";
       plan: AcceptOfferRequirementPlan;
       prepared: HostedPreparedAcceptOfferExecution;
@@ -59,6 +61,7 @@ export type SimplicityLendingV3PreparedTxManifest =
     }
   | {
       adapterId: typeof SIMPLICITY_LENDING_V3_ADAPTER_ID;
+      signingMode: "wallet";
       kind: "claimLenderVault";
       plan: ClaimLenderVaultRequirementPlan;
       prepared: HostedPreparedClaimLenderVaultExecution;
@@ -66,6 +69,7 @@ export type SimplicityLendingV3PreparedTxManifest =
     }
   | {
       adapterId: typeof SIMPLICITY_LENDING_V3_ADAPTER_ID;
+      signingMode: "wallet";
       kind: "newLendingAction";
       plan: NewLendingPlan;
       prepared: HostedPreparedNewLendingExecution;
@@ -97,32 +101,53 @@ export function simplicityLendingV3PreparationRoute(
 }
 
 export const simplicityLendingV3ExecutionAdapter: TxManifestExecutionAdapter<
-  TxManifestRequirementPlan,
+  SimplicityLendingV3RequirementPlan,
   SimplicityLendingV3PreparedTxManifest
 > = {
   id: SIMPLICITY_LENDING_V3_ADAPTER_ID,
   bundleHash: SIMPLICITY_LENDING_V3_BUNDLE_HASH,
-  resolveRequirements: resolveTxManifestRequirements,
+  signingMode: () => "wallet",
+  async resolveRequirements(invocation) {
+    const plan = await resolveTxManifestRequirements(invocation);
+    if (
+      plan.planVersion !== "apogee-tx-manifest-requirements/v1" ||
+      plan.bundleHash !== SIMPLICITY_LENDING_V3_BUNDLE_HASH
+    ) {
+      throw new Error("The resolved TX Manifest plan does not belong to Simplicity Lending.");
+    }
+    simplicityLendingV3PreparationRoute(plan.action);
+    return plan as SimplicityLendingV3RequirementPlan;
+  },
 
   async prepare(plan, context) {
-    const inspectOutput = (transactionHex: string, vout: number) =>
-      context.engine<TxManifestTransactionOutputInspection>({
-        kind: "inspectTxManifestTransactionOutput",
-        transactionHex,
-        vout,
-      });
+    if (context.chainResolution !== "builtin") {
+      throw new Error("The built-in TX Manifest adapter requires its trusted chain resolver.");
+    }
+    const resolved = await context.resolveBuiltinChainSnapshot();
 
     switch (simplicityLendingV3PreparationRoute(plan.action)) {
-      case "acceptOffer":
-        return prepareAcceptOffer(plan as AcceptOfferRequirementPlan, context, inspectOutput);
-      case "claimLenderVault":
+      case "acceptOffer": {
+        if (resolved.kind !== "acceptOffer") {
+          throw new Error("The host returned the wrong trusted chain snapshot.");
+        }
+        return prepareAcceptOffer(plan as AcceptOfferRequirementPlan, context, resolved.snapshot);
+      }
+      case "claimLenderVault": {
+        if (resolved.kind !== "claimLenderVault") {
+          throw new Error("The host returned the wrong trusted chain snapshot.");
+        }
         return prepareClaimLenderVault(
           plan as ClaimLenderVaultRequirementPlan,
           context,
-          inspectOutput,
+          resolved.snapshot,
         );
-      case "newLendingAction":
-        return prepareNewLendingAction(plan as NewLendingPlan, context, inspectOutput);
+      }
+      case "newLendingAction": {
+        if (resolved.kind !== "newLendingAction") {
+          throw new Error("The host returned the wrong trusted chain snapshot.");
+        }
+        return prepareNewLendingAction(plan as NewLendingPlan, context, resolved.snapshot);
+      }
     }
   },
 
@@ -190,24 +215,12 @@ export const simplicityLendingV3ExecutionAdapter: TxManifestExecutionAdapter<
   },
 };
 
-type InspectOutput = (
-  transactionHex: string,
-  vout: number,
-) => Promise<TxManifestTransactionOutputInspection>;
-
 async function prepareAcceptOffer(
   plan: AcceptOfferRequirementPlan,
-  context: TxManifestAdapterPreparationContext,
-  inspectOutput: InspectOutput,
+  context: BuiltinTxManifestAdapterPreparationContext,
+  resolved: AcceptOfferVerifiedChainSnapshot,
 ): Promise<Extract<SimplicityLendingV3PreparedTxManifest, { kind: "acceptOffer" }>> {
-  const resolved = await resolveAcceptOfferChainSnapshot(
-    plan,
-    context.policyAssetId,
-    inspectOutput,
-    context.configuredChainServer,
-    context.expectedGenesisHash,
-  );
-  const snapshot = withReviewedFee(resolved.snapshot, context.reviewedFee);
+  const snapshot = withReviewedFee(resolved, context.reviewedFee);
   const prepared = await context.engine<HostedPreparedAcceptOfferExecution>({
     kind: "prepareLendingV3AcceptOfferWithWallet",
     descriptor: context.descriptor,
@@ -217,26 +230,20 @@ async function prepareAcceptOffer(
   });
   return {
     adapterId: SIMPLICITY_LENDING_V3_ADAPTER_ID,
+    signingMode: "wallet",
     kind: "acceptOffer",
     plan,
     prepared,
-    genesisHash: resolved.snapshot.genesisHash,
+    genesisHash: resolved.genesisHash,
   };
 }
 
 async function prepareClaimLenderVault(
   plan: ClaimLenderVaultRequirementPlan,
-  context: TxManifestAdapterPreparationContext,
-  inspectOutput: InspectOutput,
+  context: BuiltinTxManifestAdapterPreparationContext,
+  resolved: ClaimLenderVaultVerifiedChainSnapshot,
 ): Promise<Extract<SimplicityLendingV3PreparedTxManifest, { kind: "claimLenderVault" }>> {
-  const resolved = await resolveClaimLenderVaultChainSnapshot(
-    plan,
-    context.policyAssetId,
-    inspectOutput,
-    context.configuredChainServer,
-    context.expectedGenesisHash,
-  );
-  const snapshot = withReviewedFee(resolved.snapshot, context.reviewedFee);
+  const snapshot = withReviewedFee(resolved, context.reviewedFee);
   const prepared = await context.engine<HostedPreparedClaimLenderVaultExecution>({
     kind: "prepareLendingV3ClaimLenderVaultWithWallet",
     descriptor: context.descriptor,
@@ -246,26 +253,20 @@ async function prepareClaimLenderVault(
   });
   return {
     adapterId: SIMPLICITY_LENDING_V3_ADAPTER_ID,
+    signingMode: "wallet",
     kind: "claimLenderVault",
     plan,
     prepared,
-    genesisHash: resolved.snapshot.genesisHash,
+    genesisHash: resolved.genesisHash,
   };
 }
 
 async function prepareNewLendingAction(
   plan: NewLendingPlan,
-  context: TxManifestAdapterPreparationContext,
-  inspectOutput: InspectOutput,
+  context: BuiltinTxManifestAdapterPreparationContext,
+  resolved: NewLendingVerifiedChainSnapshot,
 ): Promise<Extract<SimplicityLendingV3PreparedTxManifest, { kind: "newLendingAction" }>> {
-  const resolved = await resolveNewLendingActionChainSnapshot(
-    plan,
-    context.policyAssetId,
-    inspectOutput,
-    context.configuredChainServer,
-    context.expectedGenesisHash,
-  );
-  const snapshot = withReviewedFee(resolved.snapshot, context.reviewedFee);
+  const snapshot = withReviewedFee(resolved, context.reviewedFee);
   const prepared = await context.engine<HostedPreparedNewLendingExecution>({
     kind: "prepareLendingV3NewActionWithWallet",
     descriptor: context.descriptor,
@@ -276,10 +277,11 @@ async function prepareNewLendingAction(
   });
   return {
     adapterId: SIMPLICITY_LENDING_V3_ADAPTER_ID,
+    signingMode: "wallet",
     kind: "newLendingAction",
     plan,
     prepared,
-    genesisHash: resolved.snapshot.genesisHash,
+    genesisHash: resolved.genesisHash,
   };
 }
 

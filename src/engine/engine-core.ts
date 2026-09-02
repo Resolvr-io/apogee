@@ -31,7 +31,17 @@ import { verifyDealerPset } from "@/engine/verify-dealer-pset";
 import { getTxManifestSupport } from "@/tx-manifest/registry";
 import { resolveTxManifestRequirementsWithAdapter } from "@/tx-manifest/adapters";
 import { txManifestHistoryAnnotation } from "@/tx-manifest/history";
-import { convergeTxManifestFee } from "@/tx-manifest/fees";
+import {
+  convergeTxManifestFee,
+  txManifestFeePolicy,
+} from "@/tx-manifest/fees";
+import { declarativeSigningMode } from "@/tx-manifest/declarative-plan";
+import {
+  prepareDeclarativeExecution,
+  type DeclarativePreparationRuntime,
+  type DeclarativePreparationSnapshot,
+  type DeclarativeWalletDestination,
+} from "@/tx-manifest/declarative-prepare";
 import {
   TX_MANIFEST_MINIMUM_POST_FEE_LBTC_CHANGE,
   txManifestLbtcChangeDecision,
@@ -958,11 +968,41 @@ async function getPriceHistory(currency: string, range: PriceRange): Promise<Pri
   };
 }
 
+const DECLARATIVE_PREPARATION_RUNTIME: DeclarativePreparationRuntime = {
+  compileCovenant: compileTxManifestCovenant,
+  buildPset: buildTxManifestPset,
+  finalizeCovenant: finalizeTxManifestCovenant,
+  estimateFee: estimateTxManifestFee,
+};
+
+function declarativePreparationSnapshot(
+  request: Extract<EngineRequest, { kind: "prepareDeclarativeTxManifest" }>,
+  walletCandidates: readonly AcceptOfferWalletCandidate[],
+  walletDestination?: DeclarativeWalletDestination,
+): DeclarativePreparationSnapshot {
+  if (!isTxManifestExecutionNetwork(request.network)) {
+    throw new Error("The declarative TX Manifest adapter is not enabled on this network.");
+  }
+  return {
+    network: txManifestRuntimeNetwork(request.network),
+    genesisHash: request.chainSnapshot.genesisHash,
+    tipHeight: request.chainSnapshot.tipHeight,
+    policyAssetId: request.policyAssetId,
+    chain: request.chainSnapshot,
+    walletCandidates,
+    ...(walletDestination === undefined ? {} : { walletDestination }),
+    feePolicy: txManifestFeePolicy(
+      request.chainSnapshot.feeRateSatPerKvb,
+      request.plan.constraints.maxFee,
+    ),
+  };
+}
+
 export async function handle(req: EngineRequest): Promise<unknown> {
   // These static, secret-free operations do not require the wallet WASM. Keeping
   // them ahead of loadLwk also makes support discovery available before connect.
   if (req.kind === "getTxManifestSupport") {
-    return getTxManifestSupport(req.bundleHash);
+    return getTxManifestSupport(req.bundleHash, req.bundle);
   }
   if (req.kind === "resolveTxManifestRequirements") {
     return resolveTxManifestRequirementsWithAdapter(req.invocation);
@@ -984,6 +1024,17 @@ export async function handle(req: EngineRequest): Promise<unknown> {
   }
   if (req.kind === "finalizeTxManifestCovenant") {
     return finalizeTxManifestCovenant(req.spec);
+  }
+  if (req.kind === "prepareDeclarativeTxManifest" && req.signingMode === "none") {
+    if (declarativeSigningMode(req.plan) !== "none") {
+      throw new Error("The declarative execution signing mode changed before preparation.");
+    }
+    return prepareDeclarativeExecution(
+      req.plan,
+      declarativePreparationSnapshot(req, []),
+      DECLARATIVE_PREPARATION_RUNTIME,
+      req.reviewedFee,
+    );
   }
   if (req.kind === "prepareLendingV3AcceptOffer") {
     return prepareLendingV3AcceptOffer(req.plan, req.snapshot);
@@ -1101,6 +1152,90 @@ export async function handle(req: EngineRequest): Promise<unknown> {
         };
       }));
       return orderTransactionsNewestFirst(txs, spendsFrom);
+    }
+
+    case "prepareDeclarativeTxManifest": {
+      if (req.signingMode !== "wallet" || declarativeSigningMode(req.plan) !== "wallet") {
+        throw new Error("The declarative execution signing mode changed before wallet preparation.");
+      }
+      if (!isTxManifestExecutionNetwork(req.network)) {
+        throw new Error("The declarative TX Manifest wallet adapter is not enabled on this network.");
+      }
+      const manifestNetwork = txManifestRuntimeNetwork(req.network);
+      const entry = await ensureWollet(lwk, req.descriptor, req.network);
+      if (entry.policyAssetHex !== req.policyAssetId) {
+        throw new Error("The wallet policy asset does not match the declarative chain context.");
+      }
+      const walletTransactions = entry.wollet.transactions();
+      const transactions = new Map(
+        walletTransactions.map((walletTx) => {
+          const transaction = walletTx.tx();
+          return [walletTx.txid().toString(), transaction.toBytes()] as const;
+        }),
+      );
+      let candidates = entry.wollet.utxos().map((utxo): AcceptOfferWalletCandidate => {
+        const outpoint = utxo.outpoint();
+        const txid = outpoint.txid().toString();
+        const transaction = transactions.get(txid);
+        if (!transaction) throw new Error(`wallet transaction unavailable for UTXO ${txid}`);
+        const secrets = utxo.unblinded();
+        return {
+          txid,
+          vout: outpoint.vout(),
+          txOut: bytesToHex(extractElementsTxOut(transaction, outpoint.vout())),
+          scriptPubKey: bytesToHex(utxo.scriptPubkey().bytes()),
+          assetId: secrets.asset().toString(),
+          amount: secrets.value().toString(),
+          assetBlindingFactor: secrets.assetBlindingFactor().toString(),
+          valueBlindingFactor: secrets.valueBlindingFactor().toString(),
+          address: utxo.address().toString(),
+          parentTransaction: bytesToHex(transaction),
+        };
+      });
+      const address = entry.wollet.address(null).address().toString();
+      const inspectedDestination = await inspectTxManifestAddress(address, manifestNetwork);
+      const currentWalletDestination = {
+        address,
+        scriptPubKey: inspectedDestination.script_pub_key,
+      };
+      for (const provided of req.plan.providedInputs) {
+        if (provided.authorization !== "wallet") continue;
+        const resolved = req.chainSnapshot.inputs.find(
+          (input) => input.id === provided.roleId,
+        );
+        if (!resolved) {
+          throw new Error(`Verified chain snapshot is missing ${provided.roleId}.`);
+        }
+        const transactionDestinations = walletTransactions
+          .find((walletTx) => walletTx.txid().toString() === resolved.txid)
+          ?.outputs()
+          .flatMap((walletOutput) => {
+            const owned = walletOutput.get();
+            if (!owned) return [];
+            return [{
+              address: owned.address().toString(),
+              scriptPubKey: bytesToHex(owned.scriptPubkey().bytes()),
+            }];
+          }) ?? [];
+        candidates = [
+          ...recoverExplicitWalletInputCandidate(
+            candidates,
+            provided.outpoint,
+            resolved,
+            [...transactionDestinations, currentWalletDestination],
+            resolved.transactionHex,
+          ),
+        ];
+      }
+      return prepareDeclarativeExecution(
+        req.plan,
+        declarativePreparationSnapshot(req, candidates, {
+          scriptPubKey: inspectedDestination.script_pub_key,
+          blindingPublicKey: inspectedDestination.blinding_public_key,
+        }),
+        DECLARATIVE_PREPARATION_RUNTIME,
+        req.reviewedFee,
+      );
     }
 
     case "prepareLendingV3AcceptOfferWithWallet": {

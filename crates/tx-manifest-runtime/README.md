@@ -9,7 +9,8 @@ The first vertical slice exports:
 
 - SimplicityHL compilation and covenant commitment derivation;
 - offline Elements-environment dry-run against caller-supplied transaction bytes;
-- ordered multi-asset PSET construction with confidential-change blinding;
+- ordered multi-asset PSET construction with confidential-change blinding and
+  an optional explicit fee-output index (append-last by default);
 - covenant PSET finalization after execution against the exact extracted tx; and
 - caller-supplied transaction-output and confidential-address inspection for the
   host's fresh-chain and wallet-destination adapters; and

@@ -11,6 +11,12 @@ import type { LiquidNetwork, WalletInfo, WalletSigner } from "@/keystore/keystor
 import type { TxManifestBundleHash } from "@/tx-manifest/registry";
 import type { TxManifestHistoryAnnotation } from "@/tx-manifest/history";
 import type {
+  ReviewedTxManifestFee,
+  TxManifestSigningMode,
+} from "@/tx-manifest/adapters/types";
+import type { DeclarativeChainSnapshot } from "@/tx-manifest/declarative-chain";
+import type { DeclarativeRequirementPlan } from "@/tx-manifest/declarative-plan";
+import type {
   AcceptOfferRequirementPlan,
   ClaimLenderVaultRequirementPlan,
   CreateFactoryRequirementPlan,
@@ -44,9 +50,21 @@ import type {
  *  offscreen writes — a drifted string literal would silently stop clearing. */
 export const SCAN_STATE_DB = "apogee-scan-state";
 
+type PrepareDeclarativeTxManifestRequest = {
+  kind: "prepareDeclarativeTxManifest";
+  network: LiquidNetwork;
+  policyAssetId: string;
+  plan: DeclarativeRequirementPlan;
+  chainSnapshot: DeclarativeChainSnapshot;
+  reviewedFee?: ReviewedTxManifestFee;
+} & (
+  | { signingMode: "none"; descriptor?: never }
+  | { signingMode: "wallet"; descriptor: string }
+);
+
 /** A request executed inside the offscreen document against lwk_wasm. */
 export type EngineRequest =
-  | { kind: "getTxManifestSupport"; bundleHash: TxManifestBundleHash }
+  | { kind: "getTxManifestSupport"; bundleHash: TxManifestBundleHash; bundle?: unknown }
   | { kind: "resolveTxManifestRequirements"; invocation: TxManifestInvocation }
   | { kind: "compileTxManifestCovenant"; spec: TxManifestCovenantCompileSpec }
   | { kind: "inspectTxManifestTransactionOutput"; transactionHex: string; vout: number }
@@ -58,6 +76,7 @@ export type EngineRequest =
   | { kind: "dryRunTxManifestCovenant"; spec: TxManifestCovenantDryRunSpec }
   | { kind: "buildTxManifestPset"; spec: TxManifestPsetBuildSpec }
   | { kind: "finalizeTxManifestCovenant"; spec: TxManifestCovenantFinalizeSpec }
+  | PrepareDeclarativeTxManifestRequest
   | {
       kind: "prepareLendingV3AcceptOffer";
       plan: AcceptOfferRequirementPlan;
@@ -379,7 +398,50 @@ interface TxManifestApprovalReviewBaseDTO {
   assets?: Record<string, TxManifestAssetMeta>;
 }
 
+/** Exact, transaction-derived input facts for an unverified declarative action. */
+export interface GenericTxManifestInputReviewDTO {
+  index: number;
+  roleId: string;
+  source: "provided" | "wallet";
+  authorization: "covenant" | "wallet";
+  walletOwned: boolean;
+  txid: string;
+  vout: number;
+  assetId: string;
+  amount: string;
+  scriptPubKey: string;
+  confidential: boolean;
+  sequence: number;
+  confirmed: boolean | null;
+}
+
+/** Exact, transaction-derived output facts, including the Elements fee output. */
+export interface GenericTxManifestOutputReviewDTO {
+  index: number;
+  role: "script" | "covenant" | "wallet" | "change" | "record" | "txmf" | "fee";
+  assetId: string;
+  amount: string;
+  scriptPubKey: string;
+  confidential: boolean;
+  walletOwned: boolean;
+}
+
 export type TxManifestApprovalReviewDTO =
+  | (TxManifestApprovalReviewBaseDTO & {
+      /** Protocol-neutral review: transaction facts are authoritative; publisher prose is not. */
+      kind: "generic";
+      reviewVersion: "apogee-generic-transaction-review/v1";
+      unverified: true;
+      publisherDescription?: string;
+      inputs: GenericTxManifestInputReviewDTO[];
+      /** Every final transaction output in exact index order, including the fee output. */
+      outputs: GenericTxManifestOutputReviewDTO[];
+      feeOutputIndex: number;
+      locktime: number;
+      rbf: boolean;
+      signingMode: TxManifestSigningMode;
+      walletBalanceChanges: Record<string, string>;
+    })
   | (TxManifestApprovalReviewBaseDTO & {
       kind: "createFactory";
       factoryAssetId: string;
@@ -899,6 +961,8 @@ export type ApprovalRequest =
       network: DappNetwork;
       locked: boolean;
       signerKind: WalletSigner;
+      /** Trusted adapter decision: only `wallet` may trigger key access or signing UI. */
+      signingMode: TxManifestSigningMode;
       /** The exact previously-approved transaction is being resumed. */
       recovery?: boolean;
     };
