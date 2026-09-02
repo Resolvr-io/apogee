@@ -29,7 +29,7 @@ import {
 import { publicWalletDescriptor } from "./public-wallet-descriptor";
 import { verifyDealerPset } from "@/engine/verify-dealer-pset";
 import { getTxManifestSupport } from "@/tx-manifest/registry";
-import { resolveTxManifestRequirements } from "@/tx-manifest/requirements";
+import { resolveTxManifestRequirementsWithAdapter } from "@/tx-manifest/adapters";
 import { txManifestHistoryAnnotation } from "@/tx-manifest/history";
 import { convergeTxManifestFee } from "@/tx-manifest/fees";
 import {
@@ -965,7 +965,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
     return getTxManifestSupport(req.bundleHash);
   }
   if (req.kind === "resolveTxManifestRequirements") {
-    return resolveTxManifestRequirements(req.invocation);
+    return resolveTxManifestRequirementsWithAdapter(req.invocation);
   }
   if (req.kind === "compileTxManifestCovenant") {
     return compileTxManifestCovenant(req.spec);
