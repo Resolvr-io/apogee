@@ -16,6 +16,7 @@ import type {
 } from "@/tx-manifest/adapters/types";
 import type { DeclarativeChainSnapshot } from "@/tx-manifest/declarative-chain";
 import type { DeclarativeRequirementPlan } from "@/tx-manifest/declarative-plan";
+import type { DeclarativeWalletDestination } from "@/tx-manifest/declarative-prepare";
 import type {
   AcceptOfferRequirementPlan,
   ClaimLenderVaultRequirementPlan,
@@ -58,8 +59,12 @@ type PrepareDeclarativeTxManifestRequest = {
   chainSnapshot: DeclarativeChainSnapshot;
   reviewedFee?: ReviewedTxManifestFee;
 } & (
-  | { signingMode: "none"; descriptor?: never }
-  | { signingMode: "wallet"; descriptor: string }
+  | {
+      signingMode: "none";
+      descriptor?: never;
+      walletDestination?: DeclarativeWalletDestination;
+    }
+  | { signingMode: "wallet"; descriptor: string; walletDestination?: never }
 );
 
 /** A request executed inside the offscreen document against lwk_wasm. */

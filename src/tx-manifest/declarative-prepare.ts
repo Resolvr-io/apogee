@@ -618,7 +618,11 @@ async function resolveInputs(
     const requirement = await evaluateDeclarativeWalletRequirement(role, partial);
     let target = BigInt(requirement.amount);
     const feeAssetId = await assetExpression(plan.recipe.fee.asset, partial, "fee asset");
-    if (!feeAssigned && requirement.assetId === feeAssetId) {
+    if (
+      !feeAssigned &&
+      requirement.assetId === feeAssetId &&
+      requirement.amountMode === "minimum"
+    ) {
       target += BigInt(selectionFee);
       feeAssigned = true;
     }

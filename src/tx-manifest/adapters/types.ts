@@ -4,6 +4,7 @@ import type {
   DeclarativeChainInputRequest,
   DeclarativeChainSnapshot,
 } from "@/tx-manifest/declarative-chain";
+import type { DeclarativeWalletDestination } from "@/tx-manifest/declarative-prepare";
 import type {
   AnyTxManifestRequirementPlan,
   TxManifestInvocation,
@@ -97,6 +98,8 @@ export type BuiltinTxManifestAdapterPreparationContext =
 export type DeclarativeTxManifestAdapterPreparationContext =
   TxManifestAdapterPreparationContextBase & {
     chainResolution: "declarative";
+    /** Host-derived public destination; does not expose a descriptor or signer. */
+    resolveWalletDestination(): Promise<DeclarativeWalletDestination>;
     /** Host-owned lookup restricted to the plan's exact declared outpoints. */
     resolveDeclarativeChainSnapshot(
       inputs: readonly DeclarativeChainInputRequest[],

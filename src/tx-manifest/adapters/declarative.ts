@@ -47,6 +47,11 @@ export const declarativeTxManifestExecutionAdapter: TxManifestExecutionAdapter<
     const chainSnapshot = await host.resolveDeclarativeChainSnapshot(
       plan.providedInputs.map(({ roleId, outpoint }) => ({ id: roleId, outpoint })),
     );
+    const walletDestination = signingMode === "none" && plan.recipe.outputs.some(
+      (output) => output.kind === "wallet" || output.kind === "change",
+    )
+      ? await host.resolveWalletDestination()
+      : undefined;
     const common = {
       kind: "prepareDeclarativeTxManifest" as const,
       network: host.network,
@@ -61,7 +66,11 @@ export const declarativeTxManifestExecutionAdapter: TxManifestExecutionAdapter<
           signingMode,
           descriptor: host.descriptor,
         })
-      : await host.engine<PreparedDeclarativeExecution>({ ...common, signingMode });
+      : await host.engine<PreparedDeclarativeExecution>({
+          ...common,
+          signingMode,
+          ...(walletDestination === undefined ? {} : { walletDestination }),
+        });
     if (prepared.review.signingMode !== signingMode) {
       throw new Error("The declarative transaction signing mode changed during preparation.");
     }

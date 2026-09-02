@@ -24,7 +24,7 @@ const FIRST_TXID = "33".repeat(32);
 const SECOND_TXID = "44".repeat(32);
 const COVENANT_SCRIPT = `5120${"55".repeat(32)}`;
 
-function bundle(protocol: string, action: string): TxManifestBundle {
+function bundle(protocol: string, action: string, walletOutput = false): TxManifestBundle {
   const provided = (id: string, providedInput: string, amount: string) => ({
     kind: "provided",
     id,
@@ -68,13 +68,20 @@ function bundle(protocol: string, action: string): TxManifestBundle {
               provided("first", "first_in", "60"),
               provided("second", "second_in", "50"),
             ],
-            outputs: [{
-              kind: "script",
-              asset: { op: "arg", name: "ASSET" },
-              amount: { op: "uint", value: "100" },
-              script: { op: "bytes", value: "51" },
-              confidential: false,
-            }],
+            outputs: walletOutput
+              ? [{
+                  kind: "wallet",
+                  asset: { op: "arg", name: "ASSET" },
+                  amount: { op: "uint", value: "100" },
+                  confidential: false,
+                }]
+              : [{
+                  kind: "script",
+                  asset: { op: "arg", name: "ASSET" },
+                  amount: { op: "uint", value: "100" },
+                  script: { op: "bytes", value: "51" },
+                  confidential: false,
+                }],
             fee: {
               mode: "fixed",
               asset: { op: "arg", name: "ASSET" },
@@ -90,8 +97,12 @@ function bundle(protocol: string, action: string): TxManifestBundle {
   };
 }
 
-async function invocation(protocol: string, action: string): Promise<TxManifestInvocation> {
-  const value = bundle(protocol, action);
+async function invocation(
+  protocol: string,
+  action: string,
+  walletOutput = false,
+): Promise<TxManifestInvocation> {
+  const value = bundle(protocol, action, walletOutput);
   return {
     protocolVersion: "0.1",
     requestId: `request-${action}`,
@@ -187,6 +198,10 @@ describe("generic declarative TX Manifest adapter", () => {
     }
     const snapshot = chainSnapshot();
     const resolveChain = vi.fn(async () => snapshot);
+    const resolveWalletDestination = vi.fn(async () => ({
+      scriptPubKey: "unused",
+      blindingPublicKey: "unused",
+    }));
     const requests: unknown[] = [];
     const engine: TxManifestAdapterEngine = async <Result>(
       request: TxManifestAdapterEngineRequest,
@@ -202,6 +217,7 @@ describe("generic declarative TX Manifest adapter", () => {
       network: "liquidtestnet",
       policyAssetId: ASSET,
       engine,
+      resolveWalletDestination,
       resolveDeclarativeChainSnapshot: resolveChain,
     });
 
@@ -216,12 +232,54 @@ describe("generic declarative TX Manifest adapter", () => {
       chainSnapshot: snapshot,
     });
     expect(requests[0]).not.toHaveProperty("descriptor");
+    expect(resolveWalletDestination).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       adapterId: DECLARATIVE_TX_MANIFEST_ADAPTER_ID,
       signingMode: "none",
       kind: "declarative",
       genesisHash: GENESIS,
     });
+  });
+
+  it("asks the host for a public destination for a keyless wallet output", async () => {
+    const plan = await resolveTxManifestRequirementsWithAdapter(
+      await invocation("publisher", "generic.Payout", true),
+    );
+    if (plan.planVersion !== "apogee-declarative-requirements/v1") {
+      throw new Error("expected declarative plan");
+    }
+    const destination = {
+      scriptPubKey: `0014${"77".repeat(20)}`,
+      blindingPublicKey: `02${"88".repeat(32)}`,
+    };
+    const resolveWalletDestination = vi.fn(async () => destination);
+    const requests: unknown[] = [];
+    const engine: TxManifestAdapterEngine = async <Result>(
+      request: TxManifestAdapterEngineRequest,
+    ) => {
+      requests.push(request);
+      return preparedExecution() as unknown as Result;
+    };
+
+    await declarativeTxManifestExecutionAdapter.prepare(plan, {
+      chainResolution: "declarative",
+      origin: "https://example.test",
+      descriptor: "descriptor-must-not-be-forwarded",
+      network: "liquidtestnet",
+      policyAssetId: ASSET,
+      engine,
+      resolveWalletDestination,
+      resolveDeclarativeChainSnapshot: async () => chainSnapshot(),
+    });
+
+    expect(resolveWalletDestination).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      kind: "prepareDeclarativeTxManifest",
+      signingMode: "none",
+      walletDestination: destination,
+    });
+    expect(requests[0]).not.toHaveProperty("descriptor");
   });
 
   it("dry-runs every declared covenant against the exact final transaction and parents", async () => {

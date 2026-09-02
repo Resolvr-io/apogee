@@ -27,7 +27,10 @@ import { claimSecret, type ParkedSecret } from "@/lib/qr-secret";
 import { clearAssetIconCache } from "@/lib/asset-icons";
 import { evaluateUpdate } from "@/lib/version-check";
 import { APP_VERSION } from "@/version";
-import { txManifestExpectedGenesisHash } from "@/tx-manifest/network";
+import {
+  txManifestExpectedGenesisHash,
+  txManifestRuntimeNetwork,
+} from "@/tx-manifest/network";
 import { browser } from "@/lib/ext";
 // Static imports — dynamic import() is disallowed in the MV3 service worker
 // global scope per the HTML spec (Chrome blocks it at runtime).
@@ -133,7 +136,10 @@ import type {
   ClaimLenderVaultRequirementPlan,
   TxManifestRequirementPlan,
 } from "@/tx-manifest/requirements";
-import type { TxManifestTransactionOutputInspection } from "@/tx-manifest/runtime";
+import type {
+  TxManifestAddressInspection,
+  TxManifestTransactionOutputInspection,
+} from "@/tx-manifest/runtime";
 import {
   requireTxManifestFinalTransactionTxid,
   txManifestPsetForFinalization,
@@ -2387,6 +2393,22 @@ async function prepareProviderTxManifest(
     ? await adapter.prepare(plan, {
         ...common,
         chainResolution: "declarative",
+        resolveWalletDestination: async () => {
+          const address = await engine<AddressDTO>({
+            kind: "getAddress",
+            descriptor: info.descriptor,
+            network: info.network,
+          });
+          const destination = await engine<TxManifestAddressInspection>({
+            kind: "inspectTxManifestAddress",
+            address: address.address,
+            network: txManifestRuntimeNetwork(info.network),
+          });
+          return {
+            scriptPubKey: destination.script_pub_key,
+            blindingPublicKey: destination.blinding_public_key,
+          };
+        },
         resolveDeclarativeChainSnapshot: async (requestedInputs) => {
           requireExactDeclarativeChainRequests(plan.providedInputs, requestedInputs);
           return resolveDeclarativeChainSnapshot(

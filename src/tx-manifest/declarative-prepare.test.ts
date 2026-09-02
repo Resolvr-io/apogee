@@ -90,10 +90,10 @@ function chain(inputs: DeclarativeChainSnapshot["inputs"]): DeclarativeChainSnap
 }
 
 describe("declarative preparation", () => {
-  it("builds a keyless fixed-fee covenant action with fee output at index 1", async () => {
+  it("builds a keyless fixed-fee covenant action with a wallet payout", async () => {
     const action = "renamed.CloseEquivalent";
     const recipe = {
-      arguments: { ASSET: "asset_id", PAYOUT: "u64", RESERVE: "u64", SCRIPT: "script" },
+      arguments: { ASSET: "asset_id", PAYOUT: "u64", RESERVE: "u64" },
       inputs: [
         {
           kind: "provided",
@@ -113,10 +113,9 @@ describe("declarative preparation", () => {
       ],
       outputs: [
         {
-          kind: "script",
+          kind: "wallet",
           asset: { op: "arg", name: "ASSET" },
           amount: { op: "arg", name: "PAYOUT" },
-          script: { op: "arg", name: "SCRIPT" },
           confidential: false,
         },
         { kind: "txmf", asset: { op: "arg", name: "ASSET" } },
@@ -141,7 +140,7 @@ describe("declarative preparation", () => {
     const resolved = await plan(
       action,
       bundle,
-      { ASSET, PAYOUT: "100", RESERVE: "10", SCRIPT: PAYOUT_SCRIPT },
+      { ASSET, PAYOUT: "100", RESERVE: "10" },
       { state_in: { txid: TXID, vout: 0 } },
     );
     const chainInput = {
@@ -163,15 +162,20 @@ describe("declarative preparation", () => {
       policyAssetId: ASSET,
       chain: chain([chainInput]),
       walletCandidates: [],
+      walletDestination: {
+        scriptPubKey: PAYOUT_SCRIPT,
+        blindingPublicKey: `02${"55".repeat(32)}`,
+      },
       feePolicy: { feeRateSatPerKvb: "100", maxFee: "20" },
     };
     const mocked = runtime();
     const prepared = await prepareDeclarativeExecution(resolved, snapshot, mocked.value);
     expect(prepared.review.signingMode).toBe("none");
     expect(prepared.review.outputs.map(({ index, role }) => [index, role])).toEqual([
-      [0, "script"],
+      [0, "wallet"],
       [2, "txmf"],
     ]);
+    expect(prepared.review.walletBalanceChanges).toEqual({ [ASSET]: "100" });
     expect(prepared.review.fee).toBe("10");
     expect(mocked.buildPset).toHaveBeenCalledWith(expect.objectContaining({
       fee: { asset: ASSET, amount: "10", output_index: 1 },
@@ -264,5 +268,185 @@ describe("declarative preparation", () => {
         expect.objectContaining({ amount: "20", blinder_index: 0 }),
       ]),
     });
+  });
+
+  it("estimates a fully finalized keyless action and pays explicit wallet change", async () => {
+    const action = "generic.KeylessEstimate";
+    const recipe = {
+      arguments: { ASSET: "asset_id" },
+      inputs: [{
+        kind: "provided",
+        id: "state",
+        provided_input: "state_in",
+        authorization: "covenant",
+        expect: {
+          asset: { op: "arg", name: "ASSET" },
+          amount: { op: "uint", value: "110" },
+        },
+      }],
+      outputs: [
+        {
+          kind: "script",
+          asset: { op: "arg", name: "ASSET" },
+          amount: { op: "uint", value: "100" },
+          script: { op: "bytes", value: PAYOUT_SCRIPT },
+          confidential: false,
+        },
+        {
+          kind: "change",
+          asset: { op: "arg", name: "ASSET" },
+          confidential: false,
+        },
+      ],
+      fee: {
+        mode: "estimate",
+        asset: { op: "arg", name: "ASSET" },
+        max_amount: { op: "uint", value: "10" },
+      },
+      covenant_witnesses: [{
+        input: "state",
+        source: "contract.simf",
+        arguments: {},
+        extra_leaf_payloads: [],
+        witnesses: { PATH: { kind: "right", value: { kind: "unit" } } },
+      }],
+    };
+    const bundle = baseBundle(action, recipe);
+    const resolved = await plan(
+      action,
+      bundle,
+      { ASSET },
+      { state_in: { txid: TXID, vout: 0 } },
+    );
+    const snapshot: DeclarativePreparationSnapshot = {
+      network: "elements-regtest",
+      genesisHash: GENESIS,
+      tipHeight: 100,
+      policyAssetId: ASSET,
+      chain: chain([{
+        id: "state",
+        txid: TXID,
+        vout: 0,
+        txOut: "aa",
+        scriptPubKey: COVENANT_SCRIPT,
+        assetId: ASSET,
+        amount: "110",
+        transactionHex: "0200000000",
+        confirmed: true,
+        blockHeight: 90,
+      }]),
+      walletCandidates: [],
+      walletDestination: {
+        scriptPubKey: `0014${"88".repeat(20)}`,
+        blindingPublicKey: `02${"99".repeat(32)}`,
+      },
+      feePolicy: { feeRateSatPerKvb: "100", maxFee: "20" },
+    };
+    const mocked = runtime();
+    mocked.estimateFee.mockImplementation(async ({ pset }) => {
+      expect(pset).toBe("pset-finalized");
+      return { discountVsize: 100, requiredFee: "5", unsignedWalletInputs: 0 };
+    });
+
+    const prepared = await prepareDeclarativeExecution(resolved, snapshot, mocked.value);
+
+    expect(prepared.review).toMatchObject({
+      signingMode: "none",
+      fee: "5",
+      feeChange: "5",
+      walletBalanceChanges: { [ASSET]: "5" },
+    });
+    expect(prepared.review.outputs).toContainEqual(expect.objectContaining({
+      role: "change",
+      amount: "5",
+      walletOwned: true,
+      confidential: false,
+    }));
+    expect(mocked.buildPset).toHaveBeenCalledTimes(2);
+    expect(mocked.finalizeCovenant).toHaveBeenCalledTimes(2);
+    expect(mocked.estimateFee).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps exact wallet roles exact and assigns fees to a minimum role", async () => {
+    const action = "generic.ExactThenFee";
+    const recipe = {
+      arguments: { ASSET: "asset_id" },
+      inputs: [
+        {
+          kind: "wallet",
+          id: "exact",
+          asset: { op: "arg", name: "ASSET" },
+          amount: { op: "uint", value: "100" },
+          amount_mode: "exact",
+          script_type: "p2wpkh",
+        },
+        {
+          kind: "wallet",
+          id: "fees",
+          asset: { op: "arg", name: "ASSET" },
+          amount: { op: "uint", value: "1" },
+          amount_mode: "minimum",
+          script_type: "p2wpkh",
+        },
+      ],
+      outputs: [{
+        kind: "script",
+        asset: { op: "arg", name: "ASSET" },
+        amount: { op: "uint", value: "101" },
+        script: { op: "bytes", value: PAYOUT_SCRIPT },
+        confidential: false,
+      }],
+      fee: {
+        mode: "fixed",
+        asset: { op: "arg", name: "ASSET" },
+        amount: { op: "uint", value: "5" },
+      },
+      covenant_witnesses: [],
+    };
+    const bundle = baseBundle(action, recipe);
+    const resolved = await plan(action, bundle, { ASSET });
+    const secondTxid = "34".repeat(32);
+    const snapshot: DeclarativePreparationSnapshot = {
+      network: "elements-regtest",
+      genesisHash: GENESIS,
+      tipHeight: 100,
+      policyAssetId: ASSET,
+      chain: chain([]),
+      walletCandidates: [
+        {
+          txid: TXID,
+          vout: 0,
+          txOut: "aa",
+          scriptPubKey: PAYOUT_SCRIPT,
+          assetId: ASSET,
+          amount: "100",
+          address: "el1exact",
+          parentTransaction: "0200000001",
+        },
+        {
+          txid: secondTxid,
+          vout: 1,
+          txOut: "bb",
+          scriptPubKey: PAYOUT_SCRIPT,
+          assetId: ASSET,
+          amount: "6",
+          address: "el1fees",
+          parentTransaction: "0200000002",
+        },
+      ],
+      feePolicy: { feeRateSatPerKvb: "100", maxFee: "20" },
+    };
+    const mocked = runtime();
+
+    const prepared = await prepareDeclarativeExecution(resolved, snapshot, mocked.value);
+
+    expect(prepared.review.signingMode).toBe("wallet");
+    expect(mocked.buildPset).toHaveBeenCalledWith(expect.objectContaining({
+      inputs: [
+        expect.objectContaining({ amount: "100" }),
+        expect.objectContaining({ amount: "6" }),
+      ],
+      fee: { asset: ASSET, amount: "5", output_index: 1 },
+    }));
   });
 });

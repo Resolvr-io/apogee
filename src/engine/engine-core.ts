@@ -998,6 +998,16 @@ function declarativePreparationSnapshot(
   };
 }
 
+/** Preserve the public destination while keeping keyless preparation wallet-free. */
+export function declarativeKeylessPreparationSnapshot(
+  request: Extract<EngineRequest, { kind: "prepareDeclarativeTxManifest" }>,
+): DeclarativePreparationSnapshot {
+  if (request.signingMode !== "none") {
+    throw new Error("A wallet-signing request cannot use keyless preparation.");
+  }
+  return declarativePreparationSnapshot(request, [], request.walletDestination);
+}
+
 export async function handle(req: EngineRequest): Promise<unknown> {
   // These static, secret-free operations do not require the wallet WASM. Keeping
   // them ahead of loadLwk also makes support discovery available before connect.
@@ -1031,7 +1041,7 @@ export async function handle(req: EngineRequest): Promise<unknown> {
     }
     return prepareDeclarativeExecution(
       req.plan,
-      declarativePreparationSnapshot(req, []),
+      declarativeKeylessPreparationSnapshot(req),
       DECLARATIVE_PREPARATION_RUNTIME,
       req.reviewedFee,
     );

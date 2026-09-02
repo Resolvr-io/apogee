@@ -514,7 +514,9 @@ pub fn build_manifest_pset_json(spec_json: &str) -> Result<String, JsValue> {
 
 /// Estimate the conservative signed discounted vsize and required fee for a
 /// manifest PSET. Contract adapters must finalize every non-wallet input first;
-/// remaining unsigned inputs must be Apogee's standard native SegWit P2WPKH.
+/// any remaining unsigned inputs must be Apogee's standard native SegWit
+/// P2WPKH. A fully finalized keyless transaction needs no added satisfaction
+/// weight.
 #[wasm_bindgen]
 pub fn estimate_manifest_fee_json(spec_json: &str) -> Result<String, JsValue> {
     let spec: ManifestFeeEstimateSpec =
@@ -529,6 +531,9 @@ fn estimate_manifest_fee(spec: &ManifestFeeEstimateSpec) -> Result<ManifestFeeEs
     let fee_rate = amount(&spec.fee_rate_sat_per_kvb, "fee_rate_sat_per_kvb")?;
     if fee_rate == 0 {
         return Err("fee_rate_sat_per_kvb must be greater than zero".to_owned());
+    }
+    if pset.inputs().is_empty() {
+        return Err("manifest PSET has no inputs".to_owned());
     }
 
     let mut unsigned_wallet_inputs = 0usize;
@@ -547,10 +552,6 @@ fn estimate_manifest_fee(spec: &ManifestFeeEstimateSpec) -> Result<ManifestFeeEs
         }
         unsigned_wallet_inputs += 1;
     }
-    if unsigned_wallet_inputs == 0 {
-        return Err("manifest PSET has no unsigned wallet inputs".to_owned());
-    }
-
     let transaction = pset.extract_tx().map_err(|error| error.to_string())?;
     let satisfaction_weight = unsigned_wallet_inputs
         .checked_mul(ELWPKH_MAX_SATISFACTION_WEIGHT)
@@ -1486,6 +1487,42 @@ fn main() {
         assert_eq!(estimate.discount_vsize, expected_vsize);
         assert_eq!(estimate.required_fee, expected_vsize.to_string());
         assert_eq!(estimate.unsigned_wallet_inputs, 1);
+    }
+
+    #[test]
+    fn estimates_fully_finalized_keyless_manifest_fees() {
+        let wallet_script = format!("0014{}", "11".repeat(20));
+        let spec = serde_json::json!({
+            "input": {
+                "txid": "00".repeat(32),
+                "vout": 0,
+                "asset": POLICY_ASSET,
+                "amount": "1000",
+                "script_pub_key": wallet_script
+            },
+            "outputs": [{
+                "asset": POLICY_ASSET,
+                "amount": "900",
+                "script_pub_key": "51"
+            }],
+            "fee": {
+                "asset": POLICY_ASSET,
+                "amount": "100"
+            }
+        });
+        let encoded = build_explicit_pset(&spec.to_string()).unwrap();
+        let mut parsed = PartiallySignedTransaction::from_str(&encoded).unwrap();
+        parsed.inputs_mut()[0].final_script_witness =
+            Some(vec![vec![0x30; 72], vec![0x02; 33]]);
+        let expected_vsize = parsed.extract_tx().unwrap().discount_vsize();
+        let estimate = estimate_manifest_fee(&ManifestFeeEstimateSpec {
+            pset: parsed.to_string(),
+            fee_rate_sat_per_kvb: "1000".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(estimate.discount_vsize, expected_vsize);
+        assert_eq!(estimate.required_fee, expected_vsize.to_string());
+        assert_eq!(estimate.unsigned_wallet_inputs, 0);
     }
 
     #[test]
