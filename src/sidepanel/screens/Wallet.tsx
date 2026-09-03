@@ -2467,7 +2467,7 @@ function SettingsBody({
             }
           />
           <Row label="Fingerprint" value={info.fingerprint.toUpperCase()} console />
-          <Row label="Version" value={`v${APP_VERSION_DISPLAY}`} console />
+          <Row label="Version" value={`v${APP_VERSION_DISPLAY}`} console copy={APP_VERSION_DISPLAY} />
         </dl>
       </Card>
 
@@ -3267,23 +3267,37 @@ function Row({
   value,
   mono,
   console: consoleValue,
+  copy,
 }: {
   label: string;
   value: string;
   mono?: boolean;
   console?: boolean; // telemetry-face readout (fingerprint, version)
+  // Exact string to put on the clipboard, which is not always the rendered
+  // value — the version renders with a leading "v" that nobody wants pasted
+  // into a bug report. CopyIconButton rather than a click on the value itself:
+  // its own docstring names inline value rows as what it exists for, and the
+  // panel already copies asset ids and txids that way.
+  copy?: string;
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
       <dt className="text-[color:var(--text-subtle)]">{label}</dt>
       <dd
         className={cn(
-          "truncate text-[color:var(--text-primary)]",
-          mono && "font-mono",
-          consoleValue && "console-value text-[13px]",
+          "flex min-w-0 items-center justify-end gap-1.5 text-[color:var(--text-primary)]",
         )}
       >
-        {value}
+        <span
+          className={cn(
+            "truncate",
+            mono && "font-mono",
+            consoleValue && "console-value text-[13px]",
+          )}
+        >
+          {value}
+        </span>
+        {copy !== undefined && <CopyIconButton value={copy} label={`Copy ${label.toLowerCase()}`} />}
       </dd>
     </div>
   );
