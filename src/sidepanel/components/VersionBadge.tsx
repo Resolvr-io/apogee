@@ -1,14 +1,22 @@
 // Transient version readout pinned to the bottom of the panel. Confirms which
 // build is running — handy in development, and lets a user check they're on the
-// latest release — then fades out so it never becomes furniture. It stacks
-// below the connection bar and the main content, so an active bar simply
-// covers it and it can't obscure anything interactive.
+// latest release — then fades out so it never becomes furniture.
+//
+// It no longer stacks BELOW the panel chrome, because it takes clicks now and a
+// covered control is an unreachable one. App mounts it inside <main> so it
+// cannot reach the connection bar's band, and it sits above main's content but
+// below the modals nested in it. See the comment at that mount site.
+//
+// Clicking copies the version string verbatim — a bug-report aid. The only
+// acknowledgment is a brief shift to the primary ink: no label, no layout
+// change, because this stays furniture. Only the text takes clicks; the strip
+// around it stays pass-through.
 //
 // It fades in as well as out. App mounts it only once the first-run intro has
 // finished, so without an entrance it would pop into a scene that had just
 // spent five seconds easing everything else in.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { APP_VERSION_DISPLAY } from "@/version";
 
 const VISIBLE_MS = 15_000; // from mount to the start of the fade-out
@@ -57,18 +65,65 @@ export function useTransientChrome(): { shown: boolean; gone: boolean } {
 
 export function VersionBadge() {
   const { shown, gone } = useTransientChrome();
+  // Copy feedback is color alone, so the readout never changes width and the
+  // strip cannot reflow under it. Local to this component rather than part of
+  // useTransientChrome: the replay button shares that hook and has nothing to
+  // copy.
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (copiedTimer.current != null) window.clearTimeout(copiedTimer.current);
+    },
+    [],
+  );
+
+  async function copyVersion() {
+    try {
+      await navigator.clipboard.writeText(APP_VERSION_DISPLAY);
+    } catch {
+      return; // blocked or failed — no shift for a copy that didn't happen
+    }
+    setCopied(true);
+    if (copiedTimer.current != null) window.clearTimeout(copiedTimer.current);
+    copiedTimer.current = window.setTimeout(() => setCopied(false), 1200);
+  }
 
   if (gone) return null;
+  // z-20, not z-[5]: content inside main sits at z-10 and would win hit-testing
+  // over this strip, so the click never reached the text. It is transparent
+  // there, which is why only a click revealed the stacking.
+  //
+  // Toasts at z-30 do outrank this, and their CARD is pointer-events-auto even
+  // though the container is not — so a toast on screen can shadow the top few
+  // pixels of this button. That is the correct precedence and not worth fighting:
+  // a toast is a live message, this is furniture.
+  //
+  // No aria-hidden any more either — it held a span before, and hiding a real
+  // button from the accessibility tree would make the copy unreachable by
+  // keyboard while leaving it focusable.
   return (
     <div
-      aria-hidden="true"
-      className={`pointer-events-none absolute inset-x-0 bottom-2 z-[5] text-center transition-opacity duration-1000 motion-reduce:transition-none ${
+      className={`pointer-events-none absolute inset-x-0 bottom-2 z-20 text-center transition-opacity duration-1000 motion-reduce:transition-none ${
         shown ? "opacity-100" : "opacity-0"
       }`}
     >
-      <span className="console-value text-[10px] text-[color:var(--text-subtle)]">
+      <button
+        type="button"
+        title={copied ? "Copied" : "Click to copy version"}
+        onClick={() => void copyVersion()}
+        // Gated on `shown`, not just on `gone`: opacity does not affect
+        // hit-testing, so between the fade starting at 15s and the unmount at
+        // 16s an invisible control was still taking clicks and still a tab
+        // stop. App.tsx calls out that exact property for the replay button,
+        // where it is wanted; here it is not.
+        tabIndex={shown ? undefined : -1}
+        className={`console-value cursor-pointer text-[10px] transition-colors ${
+          shown ? "pointer-events-auto" : ""
+        } ${copied ? "text-[color:var(--text-primary)]" : "text-[color:var(--text-subtle)]"}`}
+      >
         v{APP_VERSION_DISPLAY}
-      </span>
+      </button>
     </div>
   );
 }
