@@ -98,7 +98,13 @@ export function ApprovalOverlay({
     >
       <div className="flex min-h-full items-start justify-center">
         <div className="my-auto w-full max-w-sm">
-          <Approval request={request} onClose={onClose} />
+          {/* Keyed by request id. App replaces the displayed request in place on
+              a new approval-request message, so without this the component keeps
+              its state across a swap: the acknowledgement tick for contract A
+              would leave Approve live for contract B, from a different origin,
+              which the user has never seen. `locked`, `sendPassword` and `error`
+              carried over the same way. */}
+          <Approval key={request.id} request={request} onClose={onClose} />
         </div>
       </div>
     </div>
@@ -759,7 +765,10 @@ function outputRoleLabel(role: GenericTxManifestOutputReviewDTO["role"]): string
     case "wallet":
       return "To your wallet";
     case "script":
-      return "Contract script";
+      // NOT "contract script". A script output can be an arbitrary third-party
+      // payout script, so naming the contract here would be reassuring in the
+      // wrong direction. The destination script is shown beside it instead.
+      return "To a script";
     case "record":
       return "On-chain record";
     case "txmf":
@@ -797,6 +806,58 @@ function Disclosure({
   );
 }
 
+/** One destination in "Where it goes": asset identity, where it lands, how much.
+ *
+ *  Modelled on ManifestAssetRow so the figure is precision-scaled by the same
+ *  code the hero uses. A bare role label and a base-units number was the earlier
+ *  shape and it was worse than nothing on a multi-asset transaction: two rows
+ *  both reading "base units", no ticker and no id, stacked in a column that
+ *  looked addable and was not. It also printed raw base units under a hero
+ *  printing scaled amounts, so the two disagreed for any asset with precision. */
+function ManifestDestinationRow({
+  review,
+  output,
+  specNetwork,
+}: {
+  review: GenericTxManifestReviewDTO;
+  output: GenericTxManifestOutputReviewDTO;
+  specNetwork: LiquidNetwork;
+}) {
+  const meta = metaFor(review, output.assetId);
+  const isFee = output.role === "fee";
+  return (
+    <div className="flex items-center gap-2.5 py-1">
+      <AssetIcon
+        assetId={output.assetId}
+        label={meta.label}
+        network={specNetwork}
+        size="size-7"
+        textSize="text-[10px]"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm text-[color:var(--text-primary)]">
+          {outputRoleLabel(output.role)}
+        </div>
+        <div
+          className="truncate font-mono text-[9px] text-[color:var(--text-subtle)]"
+          title={isFee ? "Elements fee output" : output.scriptPubKey}
+        >
+          {isFee ? "(fee output)" : shortenHex(output.scriptPubKey, 10, 8)}
+        </div>
+      </div>
+      <div className="shrink-0 text-right">
+        <TelemetryNumber
+          value={formatAssetAmountExact(output.amount, meta.precision)}
+          glow={false}
+        />
+        <div className="font-mono text-[9px] text-[color:var(--text-subtle)]" title={output.assetId}>
+          {meta.ticker ?? shortenHex(output.assetId, 4, 4)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GenericTxManifestReview({
   review,
   network,
@@ -812,56 +873,34 @@ function GenericTxManifestReview({
   >["signingMode"];
 }) {
   const signingModeMismatch = requestedSigningMode !== review.signingMode;
-  const walletEffects = Object.entries(review.walletBalanceChanges).sort(([a], [b]) =>
-    a.localeCompare(b),
-  );
+  const walletEffects = Object.entries(review.walletBalanceChanges)
+    // A zero entry is shipped for an asset the transaction touches without moving
+    // the wallet's holding of it. It is not an effect, and "You receive 0" is
+    // worse than silence: startsWith("-") is false for "0", so it read as a
+    // receipt. Dropping it lets the no-effect branch below speak instead.
+    .filter(([, amount]) => BigInt(amount) !== 0n)
+    .sort(([a], [b]) => a.localeCompare(b));
   const specNetwork = manifestSpecNetwork(network);
-  const outputSummary = (() => {
-    const rows = new Map<
-      string,
-      {
-        role: GenericTxManifestOutputReviewDTO["role"];
-        label: string;
-        assetId: string;
-        total: bigint;
-        count: number;
-        walletOwned: boolean;
-      }
-    >();
-    for (const output of review.outputs) {
-      const key = `${output.role}:${output.assetId}`;
-      const existing = rows.get(key);
-      if (existing) {
-        existing.total += BigInt(output.amount);
-        existing.count += 1;
-        existing.walletOwned = existing.walletOwned && output.walletOwned;
-        continue;
-      }
-      rows.set(key, {
-        role: output.role,
-        label: outputRoleLabel(output.role),
-        assetId: output.assetId,
-        total: BigInt(output.amount),
-        count: 1,
-        walletOwned: output.walletOwned,
-      });
-    }
-    // Index order of first appearance, which is the transaction's own order,
-    // except the fee: it is the cost of the whole transaction rather than one of
-    // its destinations, and it reads as a total when it sits last. The fee
-    // output's index is wherever the builder put it, so this cannot be left to
-    // the DTO's ordering.
-    return [...rows.values()]
-      // Only what actually leaves. Change and any other wallet-owned output come
-      // straight back, and a zero-value output is a data carrier rather than a
-      // payment; listing either answers a question nobody asked and buried the
-      // one destination that matters. Dropping them gives the column a property
-      // it did not have: it now sums to the "You pay" figure above it. Both are
-      // still itemised in full under Every output.
-      .filter((r) => !r.walletOwned && r.total > 0n)
-      .sort((a, b) => Number(a.role === "fee") - Number(b.role === "fee"))
-      .map((r) => ({ ...r, total: r.total.toString() }));
-  })();
+  // Every output that actually leaves the wallet carrying value. Per output, NOT
+  // grouped: grouping by role+asset merged distinct destination scripts into one
+  // row, and folding ownership with && kept a mixed group whole so its total
+  // still counted the wallet-owned member the filter was meant to drop. After
+  // this filter there are only ever a handful of rows, so grouping bought
+  // nothing and cost the one fact the section exists to show.
+  //
+  // This column does NOT sum to the balance effect above, and must not be
+  // presented as if it did. Conservation per asset is
+  // `nonWalletOut = -walletBalanceChange + nonWalletIn`, so the two agree only
+  // when no input carries outside value. A covenant input carrying value is the
+  // normal case for a generic contract, which is exactly what this screen is
+  // for. Each row therefore names its own asset and its own destination and
+  // stands alone.
+  const destinations = review.outputs
+    .filter((output) => !output.walletOwned && BigInt(output.amount) > 0n)
+    // Fee last: it is the cost of the transaction rather than a destination, and
+    // its output index is wherever the builder put it.
+    .sort((a, b) => Number(a.role === "fee") - Number(b.role === "fee"));
+
   return (
     <div className="flex flex-col gap-3">
       {/* Amber ink on near-black, not an amber field. The hue was never the
@@ -931,28 +970,22 @@ function GenericTxManifestReview({
             ))}
           </div>
         )}
-        {/* Where it goes, not just how much leaves. Grouped by role and summed,
-            because six outputs listed individually is the wall of hex this
-            screen already had; two of them being change is not two facts. The
-            fee is one of these rows rather than a special case, so the column
-            adds up to the transaction. */}
-        {outputSummary.length > 0 && (
-          <dl className="mt-2 flex flex-col gap-1 border-t border-[color:var(--border-default)] pt-2">
+        {/* Where it goes. Each row names its own asset and destination and does
+            NOT add up with its neighbours: see the note on `destinations`. */}
+        {destinations.length > 0 && (
+          <div className="mt-2 flex flex-col border-t border-[color:var(--border-default)] pt-2">
             <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-subtle)]">
               Where it goes
             </div>
-            {outputSummary.map((line) => (
-              <Row
-                key={`generic-dest:${line.role}:${line.assetId}`}
-                label={line.count > 1 ? `${line.label} (${line.count})` : line.label}
-                value={`${formatBaseUnits(line.total)} ${
-                  line.assetId === review.feeAssetId ? "sats" : "base units"
-                }`}
-                amount
-                strong={line.role === "covenant"}
+            {destinations.map((output) => (
+              <ManifestDestinationRow
+                key={`generic-dest:${output.index}`}
+                review={review}
+                output={output}
+                specNetwork={specNetwork}
               />
             ))}
-          </dl>
+          </div>
         )}
       </div>
 
