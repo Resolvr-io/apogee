@@ -1,8 +1,11 @@
 // Transient version readout pinned to the bottom of the panel. Confirms which
 // build is running — handy in development, and lets a user check they're on the
-// latest release — then fades out so it never becomes furniture. It stacks
-// below the connection bar and the main content, so an active bar simply
-// covers it and it can't obscure anything interactive.
+// latest release — then fades out so it never becomes furniture.
+//
+// It no longer stacks BELOW the panel chrome, because it takes clicks now and a
+// covered control is an unreachable one. App mounts it inside <main> so it
+// cannot reach the connection bar's band, and it sits above main's content but
+// below the modals nested in it. See the comment at that mount site.
 //
 // Clicking copies the version string verbatim — a bug-report aid. The only
 // acknowledgment is a brief shift to the primary ink: no label, no layout
@@ -87,10 +90,14 @@ export function VersionBadge() {
   }
 
   if (gone) return null;
-  // z-20, not z-[5]: main's scroll column and ConnectionBar both sit at z-10 and
-  // would win hit-testing over this strip, so the click never reached the text.
-  // They are transparent here, which is why only a click revealed the stacking.
-  // Toasts stay above at z-30 and take no pointer events.
+  // z-20, not z-[5]: content inside main sits at z-10 and would win hit-testing
+  // over this strip, so the click never reached the text. It is transparent
+  // there, which is why only a click revealed the stacking.
+  //
+  // Toasts at z-30 do outrank this, and their CARD is pointer-events-auto even
+  // though the container is not — so a toast on screen can shadow the top few
+  // pixels of this button. That is the correct precedence and not worth fighting:
+  // a toast is a live message, this is furniture.
   //
   // No aria-hidden any more either — it held a span before, and hiding a real
   // button from the accessibility tree would make the copy unreachable by
@@ -105,9 +112,15 @@ export function VersionBadge() {
         type="button"
         title={copied ? "Copied" : "Click to copy version"}
         onClick={() => void copyVersion()}
-        className={`console-value pointer-events-auto cursor-pointer text-[10px] transition-colors ${
-          copied ? "text-[color:var(--text-primary)]" : "text-[color:var(--text-subtle)]"
-        }`}
+        // Gated on `shown`, not just on `gone`: opacity does not affect
+        // hit-testing, so between the fade starting at 15s and the unmount at
+        // 16s an invisible control was still taking clicks and still a tab
+        // stop. App.tsx calls out that exact property for the replay button,
+        // where it is wanted; here it is not.
+        tabIndex={shown ? undefined : -1}
+        className={`console-value cursor-pointer text-[10px] transition-colors ${
+          shown ? "pointer-events-auto" : ""
+        } ${copied ? "text-[color:var(--text-primary)]" : "text-[color:var(--text-subtle)]"}`}
       >
         v{APP_VERSION_DISPLAY}
       </button>
