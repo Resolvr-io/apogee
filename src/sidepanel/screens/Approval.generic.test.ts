@@ -127,7 +127,7 @@ describe("generic declarative ApprovalOverlay", () => {
     expect(markup).toContain('data-testid="generic-manifest-warning"');
     expect(markup).toContain('role="alert"');
     expect(text).toContain("Unverified contract action");
-    expect(text).toContain("no trusted app-specific understanding");
+    expect(text).toContain("does not recognize this contract");
     expect(text.indexOf("Unverified contract action")).toBeLessThan(
       text.indexOf("Publisher protocol claim"),
     );
