@@ -5,9 +5,9 @@
 
 import { useEffect, useState } from "react";
 import {
-  AlertTriangle,
   Bell,
   Check,
+  ChevronDown,
   Coins,
   Eye,
   FileCode2,
@@ -98,7 +98,13 @@ export function ApprovalOverlay({
     >
       <div className="flex min-h-full items-start justify-center">
         <div className="my-auto w-full max-w-sm">
-          <Approval request={request} onClose={onClose} />
+          {/* Keyed by request id. App replaces the displayed request in place on
+              a new approval-request message, so without this the component keeps
+              its state across a swap: the acknowledgement tick for contract A
+              would leave Approve live for contract B, from a different origin,
+              which the user has never seen. `locked`, `sendPassword` and `error`
+              carried over the same way. */}
+          <Approval key={request.id} request={request} onClose={onClose} />
         </div>
       </div>
     </div>
@@ -108,7 +114,7 @@ export function ApprovalOverlay({
 /** Human-readable labels for RPC methods shown on the connect screen. */
 const METHOD_LABELS: Record<string, { label: string; description: string; icon: typeof Eye; sensitive?: boolean }> = {
   getBalance: { label: "Read balances", description: "See this account's asset balances.", icon: Eye },
-  sendTransfer: { label: "Request sends", description: "Ask to send funds — each send needs your approval.", icon: Send },
+  sendTransfer: { label: "Request sends", description: "Ask to send funds. Each send needs your approval.", icon: Send },
   signPset: {
     label: "Sign transactions",
     description:
@@ -151,6 +157,14 @@ const EVENT_LABELS: Record<string, { label: string; description: string; icon: t
 };
 
 export function Approval({ request, onClose }: { request: ApprovalRequest; onClose: () => void }) {
+  // An unverified contract is the one approval on this screen where Apogee has
+  // checked nothing on the user's behalf, so it does not get a one-click yes.
+  // Gating the CTA behind an explicit acknowledgement is the only thing here that
+  // makes reading the review non-optional. Verified contracts, sends, PSETs and
+  // connects are unaffected: something has vouched for those.
+  const needsAck =
+    request.kind === "executeTxManifest" && request.review.kind === "generic";
+  const [acknowledged, setAcknowledged] = useState(false);
   const isConnect = request.kind === "connect";
   const isPset = request.kind === "signPset";
   const isManifest = request.kind === "executeTxManifest";
@@ -334,7 +348,7 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
           <p className="text-sm text-[color:var(--text-secondary)]">
             {request.legacy
               ? "This site wants to connect. It will see your addresses and balance, but can't move funds without your approval."
-              : "This site wants to connect. Review what it's asking for — every transaction still needs your approval."}
+              : "This site wants to connect. Review what it's asking for. Every transaction still needs your approval."}
           </p>
           <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
             <Row label="Wallet" value={request.fingerprint.toUpperCase()} console />
@@ -439,7 +453,7 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
               <Row
                 label="Label"
                 value={`registry · ${sendReview.assetTicker.slice(0, 24)}`}
-                title={`"${sendReview.assetTicker}" comes from the public asset registry and is not verified — identify the asset by its ID above.`}
+                title={`"${sendReview.assetTicker}" comes from the public asset registry and is not verified. Identify the asset by its ID above.`}
               />
             )}
             <Row
@@ -474,14 +488,21 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
           </dl>
           {sendReview?.toSelf && (
             <p className="mt-1.5 text-xs text-[color:var(--text-subtle)]">
-              This address belongs to this wallet — the amount returns to you.
+              This address belongs to this wallet, so the amount returns to you.
             </p>
           )}
         </>
       )}
 
+      {/* Docked, not merely last: a generic contract review runs to several
+          screenfuls, and these controls sitting at the end of it meant the only
+          way to reject was to read to the bottom first. Sticky inside the
+          overlay's scroll container keeps them reachable at any scroll position,
+          so scrolling is for auditing detail rather than for reaching a button.
+          The negative margins bleed the dock to the card's edges past its p-4. */}
+      <div className="apogee-action-dock sticky bottom-0 -mx-4 -mb-4 mt-3 rounded-b-xl px-4 pb-4 pt-3">
       {locked ? (
-        <form onSubmit={unlock} className="mt-3 flex flex-col gap-2">
+        <form onSubmit={unlock} className="flex flex-col gap-2">
           <Field label="Unlock to approve">
             <Input
               type="password"
@@ -499,7 +520,7 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
           </Button>
         </form>
       ) : (
-        <div className="mt-3 flex flex-col gap-2">
+        <div className="flex flex-col gap-2">
           <ErrorText>{error}</ErrorText>
           {jade && (
             <p className="text-center text-xs text-[color:var(--text-subtle)]">
@@ -509,7 +530,7 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
                   ? broadcastsPset
                     ? "You'll sign on your Jade. After validation, Apogee will broadcast the transaction."
                     : "You'll sign on your Jade. The signed PSET returns to the app and is not broadcast."
-                  : "You'll sign on your Jade — a window opens after you approve."}
+                  : "You'll sign on your Jade. A window opens after you approve."}
             </p>
           )}
           {needsStepUpPassword && (
@@ -522,10 +543,24 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
               />
             </Field>
           )}
+          {needsAck && (
+            <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--accent-amber)_26%,transparent)] bg-[color:var(--readout-bg)] p-2.5 text-xs leading-snug text-[color:color-mix(in_srgb,var(--accent-amber)_82%,transparent)]">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(e) => setAcknowledged(e.target.checked)}
+                className="mt-0.5 size-3.5 shrink-0 accent-[color:var(--accent-amber)]"
+              />
+              <span>I checked the amounts and accept this contract is unverified.</span>
+            </label>
+          )}
           <Button
             onClick={approve}
-            disabled={busy || (needsStepUpPassword && !sendPassword)}
-            className={busy ? undefined : "apogee-cta"}
+            disabled={busy || (needsStepUpPassword && !sendPassword) || (needsAck && !acknowledged)}
+            /* No CTA glow while gated: a button that looks primary but refuses
+               the click reads as broken rather than as withheld. disabled:opacity-50
+               on Button does the dimming. */
+            className={busy || (needsAck && !acknowledged) ? undefined : "apogee-cta"}
           >
             {busy ? (
               <Spinner />
@@ -554,6 +589,7 @@ export function Approval({ request, onClose }: { request: ApprovalRequest; onClo
           </Button>
         </div>
       )}
+      </div>
     </Card>
   );
 }
@@ -674,6 +710,153 @@ function manifestTechnicalAssets(
 }
 
 type GenericTxManifestReviewDTO = Extract<TxManifestReviewDTO, { kind: "generic" }>;
+type GenericTxManifestOutputReviewDTO = GenericTxManifestReviewDTO["outputs"][number];
+
+/** A collapsed review section.
+ *
+ *  Closed by default and rendered anyway: the children stay in the DOM, so the
+ *  exact facts are present for anyone auditing the markup and are one click from
+ *  the eye — collapsing is a layout decision here, never a disclosure one. The
+ *  count sits in the summary so the reader knows how much is inside before
+ *  deciding to open it. */
+/** An unidentified visitor, for an unidentified contract.
+ *
+ *  Pixel art, so it is sized off its own grid rather than to a nominal icon box:
+ *  the artwork is 10 columns by 8 rows of 9.8-unit cells, and `block` is one
+ *  cell in CSS pixels. At the default 2 that is a 20x16 icon whose every block
+ *  lands on a whole pixel — pick a fractional block and the antennae go muddy,
+ *  which is also why shapeRendering is crispEdges rather than the default
+ *  smoothing.
+ *
+ *  Filled, not stroked, so it does NOT match the lucide icons beside it — that
+ *  is the point. The other icons are interface furniture; this one is the
+ *  subject. Sputnik above is filled for the same reason. */
+function Alien({ block = 2 }: { block?: number }) {
+  return (
+    <svg
+      width={block * 10}
+      height={block * 8}
+      viewBox="0 0 97.9 78.4"
+      fill="currentColor"
+      shapeRendering="crispEdges"
+      aria-hidden="true"
+    >
+      <path d="M97.8,39.2h-9.7v-9.8h-9.8v-9.8h-9.8v-9.8h-9.8v9.8h-19.5v-9.8h-9.8v9.8h-9.8v9.8h-9.8v9.8H0v29.4h9.8v-19.6h9.8v9.8h9.8v9.8h-9.8v9.8h19.6v-19.6h19.5v19.6h19.6v-9.8h-9.8v-9.8h9.9v-9.8h9.7v19.6h9.8v-29.4h-.1ZM39.2,39.2h-9.8v-9.8h9.8v9.8ZM68.5,39.2h-9.8v-9.8h9.8v9.8Z" />
+      <rect x="19.6" width="9.8" height="9.8" />
+      <rect x="68.5" width="9.8" height="9.8" />
+    </svg>
+  );
+}
+
+/** Plain-language destination for each output role.
+ *
+ *  The whole point of the summary this feeds: the balance figure says how much
+ *  leaves, and says nothing about where it goes. Money locked into a covenant and
+ *  money paid to a stranger are the same number and very different events.
+ *
+ *  Exhaustive over the role union on purpose. Adding a role to the DTO without a
+ *  label here is a type error rather than an output that silently reads "script". */
+function outputRoleLabel(role: GenericTxManifestOutputReviewDTO["role"]): string {
+  switch (role) {
+    case "covenant":
+      return "Locked into the contract";
+    case "change":
+      return "Change back to you";
+    case "wallet":
+      return "To your wallet";
+    case "script":
+      // NOT "contract script". A script output can be an arbitrary third-party
+      // payout script, so naming the contract here would be reassuring in the
+      // wrong direction. The destination script is shown beside it instead.
+      return "To a script";
+    case "record":
+      return "On-chain record";
+    case "txmf":
+      return "Contract metadata";
+    case "fee":
+      return "Network fee";
+  }
+}
+
+function Disclosure({
+  title,
+  count,
+  children,
+}: {
+  title: string;
+  count?: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <details className="rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)]">
+      <summary className="group flex cursor-pointer list-none items-center gap-3 px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-[color:var(--text-subtle)]">
+        <span className="flex-1">{title}</span>
+        {count !== undefined && (
+          <span className="font-mono text-[color:var(--text-secondary)]">{count}</span>
+        )}
+        <ChevronDown
+          className="size-4 shrink-0 transition-transform group-open:rotate-180"
+          aria-hidden="true"
+        />
+      </summary>
+      <div className="flex flex-col gap-1.5 border-t border-[color:var(--border-default)] p-3">
+        {children}
+      </div>
+    </details>
+  );
+}
+
+/** One destination in "Where it goes": asset identity, where it lands, how much.
+ *
+ *  Modelled on ManifestAssetRow so the figure is precision-scaled by the same
+ *  code the hero uses. A bare role label and a base-units number was the earlier
+ *  shape and it was worse than nothing on a multi-asset transaction: two rows
+ *  both reading "base units", no ticker and no id, stacked in a column that
+ *  looked addable and was not. It also printed raw base units under a hero
+ *  printing scaled amounts, so the two disagreed for any asset with precision. */
+function ManifestDestinationRow({
+  review,
+  output,
+  specNetwork,
+}: {
+  review: GenericTxManifestReviewDTO;
+  output: GenericTxManifestOutputReviewDTO;
+  specNetwork: LiquidNetwork;
+}) {
+  const meta = metaFor(review, output.assetId);
+  const isFee = output.role === "fee";
+  return (
+    <div className="flex items-center gap-2.5 py-1">
+      <AssetIcon
+        assetId={output.assetId}
+        label={meta.label}
+        network={specNetwork}
+        size="size-7"
+        textSize="text-[10px]"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm text-[color:var(--text-primary)]">
+          {outputRoleLabel(output.role)}
+        </div>
+        <div
+          className="truncate font-mono text-[9px] text-[color:var(--text-subtle)]"
+          title={isFee ? "Elements fee output" : output.scriptPubKey}
+        >
+          {isFee ? "(fee output)" : shortenHex(output.scriptPubKey, 10, 8)}
+        </div>
+      </div>
+      <div className="shrink-0 text-right">
+        <TelemetryNumber
+          value={formatAssetAmountExact(output.amount, meta.precision)}
+          glow={false}
+        />
+        <div className="font-mono text-[9px] text-[color:var(--text-subtle)]" title={output.assetId}>
+          {meta.ticker ?? shortenHex(output.assetId, 4, 4)}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function GenericTxManifestReview({
   review,
@@ -690,24 +873,120 @@ function GenericTxManifestReview({
   >["signingMode"];
 }) {
   const signingModeMismatch = requestedSigningMode !== review.signingMode;
-  const walletEffects = Object.entries(review.walletBalanceChanges).sort(([a], [b]) =>
-    a.localeCompare(b),
-  );
+  const walletEffects = Object.entries(review.walletBalanceChanges)
+    // A zero entry is shipped for an asset the transaction touches without moving
+    // the wallet's holding of it. It is not an effect, and "You receive 0" is
+    // worse than silence: startsWith("-") is false for "0", so it read as a
+    // receipt. Dropping it lets the no-effect branch below speak instead.
+    .filter(([, amount]) => BigInt(amount) !== 0n)
+    .sort(([a], [b]) => a.localeCompare(b));
+  const specNetwork = manifestSpecNetwork(network);
+  // Every output that actually leaves the wallet carrying value. Per output, NOT
+  // grouped: grouping by role+asset merged distinct destination scripts into one
+  // row, and folding ownership with && kept a mixed group whole so its total
+  // still counted the wallet-owned member the filter was meant to drop. After
+  // this filter there are only ever a handful of rows, so grouping bought
+  // nothing and cost the one fact the section exists to show.
+  //
+  // This column does NOT sum to the balance effect above, and must not be
+  // presented as if it did. Conservation per asset is
+  // `nonWalletOut = -walletBalanceChange + nonWalletIn`, so the two agree only
+  // when no input carries outside value. A covenant input carrying value is the
+  // normal case for a generic contract, which is exactly what this screen is
+  // for. Each row therefore names its own asset and its own destination and
+  // stands alone.
+  const destinations = review.outputs
+    .filter((output) => !output.walletOwned && BigInt(output.amount) > 0n)
+    // Fee last: it is the cost of the transaction rather than a destination, and
+    // its output index is wherever the builder put it.
+    .sort((a, b) => Number(a.role === "fee") - Number(b.role === "fee"));
+
   return (
     <div className="flex flex-col gap-3">
+      {/* Amber ink on near-black, not an amber field. The hue was never the
+          problem — amber over --warning-bg is a filled caution panel and it made
+          an unrecognised contract look like a scam alert. The same amber printed
+          on black is an instrument readout, which is what this is: Apogee does
+          not KNOW this action, a different claim from saying it is dangerous.
+          Red, amber-as-field and green are a verdict triad; a readout sits
+          outside it and asserts nothing. A genuine signing mode mismatch below
+          still uses the filled --warning-* palette, so the two read differently.
+          role="alert" survives the restyling — still security-relevant, and the
+          a11y tree needs it regardless of colour. */}
       <div
         role="alert"
         data-testid="generic-manifest-warning"
-        className="flex items-start gap-2 rounded-xl border border-[color:var(--warning-border)] bg-[color:var(--warning-bg)] p-3 text-[color:var(--warning-text)]"
+        className="rounded-xl border border-[color:color-mix(in_srgb,var(--accent-amber)_26%,transparent)] bg-[color:var(--readout-bg)]"
       >
-        <AlertTriangle className="mt-0.5 size-5 shrink-0" aria-hidden="true" />
-        <div>
-          <div className="text-sm font-semibold">Unverified contract action</div>
-          <div className="mt-0.5 text-xs leading-relaxed">
-            Apogee has no trusted app-specific understanding of what this action means. Verify every
-            exact input, output, asset, amount, and script below. Publisher descriptions are untrusted.
+        <details>
+          {/* The whole paragraph up front cost a third of the first screenful for
+              a sentence most readers only need once. Title always visible, body
+              a click away. */}
+          {/* A chevron rather than a "what this means" label: at 320px that label
+              crowded the title into two lines, and `display:flex` on a summary
+              suppresses the browser's own marker, so without one there was no
+              affordance at all. */}
+          <summary className="group flex cursor-pointer list-none items-center gap-2 p-3 text-sm font-semibold text-[color:var(--accent-amber)]">
+            <Alien />
+            <span className="flex-1">Unverified contract action</span>
+            <ChevronDown
+              className="size-4 shrink-0 text-[color:color-mix(in_srgb,var(--accent-amber)_60%,transparent)] transition-transform group-open:rotate-180"
+              aria-hidden="true"
+            />
+          </summary>
+          <div className="px-3 pb-3 text-xs leading-relaxed text-[color:color-mix(in_srgb,var(--accent-amber)_74%,transparent)]">
+            Apogee does not recognize this contract. Check the amounts below; publisher
+            descriptions are untrusted.
           </div>
+        </details>
+      </div>
+
+      {/* What it costs, before what it is. The balance effect is the one thing a
+          reader needs on the first screenful, and it used to sit below six
+          expanded sections of hex. */}
+      <div className="rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-subtle)]">
+          Effect on your wallet
         </div>
+        {walletEffects.length === 0 ? (
+          <p className="mt-1.5 text-sm text-[color:var(--text-primary)]">
+            No change to your balances.
+          </p>
+        ) : (
+          <div className="mt-1 flex flex-col">
+            {walletEffects.map(([assetId, amount]) => (
+              <ManifestAssetRow
+                key={`generic-effect-hero:${assetId}`}
+                review={review}
+                assetId={assetId}
+                /* Sign stripped, direction moved into the label: "You pay
+                   -12,062" reads as a double negative. The exact signed value
+                   stays in Wallet balance effects below. */
+                amount={amount.startsWith("-") ? amount.slice(1) : amount}
+                specNetwork={specNetwork}
+                roleLabel={amount.startsWith("-") ? "You pay" : "You receive"}
+                strong
+              />
+            ))}
+          </div>
+        )}
+        {/* Where it goes. Each row names its own asset and destination and does
+            NOT add up with its neighbours: see the note on `destinations`. */}
+        {destinations.length > 0 && (
+          <div className="mt-2 flex flex-col border-t border-[color:var(--border-default)] pt-2">
+            <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-subtle)]">
+              Where it goes
+            </div>
+            {destinations.map((output) => (
+              <ManifestDestinationRow
+                key={`generic-dest:${output.index}`}
+                review={review}
+                output={output}
+                specNetwork={specNetwork}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3">
@@ -743,7 +1022,7 @@ function GenericTxManifestReview({
         </div>
       )}
 
-      <ReviewSection title="Transaction policy">
+      <Disclosure title="Transaction policy">
         <ReviewItem>
           <Row label="Inputs" value={String(review.inputs.length)} />
           <Row label="Outputs" value={String(review.outputs.length)} />
@@ -756,9 +1035,9 @@ function GenericTxManifestReview({
             strong
           />
         </ReviewItem>
-      </ReviewSection>
+      </Disclosure>
 
-      <ReviewSection title="Every input">
+      <Disclosure title="Every input" count={review.inputs.length}>
         {review.inputs.map((input) => (
           <ReviewItem key={`generic-input:${input.index}`}>
             <div className="mb-1 text-sm font-semibold text-[color:var(--text-strong)]">
@@ -786,9 +1065,9 @@ function GenericTxManifestReview({
             />
           </ReviewItem>
         ))}
-      </ReviewSection>
+      </Disclosure>
 
-      <ReviewSection title="Every output">
+      <Disclosure title="Every output" count={review.outputs.length}>
         {review.outputs.map((output) => (
           <ReviewItem key={`generic-output:${output.index}`}>
             <div className="mb-1 flex items-center justify-between gap-3 text-sm font-semibold text-[color:var(--text-strong)]">
@@ -810,9 +1089,9 @@ function GenericTxManifestReview({
             <Row label="Ownership" value={output.walletOwned ? "this wallet" : "not this wallet"} />
           </ReviewItem>
         ))}
-      </ReviewSection>
+      </Disclosure>
 
-      <ReviewSection title="Wallet balance effects">
+      <Disclosure title="Wallet balance effects" count={walletEffects.length}>
         {walletEffects.length === 0 ? (
           <ReviewItem>
             <Row label="Wallet effect" value="none" />
@@ -825,9 +1104,9 @@ function GenericTxManifestReview({
             </ReviewItem>
           ))
         )}
-      </ReviewSection>
+      </Disclosure>
 
-      <ReviewSection title="Publisher-provided details · unverified">
+      <Disclosure title="Publisher-provided details · unverified">
         <ReviewItem>
           <Row label="Protocol claim" value={review.protocolLabel} wrap />
           <Row label="Action label" value={review.actionLabel} wrap />
@@ -835,11 +1114,10 @@ function GenericTxManifestReview({
             <Row label="Description" value={review.publisherDescription} wrap />
           )}
         </ReviewItem>
-      </ReviewSection>
+      </Disclosure>
 
-      <details className="rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-xs">
-        <summary className="cursor-pointer text-[color:var(--text-secondary)]">Technical details</summary>
-        <div className="mt-2 flex flex-col gap-2">
+      <Disclosure title="Technical details">
+        <div className="flex flex-col gap-2 text-xs">
           {[
             { label: "Account", value: review.accountIdentifier },
             { label: "Request", value: review.requestId },
@@ -856,7 +1134,7 @@ function GenericTxManifestReview({
             </div>
           ))}
         </div>
-      </details>
+      </Disclosure>
     </div>
   );
 }
@@ -1026,7 +1304,7 @@ function ProviderPsetReview({
       <p className="text-sm text-[color:var(--text-secondary)]">
         {broadcast
           ? "This site is asking Apogee to sign and broadcast this transaction. Verify every asset and recipient below."
-          : "This site is asking Apogee to sign—not broadcast—this transaction. Verify every asset and recipient below."}
+          : "This site is asking Apogee to sign, not broadcast, this transaction. Verify every asset and recipient below."}
       </p>
       <dl className="flex flex-col gap-1.5 rounded-xl border border-[color:var(--border-default)] bg-[color:var(--surface-soft)] p-3 text-sm">
         <Row label="Action" value={broadcast ? "Sign and broadcast" : "Sign only"} strong />

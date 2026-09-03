@@ -77,7 +77,7 @@ describe("ApprovalOverlay", () => {
     expect(markup).toContain("my-auto");
     expect(markup).toContain(recipients[0].address);
     expect(markup).toContain(recipients.at(-1)?.address);
-    expect(markup).toContain("sign—not broadcast");
+    expect(markup).toContain("sign, not broadcast");
     expect(markup).toContain("Sign only");
     expect(markup).toContain("Approve &amp; sign on Jade");
     expect(markup).toContain("Reject");
