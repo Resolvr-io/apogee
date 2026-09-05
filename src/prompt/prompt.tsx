@@ -31,8 +31,11 @@ function Prompt() {
 
   return (
     <div className="min-h-screen p-4">
+      {/* Approval is keyed by request id for the same reason as the side panel's
+          overlay: its state, including the unverified-contract acknowledgement,
+          must not survive a request swap. */}
       {request ? (
-        <Approval request={request} onClose={() => window.close()} />
+        <Approval key={request.id} request={request} onClose={() => window.close()} />
       ) : (
         <div className="flex h-screen items-center justify-center px-6 text-center text-sm text-[color:var(--text-secondary)]">
           {error || <Spinner />}

@@ -100,6 +100,13 @@
     --success-border: #1f3f2a;
     --success-text: #7fe0a5;
     --success-strong: #8fe8b0;
+    /* Instrument-readout register: amber INK on near-black, the way 2001's own
+       consoles print procedure text. Amber as a FIELD — amber text over the
+       amber-tinted --warning-bg below — reads as an alarm, which is wrong for a
+       contract that is merely unrecognised. As ink on black it reads as a
+       readout. Deliberately not folded into --warning-*: a genuine fault still
+       needs somewhere louder to go, and the two must not look alike. */
+    --readout-bg: #05090f;
     --warning-bg: #261e11;
     --warning-border: #3f3520;
     --warning-text: #f6b45f;
@@ -535,6 +542,26 @@
   }
   .apogee-soft {
     background-color: color-mix(in srgb, var(--surface-soft) 66%, transparent);
+  }
+
+  /* Action dock: the approve/reject pair pinned to the foot of an approval, so a
+     long review can never scroll them out of reach. Sticky, not fixed: the
+     scroll container is the overlay, and fixed would escape the card.
+     A frosted plate with a hairline, not the gradient this first shipped as —
+     that faded into the review and the buttons read as floating loose over
+     scrolling hex. The blur is load-bearing for that separation and it does
+     work here, unlike the activity list above: the overlay is a SIBLING of
+     <main>, so none of the feather masks that nullify backdrop-filter sit
+     above it. Move the overlay inside a masked subtree and this silently
+     degrades to the flat translucent colour. */
+  .apogee-action-dock {
+    /* Darker than the card it sits on, not merely opaque: the buttons have to
+       read as controls on their own plate rather than as content that happens to
+       be pinned. Near-black is the same register as the readout notice above. */
+    background-color: color-mix(in srgb, var(--readout-bg) 92%, transparent);
+    -webkit-backdrop-filter: blur(10px) saturate(120%);
+    backdrop-filter: blur(10px) saturate(120%);
+    border-top: 1px solid color-mix(in srgb, var(--border-strong) 85%, transparent);
   }
   /* compact (scrolled) balance backing: opaque at top, fading to transparent so
      it blends into the scrolling list below instead of a hard-edged bar */
