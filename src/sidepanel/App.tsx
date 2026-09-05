@@ -487,16 +487,30 @@ export function App() {
             }}
             homeTopSeq={homeTopSeq}
           />
+          {/* Mounted only once the intro is over. The badge shows for a fixed
+              window from MOUNT and then removes itself, so leaving it mounted
+              through the cinematic spent a third of that window at opacity 0 —
+              and, since the timer never restarts, a replay after the window had
+              already lapsed showed no version at all. Gating the mount gives it
+              its full life whenever it appears, and a replay re-arms it. With no
+              intro (`moonIntro === false`) this is the previous behavior exactly.
+
+              Inside <main>, not beside it, and that placement is load-bearing
+              now the badge takes clicks. main is flex-1 with the connection bar
+              as a shrink-0 sibling below, so main's bottom edge IS the top of
+              the bar: a badge anchored here cannot reach into the bar's 36px
+              full-width button. Anchored to the wrapper instead, its bottom-2
+              band sat inside that button and stole every click at the panel's
+              horizontal centre.
+
+              main is also `relative z-10`, so it is a stacking context, and the
+              modals nested inside Body (watch-only z-40, forgot-password z-30,
+              the asset dropdown z-30) are compared against the badge here and
+              win. As a sibling of main they could not: their z was local to
+              main's layer and could never outrank main's sibling. */}
+          {!moonIntro && <VersionBadge />}
         </main>
         {unlocked && <ConnectionBar onManage={() => setView("settings")} />}
-        {/* Mounted only once the intro is over. The badge shows for a fixed
-            window from MOUNT and then removes itself, so leaving it mounted
-            through the cinematic spent a third of that window at opacity 0 —
-            and, since the timer never restarts, a replay after the window had
-            already lapsed showed no version at all. Gating the mount gives it
-            its full life whenever it appears, and a replay re-arms it. With no
-            intro (`moonIntro === false`) this is the previous behavior exactly. */}
-        {!moonIntro && <VersionBadge />}
       </div>
       {/* Gated on DEBUG_ENTERPRISE_BUILD — the same enterprise-credential flag
           as the Settings Debug card, so an .env.local without Blockstream keys
